@@ -738,7 +738,7 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
         const double earlyT = std::pow(delayedT, 0.60);
         const double blendT = sDrivenHighlightsOnly
                                 ? smoothT
-                                : ((1.0 - smoothness) * delayedT
+                                   : ((1.0 - smoothness) * delayedT
                                    + smoothness * (0.35 * smoothT + 0.65 * earlyT));
         const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
         desired[i] = mergedValue;
@@ -2217,11 +2217,14 @@ bool SuperCCDProcessor::process(const QString &inputPath,
             const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
                 ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
                 : 1.0;
+            const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
+                std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
+            outputMetadata.whiteLevel = mergedWhiteLevel;
             outputMetadata.baselineExposure = 0.0;
             outputMetadata.hasBaselineExposure = false;
             logProcessing("merged CFA metadata before write: sourceWhite=%.6f outputWhite=%u appliedScale=%.9f baselineExposure=%.6f hasBaselineExposure=%d",
                           sourceWhiteLevel,
-                          outputWhiteLevel,
+                          outputMetadata.whiteLevel,
                           appliedOutputScale,
                           outputMetadata.baselineExposure,
                           outputMetadata.hasBaselineExposure ? 1 : 0);
