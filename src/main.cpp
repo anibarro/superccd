@@ -26,7 +26,7 @@ static void write_log_message(const char *msg)
         char buf[512];
         SYSTEMTIME st;
         GetLocalTime(&st);
-        int n = snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d - %s\r\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
+        snprintf(buf, sizeof(buf), "%04d-%02d-%02dT%02d:%02d:%02d - %s\r\n", st.wYear, st.wMonth, st.wDay, st.wHour, st.wMinute, st.wSecond, msg);
         WriteFile(h, buf, (DWORD)strlen(buf), &written, NULL);
         CloseHandle(h);
     }
