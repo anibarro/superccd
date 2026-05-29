@@ -37,9 +37,9 @@ echo Deployment finished.
 if /I "%MODE%"=="package" (
   echo Creating release package...
   if defined PACKAGE_NAME (
-    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1" -RepoRoot "%REPO_ROOT%" -BuildDir "%BUILD_DIR%" -ReleaseName "%PACKAGE_NAME%"
+    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1" -ReleaseName "%PACKAGE_NAME%"
   ) else (
-    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1" -RepoRoot "%REPO_ROOT%" -BuildDir "%BUILD_DIR%"
+    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1"
   )
   if errorlevel 1 exit /b %errorlevel%
 )

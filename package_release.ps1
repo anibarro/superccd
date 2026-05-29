@@ -43,7 +43,9 @@ if (-not (Test-Path $distRoot)) {
 New-Item -ItemType Directory -Path $stageDir | Out-Null
 Copy-Item -LiteralPath $exePath -Destination $stageDir
 
-Get-ChildItem -Path $BuildDir -Filter "*.dll" -File | Copy-Item -Destination $stageDir
+Get-ChildItem -Path $BuildDir -Filter "*.dll" -File | ForEach-Object {
+    Copy-Item -LiteralPath $_.FullName -Destination $stageDir
+}
 
 $runtimeDirs = @(
     "generic",
