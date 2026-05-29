@@ -15,6 +15,7 @@ class QTimer;
 class QSlider;
 class QScrollArea;
 class QCheckBox;
+class QComboBox;
 
 #include "SuperCCDProcessor.h"
 
@@ -69,6 +70,7 @@ private:
     QLabel *m_previewExposureValueLabel;
     QSlider *m_previewWhiteBalanceSlider;
     QLabel *m_previewWhiteBalanceValueLabel;
+    QComboBox *m_previewRotationCombo;
     QCheckBox *m_autoPreviewCheckBox;
     QScrollArea *m_previewScrollArea;
     QLabel *m_previewLabel;

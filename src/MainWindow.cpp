@@ -4,6 +4,7 @@
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
@@ -100,6 +101,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewExposureValueLabel(new QLabel(this))
     , m_previewWhiteBalanceSlider(new QSlider(Qt::Horizontal, this))
     , m_previewWhiteBalanceValueLabel(new QLabel(this))
+    , m_previewRotationCombo(new QComboBox(this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
     , m_previewScrollArea(new QScrollArea(this))
     , m_previewLabel(new QLabel(this))
@@ -132,7 +134,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_rTransitionSmoothnessSlider->setRange(0, 100);
     m_rTransitionSmoothnessSlider->setValue(kDefaultSmoothnessSliderValue);
     m_rTransitionSmoothnessValueLabel->setText(QStringLiteral("0.65"));
-    m_previewZoomSlider->setRange(25, 400);
+    m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
     m_previewZoomValueLabel->setText(QStringLiteral("100%"));
     m_previewExposureSlider->setRange(-30, 40);
@@ -141,6 +143,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewWhiteBalanceSlider->setRange(-100, 100);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
     m_previewWhiteBalanceValueLabel->setText(QStringLiteral("0"));
+    m_previewRotationCombo->addItem(tr("Normal"), 0);
+    m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
+    m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
+    m_previewRotationCombo->addItem(tr("Rotate 90 CCW"), 270);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     m_fileList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_fileList->setIconSize(QSize(96, 96));
@@ -154,7 +160,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewScrollArea->setBackgroundRole(QPalette::Dark);
     m_previewScrollArea->setWidget(m_previewLabel);
     m_previewScrollArea->setWidgetResizable(false);
-    m_previewScrollArea->setMinimumWidth(480);
+    m_previewScrollArea->setMinimumWidth(960);
     m_previewScrollArea->setMinimumHeight(320);
     m_previewScrollArea->viewport()->installEventFilter(this);
     m_previewLabel->installEventFilter(this);
@@ -187,6 +193,7 @@ MainWindow::MainWindow(QWidget *parent)
     optionsLayout->addRow(tr(""), m_previewExposureValueLabel);
     optionsLayout->addRow(tr("Preview WB:"), m_previewWhiteBalanceSlider);
     optionsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
+    optionsLayout->addRow(tr("Preview rotation:"), m_previewRotationCombo);
     optionsLayout->addRow(tr("Preview zoom:"), m_previewZoomSlider);
     optionsLayout->addRow(tr(""), m_previewZoomValueLabel);
     optionsLayout->addRow(tr(""), m_autoPreviewCheckBox);
@@ -234,6 +241,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewZoomChanged);
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
+    connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
+        queueAutoPreview();
+    });
     connect(m_radio6MPCfa, &QRadioButton::toggled, this, [this](bool) {
         updateControls(m_busy);
         queueAutoPreview();
@@ -534,8 +544,26 @@ void MainWindow::onUpdatePreview()
         return;
     }
 
+    const bool shouldFitPreview = m_currentPreviewImage.isNull()
+        || m_currentPreviewImage.size() != preview.size()
+        || m_lastPreviewedInputPath != inputPath;
+
     m_currentPreviewImage = preview;
     m_lastPreviewedInputPath = inputPath;
+    if (shouldFitPreview) {
+        const QSize viewportSize = m_previewScrollArea->viewport()->size();
+        if (viewportSize.width() > 0 && viewportSize.height() > 0) {
+            const double fitScale = std::min(static_cast<double>(viewportSize.width()) / static_cast<double>(preview.width()),
+                                             static_cast<double>(viewportSize.height()) / static_cast<double>(preview.height()));
+            const int fitZoom = std::clamp(static_cast<int>(std::floor(fitScale * 100.0)),
+                                           m_previewZoomSlider->minimum(),
+                                           m_previewZoomSlider->maximum());
+            const bool oldSignals = m_previewZoomSlider->blockSignals(true);
+            m_previewZoomSlider->setValue(fitZoom);
+            m_previewZoomSlider->blockSignals(oldSignals);
+            m_previewZoomValueLabel->setText(QStringLiteral("%1%").arg(fitZoom));
+        }
+    }
     updatePreviewDisplay();
     showStatus(tr("Preview updated."));
     m_busy = false;
@@ -557,6 +585,7 @@ void MainWindow::updateControls(bool busy)
     m_previewExposureValueLabel->setEnabled(!busy);
     m_previewWhiteBalanceSlider->setEnabled(!busy);
     m_previewWhiteBalanceValueLabel->setEnabled(!busy);
+    m_previewRotationCombo->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
     m_autoPreviewCheckBox->setEnabled(!busy);
     m_convertCurrentButton->setEnabled(!busy && !m_lastPreviewedInputPath.isEmpty());
@@ -679,6 +708,9 @@ void MainWindow::loadSavedDefaults()
     m_previewWhiteBalanceSlider->setValue(std::clamp(previewWhiteBalance,
                                                      m_previewWhiteBalanceSlider->minimum(),
                                                      m_previewWhiteBalanceSlider->maximum()));
+    const int previewRotation = settingsStore.value(QStringLiteral("defaults/previewRotation"), 0).toInt();
+    const int rotationIndex = m_previewRotationCombo->findData(previewRotation);
+    m_previewRotationCombo->setCurrentIndex(rotationIndex >= 0 ? rotationIndex : 0);
 
     m_autoPreviewCheckBox->setChecked(settingsStore.value(QStringLiteral("defaults/autoPreview"),
                                                           kDefaultAutoPreview).toBool());
@@ -692,6 +724,7 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/rTransitionSmoothness"), settings.rTransitionSmoothness);
     settingsStore.setValue(QStringLiteral("defaults/previewExposureSlider"), m_previewExposureSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewWhiteBalanceSlider"), m_previewWhiteBalanceSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
     settingsStore.setValue(QStringLiteral("defaults/autoPreview"), m_autoPreviewCheckBox->isChecked());
 }
 
@@ -713,6 +746,7 @@ void MainWindow::onResetDefaults()
     applyParameterSettings(defaults);
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
+    m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     queueAutoPreview();
     showStatus(tr("Defaults restored."));
@@ -744,6 +778,7 @@ ConversionSettings MainWindow::currentSettings() const
     settings.previewMaxSize = 0;
     settings.rTransitionDelay = static_cast<double>(m_rTransitionDelaySlider->value()) / 100.0;
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
+    settings.previewRotation = m_previewRotationCombo->currentData().toInt();
     settings.linearChromaSuppression = 1.0;
     return settings;
 }

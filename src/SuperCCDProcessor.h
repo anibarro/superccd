@@ -15,6 +15,7 @@ enum class ExportMode {
 struct ConversionSettings {
     ExportMode exportMode = ExportMode::RawCfa6MP;
     int previewMaxSize = 960;
+    int previewRotation = 0;
     double rHeadroomScale = 1.0;
     double rTransitionDelay = 0.0;
     double rTransitionSmoothness = 0.65;
@@ -42,6 +43,7 @@ struct SuperCCDMetadata {
     bool hasColorMatrix1 = false;
     double baselineExposure = 0.0;
     bool hasBaselineExposure = false;
+    int fujiWidth = 0;
     QImage embeddedThumbnail;
 };
 

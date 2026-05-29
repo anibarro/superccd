@@ -786,6 +786,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                               int height,
                               const SuperCCDMetadata &metadata,
                               int maxSize,
+                              int previewRotation,
                               QImage &preview,
                               QString &error)
 {
@@ -925,13 +926,89 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
     }
 
-    if (maxSize > 0 && (image.width() > maxSize || image.height() > maxSize)) {
-        preview = image.scaled(maxSize,
-                               maxSize,
-                               Qt::KeepAspectRatio,
-                               Qt::SmoothTransformation);
+    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
+    const int rectWidth = fujiWidth * 2 + 1;
+    const int rectHeight = (height - fujiWidth) * 2 + 1;
+    if (rectWidth <= 0 || rectHeight <= 0) {
+        error = QStringLiteral("Invalid Fuji preview geometry.");
+        return false;
+    }
+    QImage rectified(rectWidth, rectHeight, QImage::Format_RGB32);
+    std::vector<uint8_t> rectifiedMask(static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight), 0);
+    if (rectified.isNull()) {
+        error = QStringLiteral("Failed to allocate rectified preview image.");
+        return false;
+    }
+    rectified.fill(Qt::black);
+
+    for (int row = 0; row < height; ++row) {
+        const QRgb *srcLine = reinterpret_cast<const QRgb *>(image.constScanLine(row));
+        const int start = std::abs(fujiWidth - row);
+        const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
+        for (int col = start; col < end; ++col) {
+            const int y = row + col - fujiWidth;
+            const int x = fujiWidth - row + col;
+            if (x >= 0 && x < rectWidth && y >= 0 && y < rectHeight) {
+                rectified.setPixel(x, y, srcLine[col]);
+                rectifiedMask[static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x)] = 1;
+            }
+        }
+    }
+
+    QImage filled = rectified.copy();
+    for (int y = 0; y < rectHeight; ++y) {
+        QRgb *dstLine = reinterpret_cast<QRgb *>(filled.scanLine(y));
+        for (int x = 0; x < rectWidth; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
+            if (rectifiedMask[idx]) {
+                continue;
+            }
+
+            int sumR = 0;
+            int sumG = 0;
+            int sumB = 0;
+            int count = 0;
+            for (int dy = -1; dy <= 1; ++dy) {
+                const int yy = y + dy;
+                if (yy < 0 || yy >= rectHeight) {
+                    continue;
+                }
+                for (int dx = -1; dx <= 1; ++dx) {
+                    const int xx = x + dx;
+                    if (xx < 0 || xx >= rectWidth) {
+                        continue;
+                    }
+                    const size_t neighborIdx = static_cast<size_t>(yy) * static_cast<size_t>(rectWidth) + static_cast<size_t>(xx);
+                    if (!rectifiedMask[neighborIdx]) {
+                        continue;
+                    }
+                    const QRgb pixel = rectified.pixel(xx, yy);
+                    sumR += qRed(pixel);
+                    sumG += qGreen(pixel);
+                    sumB += qBlue(pixel);
+                    ++count;
+                }
+            }
+
+            if (count > 0) {
+                dstLine[x] = qRgb(sumR / count, sumG / count, sumB / count);
+            }
+        }
+    }
+
+    QTransform transform;
+    if (previewRotation == 90 || previewRotation == 180 || previewRotation == 270) {
+        transform.rotate(previewRotation);
+    }
+    QImage display = transform.isIdentity() ? filled : filled.transformed(transform, Qt::FastTransformation);
+
+    if (maxSize > 0 && (display.width() > maxSize || display.height() > maxSize)) {
+        preview = display.scaled(maxSize,
+                                 maxSize,
+                                 Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
     } else {
-        preview = image;
+        preview = display;
     }
 
     return true;
@@ -1397,6 +1474,7 @@ bool readSelectedShotLinearPlanes12MP(const QString &inputPath,
     metadata.iso = raw.imgdata.other.iso_speed;
     metadata.aperture = raw.imgdata.other.aperture;
     metadata.shutter = raw.imgdata.other.shutter;
+    metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
     if (raw.imgdata.other.timestamp > 0) {
         char dateBuf[32];
         struct tm *tm_info = localtime(&raw.imgdata.other.timestamp);
@@ -2254,6 +2332,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                     m_cfaPreviewCache.height,
                                     m_cfaPreviewCache.metadata,
                                     settings.previewMaxSize,
+                                    settings.previewRotation,
                                     preview,
                                     error);
 }
@@ -2377,6 +2456,7 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
     metadata.iso = raw.imgdata.other.iso_speed;
     metadata.aperture = raw.imgdata.other.aperture;
     metadata.shutter = raw.imgdata.other.shutter;
+    metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
     if (raw.imgdata.other.timestamp > 0) {
         char dateBuf[32];
         struct tm *tm_info = localtime(&raw.imgdata.other.timestamp);
