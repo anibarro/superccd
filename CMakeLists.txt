@@ -1,0 +1,98 @@
+cmake_minimum_required(VERSION 3.16)
+project(superccd2dng VERSION 0.1 LANGUAGES CXX)
+
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+set(CMAKE_AUTOMOC ON)
+set(CMAKE_AUTORCC ON)
+set(CMAKE_AUTOUIC ON)
+
+find_package(Qt6 COMPONENTS Widgets REQUIRED)
+
+set(LIBRAW_ROOT "" CACHE PATH "Root directory for LibRaw installation")
+find_path(LIBRAW_INCLUDE_DIR NAMES libraw/libraw.h raw/libraw.h
+          PATHS ${LIBRAW_ROOT}
+          PATH_SUFFIXES include include/lib)
+find_library(LIBRAW_LIBRARY NAMES libraw_static rawlibraw libraw libraw-19 libraw19
+             PATHS ${LIBRAW_ROOT}
+             PATH_SUFFIXES lib lib64 lib/x64 lib64/x64 lib/Win32)
+
+set(DNG_SDK_ROOT "" CACHE PATH "Root directory for Adobe DNG SDK installation")
+find_path(DNG_SDK_INCLUDE_DIR NAMES dng_sdk.h
+          PATHS ${DNG_SDK_ROOT}
+          PATH_SUFFIXES source include dng_sdk source/dng_sdk)
+find_library(DNG_SDK_LIBRARY NAMES dng_sdk
+             PATHS ${DNG_SDK_ROOT}
+             PATH_SUFFIXES lib lib64 bin)
+
+if(NOT LIBRAW_INCLUDE_DIR OR NOT LIBRAW_LIBRARY)
+  message(FATAL_ERROR
+    "LibRaw not found. Install LibRaw and retry.\n"
+    "Set LIBRAW_ROOT to the LibRaw install root, or specify LIBRAW_INCLUDE_DIR "
+    "and LIBRAW_LIBRARY manually.\n"
+    "Example: cmake -S . -B build -G \"Visual Studio 18 2026\" -A x64 "
+    "-DQt6_DIR=\"X:/path/to/Qt/lib/cmake/Qt6\" "
+    "-DLIBRAW_ROOT=\"X:/path/to/libraw\"")
+endif()
+
+include_directories(${LIBRAW_INCLUDE_DIR})
+
+# Allow specifying a LibTIFF root if installed in a custom location
+set(TIFF_ROOT "" CACHE PATH "Root directory for LibTIFF installation")
+find_package(TIFF QUIET HINTS ${TIFF_ROOT})
+if(NOT TIFF_FOUND)
+  # Try common source layout where headers live in libtiff/
+  find_path(TIFF_INCLUDE_DIR NAMES tiffio.h tiff.h
+            PATHS ${TIFF_ROOT}
+            PATH_SUFFIXES include include/tiff libtiff)
+  find_library(TIFF_LIBRARY NAMES tiff libtiff TIFF TIFF_4
+               PATHS ${TIFF_ROOT}
+               PATH_SUFFIXES lib lib64 bin)
+  if(TIFF_INCLUDE_DIR AND TIFF_LIBRARY)
+    set(TIFF_FOUND TRUE)
+    set(TIFF_INCLUDE_DIRS ${TIFF_INCLUDE_DIR})
+    set(TIFF_LIBRARIES ${TIFF_LIBRARY})
+  elseif(TIFF_INCLUDE_DIR)
+    message(WARNING "Found LibTIFF headers at ${TIFF_INCLUDE_DIR} but no library was found.\nPlease build/install LibTIFF so a .lib/.dll is available and set -DTIFF_ROOT to the install root.")
+  endif()
+endif()
+
+if(DNG_SDK_INCLUDE_DIR AND DNG_SDK_LIBRARY)
+  message(STATUS "Adobe DNG SDK found: ${DNG_SDK_INCLUDE_DIR}")
+  add_compile_definitions(HAVE_DNG_SDK=1)
+  include_directories(${DNG_SDK_INCLUDE_DIR})
+elseif(TIFF_FOUND)
+  message(STATUS "LibTIFF found: ${TIFF_INCLUDE_DIRS}")
+  add_compile_definitions(HAVE_LIBTIFF=1)
+  include_directories(${TIFF_INCLUDE_DIRS})
+else()
+  message(WARNING "Neither Adobe DNG SDK nor LibTIFF were found. DNG export will be disabled until one is configured.")
+endif()
+
+set(SOURCES
+    src/main.cpp
+    src/MainWindow.cpp
+    src/SuperCCDProcessor.cpp
+    src/DngWriter.cpp
+    resources/app_resources.qrc
+)
+
+if(WIN32)
+  list(APPEND SOURCES resources/app_icon.rc)
+endif()
+
+add_executable(superccd2dng ${SOURCES})
+target_include_directories(superccd2dng PRIVATE src)
+target_link_libraries(superccd2dng PRIVATE Qt6::Widgets ${LIBRAW_LIBRARY})
+
+if(DNG_SDK_LIBRARY)
+  target_link_libraries(superccd2dng PRIVATE ${DNG_SDK_LIBRARY})
+elseif(TIFF_FOUND)
+  target_link_libraries(superccd2dng PRIVATE ${TIFF_LIBRARIES})
+endif()
+
+if(MSVC)
+  target_compile_options(superccd2dng PRIVATE /W4 /permissive-)
+else()
+  target_compile_options(superccd2dng PRIVATE -Wall -Wextra -Wpedantic)
+endif()

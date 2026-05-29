@@ -1,0 +1,60 @@
+@echo off
+setlocal
+
+set "REPO_ROOT=%~dp0"
+cd /d "%REPO_ROOT%"
+
+if exist build rmdir /s /q build
+mkdir build
+cd build
+
+if not defined VSDEVCMD_PATH set "VSDEVCMD_PATH=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"
+if not defined CMAKE_EXE set "CMAKE_EXE=cmake"
+
+if not defined QT6_DIR (
+  echo QT6_DIR is not set.
+  echo Example:
+  echo   set QT6_DIR=X:/path/to/Qt/lib/cmake/Qt6
+  exit /b 1
+)
+
+if not defined LIBRAW_ROOT (
+  echo LIBRAW_ROOT is not set.
+  echo Example:
+  echo   set LIBRAW_ROOT=X:/path/to/libraw
+  exit /b 1
+)
+
+if not exist "%VSDEVCMD_PATH%" (
+  echo Visual Studio environment script not found:
+  echo   %VSDEVCMD_PATH%
+  exit /b 1
+)
+
+call "%VSDEVCMD_PATH%" -arch=x64 -host_arch=x64
+if errorlevel 1 exit /b %errorlevel%
+
+where cl
+where nmake
+where rc
+where mt
+
+set "CMAKE_ARGS=-S .. -B . -G NMake Makefiles -DQt6_DIR=%QT6_DIR% -DLIBRAW_ROOT=%LIBRAW_ROOT% -DCMAKE_BUILD_TYPE=Release"
+
+if defined TIFF_ROOT set "CMAKE_ARGS=%CMAKE_ARGS% -DTIFF_ROOT=%TIFF_ROOT%"
+if defined DNG_SDK_ROOT set "CMAKE_ARGS=%CMAKE_ARGS% -DDNG_SDK_ROOT=%DNG_SDK_ROOT%"
+if defined CMAKE_TOOLCHAIN_FILE set "CMAKE_ARGS=%CMAKE_ARGS% -DCMAKE_TOOLCHAIN_FILE=%CMAKE_TOOLCHAIN_FILE%"
+if defined LIBRAW_INCLUDE_DIR set "CMAKE_ARGS=%CMAKE_ARGS% -DLIBRAW_INCLUDE_DIR=%LIBRAW_INCLUDE_DIR%"
+if defined LIBRAW_LIBRARY set "CMAKE_ARGS=%CMAKE_ARGS% -DLIBRAW_LIBRARY=%LIBRAW_LIBRARY%"
+
+%CMAKE_EXE% %CMAKE_ARGS%
+if errorlevel 1 exit /b %errorlevel%
+
+if /I "%1"=="build" (
+  %CMAKE_EXE% --build . --config Release
+  if errorlevel 1 goto end
+  call "..\deploy.bat"
+)
+
+:end
+endlocal

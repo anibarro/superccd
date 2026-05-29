@@ -1,0 +1,27 @@
+# Build artifacts
+/build/
+/CMakeFiles/
+/CMakeCache.txt
+/*.user
+/*.vcxproj*
+/*.sln
+/*.obj
+/*.pdb
+/*.exe
+/*.log
+/processing.log
+/last_error.log
+
+# Qt Creator
+*.pro.user*
+
+# macOS
+.DS_Store
+
+# Windows
+Thumbs.db
+/tests
+LibRaw/
+/samples
+/.venv/
+/.git-safe-config

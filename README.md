@@ -1,0 +1,187 @@
+# SuperCCD S3 RAF to DNG
+
+Windows desktop application for converting Fujifilm FinePix S3 Pro `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses.
+
+## Project Status
+
+This repository is currently centered on one supported output path:
+
+- `6MP Raw CFA DNG`
+
+That path is the stable result of the current work and is the one intended for real use.
+
+## AI-Origin Statement
+
+This project was developed **100% with AI, with no manual intervention in the implementation**.
+
+- Human author and maintainer: `Eduardo Anibarro`
+- Code, refactors, UI changes, reverse-engineering iterations, and documentation were generated through AI-assisted sessions
+
+That statement is included here deliberately so contributors understand the origin of the codebase before working on it.
+
+## What The Application Does
+
+- Loads one or more Fujifilm S3 Pro `RAF` files
+- Extracts separate `S` and `R` shot data
+- Merges both responses into a highlight-safe `6MP` CFA DNG
+- Preserves the original embedded RAF preview for the GUI file list and DNG preview embedding
+- Provides a preview workflow for tuning the `S/R` highlight handoff before export
+
+## Current Scope
+
+Supported and intended:
+
+- Fujifilm FinePix S3 Pro RAF files
+- Windows
+- Qt 6 desktop GUI
+- `6MP Raw CFA DNG` export
+
+Present in source but not a supported workflow:
+
+- legacy experimental `12MP` reconstruction code
+- older diagnostic and reverse-engineering helpers inside `SuperCCDProcessor.cpp`
+
+Those experimental paths are kept only as research history. They are not the recommended path for normal use.
+
+## Why The Output Is A CFA DNG
+
+The stable workflow keeps the merged data as a CFA DNG because:
+
+- it preserves more editability than a baked RGB render
+- RawTherapee currently gives better detail than the app's abandoned linear-DNG experiments
+- the merged CFA path is the most reliable result reached so far
+
+The intended post-processing workflow is:
+
+1. Convert RAF to `6MP Raw CFA DNG`
+2. Open the DNG in RawTherapee
+3. Rotate and crop the image there
+4. Demosaic and finish the image there
+
+Important:
+
+- the generated DNG is currently a rotated output
+- final orientation and framing are expected to be corrected in RawTherapee
+
+## Key Limitations
+
+- The project is specialized for the S3 Pro Super CCD SR II sensor
+- The output is intentionally highlight-safe by default, so images may open darker than a normal camera raw
+- Some experimental code remains in the repository and should not be treated as stable API
+- The codebase is usable, but it is still research-driven rather than polished as a general-purpose photo product
+
+## GUI Features
+
+- RAF file list with embedded thumbnails
+- preview of the currently selected RAF file
+- draggable and zoomable preview
+- preview exposure and white-balance controls
+- adjustable `S -> R` highlight handoff parameters
+- convert current previewed RAF
+- convert all listed RAF files
+- save and restore default parameter values
+
+Performance note:
+
+- the first preview or conversion of a RAF file is slower because the app must decode and cache the raw data
+- repeated previews on the same file are faster
+
+## Build Requirements
+
+- Windows
+- CMake `3.16+`
+- Qt `6` with `Widgets`
+- LibRaw
+- LibTIFF
+- Visual Studio C++ toolchain
+
+Adobe DNG SDK is not required for the current stable path. LibTIFF is the practical writer backend used here.
+
+## Build
+
+This repository already includes `run_vs_setup.cmd`, which is the expected local build entrypoint in this project.
+
+Typical build:
+
+```powershell
+cmd /c run_vs_setup.cmd build
+```
+
+If you need to configure from scratch, the important CMake inputs are:
+
+- `Qt6_DIR`
+- `LIBRAW_ROOT`
+- optionally `TIFF_ROOT`
+
+Example:
+
+```powershell
+cmake -S . -B build ^
+  -G "Visual Studio 18 2026" -A x64 ^
+  -DQt6_DIR="X:/path/to/Qt/lib/cmake/Qt6" ^
+  -DLIBRAW_ROOT="X:/path/to/libraw" ^
+  -DTIFF_ROOT="X:/path/to/libtiff"
+cmake --build build --config Release
+```
+
+## Command-Line Usage
+
+Minimal usage:
+
+```powershell
+build\superccd2dng.exe input.raf output.dng --6mp-cfa
+```
+
+Important behavior:
+
+- the app writes three files from that base output name:
+  - `_s_pixels.dng`
+  - `_r_pixels.dng`
+  - `_sr_merged.dng`
+- the merged file is the main result
+
+Example:
+
+```powershell
+build\superccd2dng.exe samples\DSCF0125.RAF tests\DSCF0125.dng --6mp-cfa
+```
+
+## RawTherapee Notes
+
+The best demosaic results seen during development came from:
+
+- `RCD + VNG4`
+
+That is not enforced by this application; it is simply the current recommended downstream workflow after rotating and cropping the exported DNG.
+
+## Repository Structure
+
+- [src](src)
+  - application code
+- [resources](resources)
+  - icons and Qt resources
+- [docs/MANUAL.md](docs/MANUAL.md)
+  - end-user application manual
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+  - contributor notes
+- [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md)
+  - dependency and attribution notes
+
+## Contributor Expectations
+
+If you want to contribute, read:
+
+- [docs/MANUAL.md](docs/MANUAL.md)
+- [CONTRIBUTING.md](CONTRIBUTING.md)
+
+In practice:
+
+- do not change the stable `6MP` merge behavior casually
+- treat highlight recovery regressions as critical
+- test against real RAF files, not only synthetic examples
+
+## License
+
+This repository is licensed under the MIT License.
+
+See [LICENSE](LICENSE).
