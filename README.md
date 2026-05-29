@@ -107,6 +107,19 @@ Typical build:
 cmd /c run_vs_setup.cmd build
 ```
 
+GitHub release package:
+
+```powershell
+cmd /c run_vs_setup.cmd package
+```
+
+That creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-20260529.zip`.
+You can override the package name:
+
+```powershell
+cmd /c run_vs_setup.cmd package superccd2dng-windows-x64-v0.1.0
+```
+
 If you need to configure from scratch, the important CMake inputs are:
 
 - `Qt6_DIR`

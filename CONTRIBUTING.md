@@ -67,6 +67,12 @@ Primary local build command in this repository:
 cmd /c run_vs_setup.cmd build
 ```
 
+GitHub release zip:
+
+```powershell
+cmd /c run_vs_setup.cmd package
+```
+
 ## Coding Notes
 
 - Prefer conservative edits over broad rewrites.

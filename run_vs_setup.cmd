@@ -4,6 +4,15 @@ setlocal
 set "REPO_ROOT=%~dp0"
 cd /d "%REPO_ROOT%"
 
+set "ACTION=%~1"
+if not defined ACTION set "ACTION=build"
+set "PACKAGE_NAME=%~2"
+
+if /I "%ACTION%"=="help" goto usage
+if /I "%ACTION%"=="-h" goto usage
+if /I "%ACTION%"=="--help" goto usage
+if /I not "%ACTION%"=="configure" if /I not "%ACTION%"=="build" if /I not "%ACTION%"=="package" if /I not "%ACTION%"=="release" goto usage
+
 if exist build rmdir /s /q build
 mkdir build
 cd build
@@ -50,11 +59,48 @@ if defined LIBRAW_LIBRARY set "CMAKE_ARGS=%CMAKE_ARGS% -DLIBRAW_LIBRARY=%LIBRAW_
 %CMAKE_EXE% %CMAKE_ARGS%
 if errorlevel 1 exit /b %errorlevel%
 
-if /I "%1"=="build" (
+if /I "%ACTION%"=="configure" goto end
+
+if /I "%ACTION%"=="build" (
   %CMAKE_EXE% --build . --config Release
   if errorlevel 1 goto end
   call "..\deploy.bat"
+  goto end
+)
+
+if /I "%ACTION%"=="package" (
+  %CMAKE_EXE% --build . --config Release
+  if errorlevel 1 goto end
+  if defined PACKAGE_NAME (
+    call "..\deploy.bat" package "%PACKAGE_NAME%"
+  ) else (
+    call "..\deploy.bat" package
+  )
+  goto end
+)
+
+if /I "%ACTION%"=="release" (
+  %CMAKE_EXE% --build . --config Release
+  if errorlevel 1 goto end
+  if defined PACKAGE_NAME (
+    call "..\deploy.bat" package "%PACKAGE_NAME%"
+  ) else (
+    call "..\deploy.bat" package
+  )
 )
 
 :end
 endlocal
+exit /b %errorlevel%
+
+:usage
+echo Usage:
+echo   run_vs_setup.cmd configure
+echo   run_vs_setup.cmd build
+echo   run_vs_setup.cmd package [release-name]
+echo   run_vs_setup.cmd release [release-name]
+echo.
+echo build     Configures, builds, and deploys runtime files into build\
+echo package   Builds and creates a GitHub-ready zip in dist\
+echo release   Alias for package
+exit /b 1

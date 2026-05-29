@@ -3,6 +3,8 @@ setlocal EnableDelayedExpansion
 
 set "REPO_ROOT=%~dp0"
 set "BUILD_DIR=%REPO_ROOT%build"
+set "MODE=%~1"
+set "PACKAGE_NAME=%~2"
 
 if not defined QT_DIR (
   echo QT_DIR is not set.
@@ -31,4 +33,15 @@ if errorlevel 1 (
 )
 
 echo Deployment finished.
+
+if /I "%MODE%"=="package" (
+  echo Creating release package...
+  if defined PACKAGE_NAME (
+    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1" -RepoRoot "%REPO_ROOT%" -BuildDir "%BUILD_DIR%" -ReleaseName "%PACKAGE_NAME%"
+  ) else (
+    powershell -ExecutionPolicy Bypass -File "%REPO_ROOT%package_release.ps1" -RepoRoot "%REPO_ROOT%" -BuildDir "%BUILD_DIR%"
+  )
+  if errorlevel 1 exit /b %errorlevel%
+)
+
 endlocal
