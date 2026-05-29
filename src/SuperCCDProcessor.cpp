@@ -964,9 +964,9 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                 continue;
             }
 
-            int sumR = 0;
-            int sumG = 0;
-            int sumB = 0;
+            int neighborSumR = 0;
+            int neighborSumG = 0;
+            int neighborSumB = 0;
             int count = 0;
             for (int dy = -1; dy <= 1; ++dy) {
                 const int yy = y + dy;
@@ -983,15 +983,15 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                         continue;
                     }
                     const QRgb pixel = rectified.pixel(xx, yy);
-                    sumR += qRed(pixel);
-                    sumG += qGreen(pixel);
-                    sumB += qBlue(pixel);
+                    neighborSumR += qRed(pixel);
+                    neighborSumG += qGreen(pixel);
+                    neighborSumB += qBlue(pixel);
                     ++count;
                 }
             }
 
             if (count > 0) {
-                dstLine[x] = qRgb(sumR / count, sumG / count, sumB / count);
+                dstLine[x] = qRgb(neighborSumR / count, neighborSumG / count, neighborSumB / count);
             }
         }
     }
