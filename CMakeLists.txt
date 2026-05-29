@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(superccd2dng VERSION 0.1 LANGUAGES CXX)
+project(superccd2dng VERSION 0.1.3 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -84,6 +84,7 @@ endif()
 add_executable(superccd2dng ${SOURCES})
 target_include_directories(superccd2dng PRIVATE src)
 target_link_libraries(superccd2dng PRIVATE Qt6::Widgets ${LIBRAW_LIBRARY})
+target_compile_definitions(superccd2dng PRIVATE APP_VERSION_STRING="${PROJECT_VERSION}")
 
 if(DNG_SDK_LIBRARY)
   target_link_libraries(superccd2dng PRIVATE ${DNG_SDK_LIBRARY})

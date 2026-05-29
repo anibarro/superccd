@@ -114,7 +114,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
 {
-    setWindowTitle(tr("SuperCCD RAF to DNG Converter"));
+    setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
     resize(1180, 760);
 
     QWidget *central = new QWidget(this);

@@ -77,8 +77,13 @@ int main(int argc, char *argv[])
     std::signal(SIGFPE, signal_handler);
     std::signal(SIGILL, signal_handler);
 
+    QCoreApplication::setApplicationName(QStringLiteral("SuperCCD RAF to DNG Converter"));
+    QCoreApplication::setApplicationVersion(QString::fromLatin1(APP_VERSION_STRING));
+
     if (argc >= 3) {
         QCoreApplication app(argc, argv);
+        app.setApplicationName(QCoreApplication::applicationName());
+        app.setApplicationVersion(QCoreApplication::applicationVersion());
         ConversionSettings settings;
         for (int i = 3; i < argc; ++i) {
             if (std::strcmp(argv[i], "--6mp") == 0 || std::strcmp(argv[i], "--6mp-cfa") == 0) {
@@ -103,6 +108,8 @@ int main(int argc, char *argv[])
     }
 
     QApplication app(argc, argv);
+    app.setApplicationName(QCoreApplication::applicationName());
+    app.setApplicationVersion(QCoreApplication::applicationVersion());
     app.setWindowIcon(QIcon(QStringLiteral(":/icons/app_icon_256.png")));
     MainWindow window;
     window.show();
