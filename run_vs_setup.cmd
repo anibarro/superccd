@@ -19,6 +19,14 @@ cd build
 
 if not defined VSDEVCMD_PATH set "VSDEVCMD_PATH=C:\Program Files\Microsoft Visual Studio\18\Community\Common7\Tools\VsDevCmd.bat"
 if not defined CMAKE_EXE set "CMAKE_EXE=cmake"
+if not defined QT6_DIR set "QT6_DIR=C:/Qt/6.10.2/msvc2022_64/lib/cmake/Qt6"
+if not defined VCPKG_ROOT set "VCPKG_ROOT=C:/src/vcpkg"
+if not defined LIBRAW_ROOT set "LIBRAW_ROOT=%VCPKG_ROOT%\installed\x64-windows"
+if not defined LIBRAW_INCLUDE_DIR set "LIBRAW_INCLUDE_DIR=%VCPKG_ROOT%\installed\x64-windows\include"
+if not defined LIBRAW_LIBRARY set "LIBRAW_LIBRARY=%VCPKG_ROOT%\installed\x64-windows\lib\raw_r.lib"
+if not defined DNG_SDK_ROOT set "DNG_SDK_ROOT=C:/src/dng_sdk_1_7_1"
+if not defined TIFF_ROOT set "TIFF_ROOT=C:/src/tiff-4.7.1"
+if not defined CMAKE_TOOLCHAIN_FILE set "CMAKE_TOOLCHAIN_FILE=%VCPKG_ROOT%\scripts\buildsystems\vcpkg.cmake"
 
 if not defined QT6_DIR (
   echo QT6_DIR is not set.
@@ -48,7 +56,7 @@ where nmake
 where rc
 where mt
 
-set "CMAKE_ARGS=-S .. -B . -G NMake Makefiles -DQt6_DIR=%QT6_DIR% -DLIBRAW_ROOT=%LIBRAW_ROOT% -DCMAKE_BUILD_TYPE=Release"
+set "CMAKE_ARGS=-S .. -B . -DQt6_DIR=%QT6_DIR% -DLIBRAW_ROOT=%LIBRAW_ROOT% -DCMAKE_BUILD_TYPE=Release"
 
 if defined TIFF_ROOT set "CMAKE_ARGS=%CMAKE_ARGS% -DTIFF_ROOT=%TIFF_ROOT%"
 if defined DNG_SDK_ROOT set "CMAKE_ARGS=%CMAKE_ARGS% -DDNG_SDK_ROOT=%DNG_SDK_ROOT%"
@@ -56,7 +64,7 @@ if defined CMAKE_TOOLCHAIN_FILE set "CMAKE_ARGS=%CMAKE_ARGS% -DCMAKE_TOOLCHAIN_F
 if defined LIBRAW_INCLUDE_DIR set "CMAKE_ARGS=%CMAKE_ARGS% -DLIBRAW_INCLUDE_DIR=%LIBRAW_INCLUDE_DIR%"
 if defined LIBRAW_LIBRARY set "CMAKE_ARGS=%CMAKE_ARGS% -DLIBRAW_LIBRARY=%LIBRAW_LIBRARY%"
 
-%CMAKE_EXE% %CMAKE_ARGS%
+%CMAKE_EXE% -G "NMake Makefiles" %CMAKE_ARGS%
 if errorlevel 1 exit /b %errorlevel%
 
 if /I "%ACTION%"=="configure" goto end

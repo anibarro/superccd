@@ -9,6 +9,9 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QProcess>
+#include <QFile>
+#include <QTextStream>
+#include <fstream>
 #include <cstdio>
 #include <cstring>
 #include <ctime>
@@ -508,54 +511,162 @@ std::vector<OffsetScore> deriveSameColorOffsets(const std::vector<uint16_t> &pri
     return scores;
 }
 
+// Upsample CFA to 2x resolution by interpolation
+// Each original pixel becomes a 2x2 block, creating a full-resolution image
+// where all color positions have valid values
+bool upsampleCfa2x(const std::vector<uint16_t> &cfa,
+                  const std::vector<uint8_t> &channels,
+                  int width,
+                  int height,
+                  std::vector<uint16_t> &upsampled,
+                  std::vector<uint8_t> &upsampledChannels,
+                  int &outWidth,
+                  int &outHeight,
+                  QString &logLabel)
+{
+    outWidth = width * 2;
+    outHeight = height * 2;
+    upsampled.assign(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight), 0);
+    upsampledChannels.assign(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight), 0);
+    
+    // For each original pixel, create a 2x2 block in the output
+    // We use bilinear interpolation from neighboring original pixels
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t srcIdx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const uint16_t srcValue = cfa[srcIdx];
+            const uint8_t srcChannel = channels[srcIdx];
+            
+            // Destination block: 2x2 pixels
+            // Position (2x, 2y) in output corresponds to (x, y) in input
+            // Each output pixel at (ox, oy) maps back to input (ox/2, oy/2)
+            
+            for (int dy = 0; dy < 2; ++dy) {
+                for (int dx = 0; dx < 2; ++dx) {
+                    const int ox = x * 2 + dx;
+                    const int oy = y * 2 + dy;
+                    const size_t dstIdx = static_cast<size_t>(oy) * static_cast<size_t>(outWidth) + static_cast<size_t>(ox);
+                    
+                    // Set the channel for this upsampled pixel
+                    upsampledChannels[dstIdx] = srcChannel;
+                    
+                    // Interpolate from neighbors with same channel
+                    // Check 4 neighbors at half-pixel offset in the upsampled grid
+                    const int nxOffsets[4] = {-1, 1, 0, 0};
+                    const int nyOffsets[4] = {0, 0, -1, 1};
+                    
+                    uint32_t sum = 0;
+                    int count = 0;
+                    
+                    // Look at the 4 neighboring original pixels (at 2x scale)
+                    for (int i = 0; i < 4; ++i) {
+                        const int nx = x + nxOffsets[i];
+                        const int ny = y + nyOffsets[i];
+                        
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                        
+                        const size_t nIdx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
+                        const uint8_t nChannel = channels[nIdx];
+                        
+                        if (nChannel != srcChannel) continue;  // Must be same color
+                        
+                        const uint16_t nValue = cfa[nIdx];
+                        if (nValue == 0) continue;
+                        
+                        sum += nValue;
+                        count++;
+                    }
+                    
+                    if (count > 0 && srcValue > 0) {
+                        // Average of neighbors plus contribution from original
+                        upsampled[dstIdx] = static_cast<uint16_t>((sum + srcValue) / (count + 1));
+                    } else if (srcValue > 0) {
+                        upsampled[dstIdx] = srcValue;
+                    }
+                }
+            }
+        }
+    }
+    
+    logLabel = QStringLiteral("Upsampled 2x: %1x%2 -> %3x%4").arg(width).arg(height).arg(outWidth).arg(outHeight);
+    return true;
+}
+
+bool interpolateCfaToFullResolution(const std::vector<uint16_t> &cfa,
+                                   const std::vector<uint8_t> &channels,
+                                   int width,
+                                   int height,
+                                   std::vector<uint16_t> &fullRes,
+                                   QString &logLabel)
+{
+    // For each position, if we have a value, keep it
+    // If we don't have a value (different channel originally at that position), 
+    // interpolate from same-color neighbors (respecting CFA pattern)
+    
+    const int dx[4] = {-1, 1, 0, 0};
+    const int dy[4] = {0, 0, -1, 1};
+    
+    fullRes.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
+    
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const uint8_t channel = channels[idx];
+            
+            if (cfa[idx] != 0) {
+                // We have a value at this position
+                fullRes[idx] = cfa[idx];
+            } else {
+                // Need to interpolate from same-color neighbors
+                uint32_t sum = 0;
+                int count = 0;
+                for (int i = 0; i < 4; ++i) {
+                    const int nx = x + dx[i];
+                    const int ny = y + dy[i];
+                    if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
+                    
+                    const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
+                    if (channels[nidx] != channel) continue;  // Must be same color
+                    if (cfa[nidx] == 0) continue;
+                    
+                    sum += cfa[nidx];
+                    count++;
+                }
+                if (count > 0) {
+                    fullRes[idx] = static_cast<uint16_t>(sum / count);
+                }
+            }
+        }
+    }
+    
+    logLabel = QStringLiteral("Interpolated CFA to full resolution");
+    return true;
+}
+
 bool projectSecondaryOntoPrimary(const std::vector<uint16_t> &primary,
                                  const std::vector<uint8_t> &primaryChannels,
                                  const std::vector<uint16_t> &secondary,
-                                 const std::vector<uint8_t> &secondaryChannels,
+                                 [[maybe_unused]] const std::vector<uint8_t> &secondaryChannels,
                                  int width,
                                  int height,
                                  std::vector<uint16_t> &projected,
                                  QString &logLabel)
 {
+    Q_UNUSED(primaryChannels);
+    Q_UNUSED(secondaryChannels);
+
     projected.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
 
-    std::vector<OffsetScore> offsetsByChannelParity[4][4];
-    for (uint8_t channel = 0; channel < 4; ++channel) {
-        for (int parityClass = 0; parityClass < 4; ++parityClass) {
-            offsetsByChannelParity[channel][parityClass] = deriveSameColorOffsets(primary,
-                                                                                  primaryChannels,
-                                                                                  secondary,
-                                                                                  secondaryChannels,
-                                                                                  width,
-                                                                                  height,
-                                                                                  channel,
-                                                                                  parityClass,
-                                                                                  3,
-                                                                                  4);
-        }
-    }
-
-    for (int channel = 0; channel < 4; ++channel) {
-        QString summary = QStringLiteral("ch%1").arg(channel);
-        for (int parityClass = 0; parityClass < 4; ++parityClass) {
-            summary += QStringLiteral(" p%1").arg(parityClass);
-            const std::vector<OffsetScore> &offsets = offsetsByChannelParity[channel][parityClass];
-            if (offsets.empty()) {
-                summary += QStringLiteral(" none");
-                continue;
-            }
-            for (const OffsetScore &offset : offsets) {
-                summary += QStringLiteral(" (%1,%2)c=%3 r=%4 e=%5 g=%6")
-                               .arg(offset.dx)
-                               .arg(offset.dy)
-                               .arg(static_cast<qulonglong>(offset.count))
-                               .arg(offset.corr, 0, 'f', 5)
-                               .arg(offset.meanRelativeError, 0, 'f', 5)
-                               .arg(offset.gain, 0, 'f', 5);
-            }
-        }
-        logLabel += summary + QLatin1String("; ");
-    }
+    // Simple adjacent pixel sampling - R and S are interleaved in a checkerboard pattern
+    // For each primary pixel, sample the 4 adjacent secondary pixels and average
+    // This avoids boundary artifacts from the offset search method
+    // NOTE: We do NOT check channel matching here because adjacent R and S pixels
+    // naturally have different channels. We rely on the gain estimation to handle this.
+    
+    const int dx[4] = {-1, 1, 0, 0};  // left, right
+    const int dy[4] = {0, 0, -1, 1};  // up, down
+    
+    logLabel = QStringLiteral("Adjacent sampling: use 4-neighbor average (no channel filter)");
 
     for (int y = 0; y < height; ++y) {
         for (int x = 0; x < width; ++x) {
@@ -564,25 +675,27 @@ bool projectSecondaryOntoPrimary(const std::vector<uint16_t> &primary,
                 continue;
             }
 
-            const uint8_t channel = primaryChannels[idx];
-            if (channel > 3) {
-                continue;
-            }
-            const int parityClass = ((y & 1) << 1) | (x & 1);
-
-            for (const OffsetScore &offset : offsetsByChannelParity[channel][parityClass]) {
-                const int nx = x + offset.dx;
-                const int ny = y + offset.dy;
+            // Collect all adjacent secondary pixels (any channel)
+            // The gain estimation will handle channel mismatches
+            uint32_t sum = 0;
+            int count = 0;
+            for (int i = 0; i < 4; ++i) {
+                const int nx = x + dx[i];
+                const int ny = y + dy[i];
                 if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
                     continue;
                 }
                 const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
                 const uint16_t sample = secondary[nidx];
-                if (sample == 0 || secondaryChannels[nidx] != channel) {
+                if (sample == 0) {
                     continue;
                 }
-                projected[idx] = sample;
-                break;
+                sum += sample;
+                count++;
+            }
+
+            if (count > 0) {
+                projected[idx] = static_cast<uint16_t>(sum / count);
             }
         }
     }
@@ -629,7 +742,9 @@ void estimateProjectedGain(const std::vector<uint16_t> &primary,
 
         const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
         const double normalized = static_cast<double>(s) / white;
-        if (normalized < 0.10 || normalized > 0.60) {
+        // Include highlight pixels (up to 0.95) in gain estimation so gains better
+        // reflect R/S relationship in highlight areas where blending matters most
+        if (normalized < 0.10 || normalized > 0.95) {
             continue;
         }
 
@@ -700,8 +815,22 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
 
         const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
         const double scaledS = static_cast<double>(s);
-        const double scaledR = static_cast<double>(rProjected) * gains[channel];
         const double normalizedS = static_cast<double>(s) / white;
+        const double normalizedR = white > 0 ? static_cast<double>(rProjected) / white : 0.0;
+
+        // Detect S clipping: when S is very bright but R is disproportionately dark,
+        // R is likely more accurate (S may be clipping in highlight areas)
+        // Also require rProjected > 200 to ensure the R projection itself is reliable
+        // TEMPORARILY DISABLED - conditions were too aggressive, causing artifacts
+        const bool sMayBeClipping = false && (normalizedS > 0.70) && (normalizedR < 0.05) && (rProjected > 200);
+
+        double scaledR;
+        if (sMayBeClipping) {
+            // R is more reliable in extreme highlights; use R without gain boost
+            scaledR = static_cast<double>(rProjected);
+        } else {
+            scaledR = static_cast<double>(rProjected) * gains[channel];
+        }
         const double delay = std::clamp(rTransitionDelay, 0.0, 1.0);
         const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
         double blendStart = 0.95;
@@ -902,8 +1031,13 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
         gainR = metadata.asShotNeutral[1] / metadata.asShotNeutral[0];
-        gainG = 1.0;
+        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);  // Apply tint via green adjustment
         gainB = metadata.asShotNeutral[1] / metadata.asShotNeutral[2];
+        logProcessing("WB from AsShotNeutral: R=%.4f G=%.4f B=%.4f tint=%.2f",
+                       gainR, gainG, gainB, metadata.asShotTint);
+    } else {
+        logProcessing("WB from average ratios: R=%.4f G=%.4f B=%.4f (no AsShotNeutral)",
+                       gainR, gainG, gainB);
     }
     const double scaleR = 65535.0 / static_cast<double>(maxR);
     const double scaleG = 65535.0 / static_cast<double>(maxG);
@@ -1197,7 +1331,7 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
         gainR = metadata.asShotNeutral[1] / metadata.asShotNeutral[0];
-        gainG = 1.0;
+        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);  // Apply tint via green adjustment
         gainB = metadata.asShotNeutral[1] / metadata.asShotNeutral[2];
     }
     const double scaleR = 65535.0 / static_cast<double>(maxR);
@@ -2167,9 +2301,9 @@ bool SuperCCDProcessor::process(const QString &inputPath,
     std::vector<uint16_t> mergedSr;
     QString mergeSummary;
     double appliedOutputScale = 1.0;
-    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sCfa,
+    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sUpsampled,
                                      m_cfaPreviewCache.sChannels,
-                                     m_cfaPreviewCache.projectedR,
+                                     m_cfaPreviewCache.rUpsampled,
                                      m_cfaPreviewCache.width,
                                      m_cfaPreviewCache.height,
                                      settings.rHeadroomScale,
@@ -2318,9 +2452,9 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
 
     std::vector<uint16_t> mergedSr;
     QString mergeSummary;
-    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sCfa,
+    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sUpsampled,
                                       m_cfaPreviewCache.sChannels,
-                                      m_cfaPreviewCache.projectedR,
+                                      m_cfaPreviewCache.rUpsampled,
                                       m_cfaPreviewCache.width,
                                       m_cfaPreviewCache.height,
                                       settings.rHeadroomScale,
@@ -2356,11 +2490,8 @@ bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
         cache.inputPath == inputPath &&
         cache.lastModifiedUtc == lastModifiedUtc &&
         cache.fileSize == fileSize) {
-        logProcessing("ensure6MPCache hit: %s", inputPath.toUtf8().constData());
         return true;
     }
-
-    logProcessing("ensure6MPCache miss: %s", inputPath.toUtf8().constData());
 
     CfaPreviewCache rebuilt;
     rebuilt.inputPath = inputPath;
@@ -2400,16 +2531,24 @@ bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
         return false;
     }
 
-    QString offsetSummary;
-    projectSecondaryOntoPrimary(rebuilt.sCfa,
-                                rebuilt.sChannels,
-                                rebuilt.rCfa,
-                                rebuilt.rChannels,
-                                rebuilt.width,
-                                rebuilt.height,
-                                rebuilt.projectedR,
-                                offsetSummary);
-    logProcessing("ensure6MPCache projection offsets: %s", offsetSummary.toUtf8().constData());
+    // Upsample both S and R to 2x resolution using same-color neighbors
+    // This avoids boundary artifacts from offset-based projection
+    // After upsampling, S and R will be at corresponding positions - no offset needed
+    QString sUpsampleLog, rUpsampleLog;
+    if (!interpolateCfaToFullResolution(rebuilt.sCfa, rebuilt.sChannels,
+                                       rebuilt.width, rebuilt.height,
+                                       rebuilt.sUpsampled, sUpsampleLog)) {
+        error = QStringLiteral("Failed to interpolate S CFA to full resolution.");
+        return false;
+    }
+    if (!interpolateCfaToFullResolution(rebuilt.rCfa, rebuilt.rChannels,
+                                       rebuilt.width, rebuilt.height,
+                                       rebuilt.rUpsampled, rUpsampleLog)) {
+        error = QStringLiteral("Failed to interpolate R CFA to full resolution.");
+        return false;
+    }
+    rebuilt.upsampledWidth = rebuilt.width;
+    rebuilt.upsampledHeight = rebuilt.height;
 
     QImage embeddedThumb;
     if (extractEmbeddedThumbnail(inputPath, embeddedThumb, nullptr)) {
@@ -2508,6 +2647,16 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
         const double scale = 1.0 / neutralG;
         metadata.asShotNeutral = {neutralR * scale, 1.0, neutralB * scale};
         metadata.hasAsShotNeutral = true;
+        // Compute tint from G1 vs G2 difference: positive = green cast, negative = magenta cast
+        const double neutralG1 = 1.0 / static_cast<double>(color.cam_mul[1]);
+        const double g2Mul = color.cam_mul[3] > 0.0f ? color.cam_mul[3] : color.cam_mul[1];
+        const double neutralG2 = 1.0 / static_cast<double>(g2Mul);
+        metadata.asShotTint = (neutralG2 > 0.0) ? ((neutralG1 - neutralG2) / neutralG2) * 100.0 : 0.0;
+        logProcessing("AsShotNeutral extracted: cam_mul[0]=%.4f [1]=%.4f [2]=%.4f [3]=%.4f -> neutral R=%.4f G=%.4f B=%.4f -> asShotNeutral={%.4f, 1.0, %.4f} tint=%.2f",
+                      color.cam_mul[0], color.cam_mul[1], color.cam_mul[2], color.cam_mul[3],
+                      neutralR, neutralG, neutralB,
+                      metadata.asShotNeutral[0], metadata.asShotNeutral[2],
+                      metadata.asShotTint);
     }
 
     bool hasColorMatrix = false;
@@ -2553,7 +2702,23 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
     metadata.colorMatrix1 = collapsedColorMatrix;
     metadata.hasColorMatrix1 = hasColorMatrix;
 
-    logProcessing("selected shot metadata: shot=%d white=%u black=[%.2f %.2f %.2f %.2f] neutral=[%.5f %.5f %.5f] colorMatrix=%d",
+    // Extract FujiCurve tone curve (65536 entries of 16-bit values)
+    bool hasCurveData = false;
+    metadata.curve.resize(65536);
+    for (int i = 0; i < 65536; ++i) {
+        if (raw.imgdata.color.curve[i] != i) {  // curve is initialized to identity
+            metadata.curve.data()[i] = raw.imgdata.color.curve[i];
+            hasCurveData = true;
+        } else {
+            metadata.curve.data()[i] = static_cast<unsigned short>(i);
+        }
+    }
+    metadata.hasCurve = hasCurveData;
+    if (hasCurveData) {
+        logProcessing("FujiCurve extracted: curve identity=%s", hasCurveData ? "no" : "yes");
+    }
+
+    logProcessing("selected shot metadata: shot=%d white=%u black=[%.2f %.2f %.2f %.2f] neutral=[%.5f %.5f %.5f] colorMatrix=%d curve=%d",
                   shotSelect,
                   metadata.whiteLevel,
                   metadata.blackLevels[0],
@@ -2563,7 +2728,8 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
                   metadata.asShotNeutral[0],
                   metadata.asShotNeutral[1],
                   metadata.asShotNeutral[2],
-                  metadata.hasColorMatrix1 ? 1 : 0);
+                  metadata.hasColorMatrix1 ? 1 : 0,
+                  metadata.hasCurve ? 1 : 0);
 
     result = raw.raw2image();
     if (result != LIBRAW_SUCCESS) {
@@ -3412,6 +3578,59 @@ bool SuperCCDProcessor::readLinearPlaneRgb(const QString &inputPath,
                   height,
                   static_cast<unsigned long long>(packed),
                   static_cast<unsigned long long>(collisions));
+    return true;
+}
+
+// Export FujiCurve as CSV LUT file (compatible with RawTherapee and other editors)
+bool SuperCCDMetadata::exportCurveToCsv(const QString &filePath) const
+{
+    if (!hasCurve) {
+        return false;
+    }
+    QFile file(filePath);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        return false;
+    }
+    QTextStream out(&file);
+    out << "Index,Value\n";
+    for (int i = 0; i < 65536; ++i) {
+        out << i << "," << curve.data()[i] << "\n";
+    }
+    file.close();
+    return true;
+}
+
+// Export as 3DL LUT file (for DaVinci Resolve, Color Finale, etc.)
+bool SuperCCDMetadata::exportCurveTo3dl(const QString &filePath) const
+{
+    if (!hasCurve) {
+        return false;
+    }
+    std::ofstream file(filePath.toStdString(), std::ios::binary);
+    if (!file.is_open()) {
+        return false;
+    }
+    // 3DL format: 65x65x65 cube of RGB triples
+    // Input is linear 0-65535, output is also 0-65535 mapped through curve
+    // We'll create a reduced 17x17x17 cube for smaller file size
+    const int size = 17;
+    for (int b = 0; b < size; ++b) {
+        for (int g = 0; g < size; ++g) {
+            for (int r = 0; r < size; ++r) {
+                // Map grid position to 0-65535 range
+                unsigned short inR = static_cast<unsigned short>((r * 65535) / (size - 1));
+                unsigned short inG = static_cast<unsigned short>((g * 65535) / (size - 1));
+                unsigned short inB = static_cast<unsigned short>((b * 65535) / (size - 1));
+                // Apply curve to each channel
+                unsigned short outR = curve.data()[inR];
+                unsigned short outG = curve.data()[inG];
+                unsigned short outB = curve.data()[inB];
+                // Output as text: R G B (0-255 range for compatibility)
+                file << (outR >> 8) << " " << (outG >> 8) << " " << (outB >> 8) << "\n";
+            }
+        }
+    }
+    file.close();
     return true;
 }
 

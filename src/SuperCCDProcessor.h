@@ -35,6 +35,7 @@ struct SuperCCDMetadata {
     bool hasBlackLevels = false;
     std::array<double, 3> asShotNeutral = {1.0, 1.0, 1.0};
     bool hasAsShotNeutral = false;
+    double asShotTint = 0.0;  // Tint adjustment for green channel balance
     std::array<double, 9> colorMatrix1 = {
         1.0, 0.0, 0.0,
         0.0, 1.0, 0.0,
@@ -45,6 +46,19 @@ struct SuperCCDMetadata {
     bool hasBaselineExposure = false;
     int fujiWidth = 0;
     QImage embeddedThumbnail;
+
+    // Rotation/flip info from RAF (0=none, 1=90CCW, 2=180, 3=270, negative=mirrored)
+    int flip = 0;
+    bool hasFlip = false;
+
+    // FujiCurve tone curve data (65536 entries of 16-bit values)
+    std::vector<unsigned short> curve;
+    bool hasCurve = false;
+
+    // Export FujiCurve as CSV LUT file
+    bool exportCurveToCsv(const QString &filePath) const;
+    // Export as 3DL LUT file (for color grading software)
+    bool exportCurveTo3dl(const QString &filePath) const;
 };
 
 class SuperCCDProcessor
@@ -75,8 +89,12 @@ private:
         std::vector<uint8_t> sChannels;
         std::vector<uint8_t> rChannels;
         std::vector<uint16_t> projectedR;
+        std::vector<uint16_t> sUpsampled;  // S upsampled to full resolution (same size as CFA)
+        std::vector<uint16_t> rUpsampled;  // R upsampled to full resolution (same size as CFA)
         int width = 0;
         int height = 0;
+        int upsampledWidth = 0;  // Same as width (kept for API compatibility)
+        int upsampledHeight = 0;  // Same as height (kept for API compatibility)
         int bitDepth = 0;
         SuperCCDMetadata metadata;
     };

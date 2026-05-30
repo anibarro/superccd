@@ -5,6 +5,8 @@ set "REPO_ROOT=%~dp0"
 set "BUILD_DIR=%REPO_ROOT%build"
 set "MODE=%~1"
 set "PACKAGE_NAME=%~2"
+if not defined QT_DIR set "QT_DIR=C:\Qt\6.10.2\msvc2022_64"
+if not defined VCPKG_ROOT set "VCPKG_ROOT=C:\src\vcpkg"
 
 if not defined QT_DIR (
   echo QT_DIR is not set.

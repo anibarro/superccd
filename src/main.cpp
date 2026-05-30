@@ -15,6 +15,12 @@
 #include <QDateTime>
 #include <QIcon>
 
+// APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
+// If not defined (e.g., standalone compilation), use a default
+#ifndef APP_VERSION_STRING
+#define APP_VERSION_STRING "0.9.2"
+#endif
+
 static void write_log_message(const char *msg)
 {
 #ifdef _WIN32
@@ -92,6 +98,13 @@ int main(int argc, char *argv[])
                 settings.exportMode = ExportMode::Linear12MPExperimental;
             } else if (std::strncmp(argv[i], "--linear-chroma=", 16) == 0) {
                 settings.linearChromaSuppression = std::clamp(std::atof(argv[i] + 16), 0.0, 1.0);
+            } else if (std::strncmp(argv[i], "--delay=", 8) == 0) {
+                settings.rTransitionDelay = std::clamp(std::atof(argv[i] + 8), 0.0, 1.0);
+            } else if (std::strncmp(argv[i], "--smoothness=", 12) == 0) {
+                settings.rTransitionSmoothness = std::clamp(std::atof(argv[i] + 12), 0.0, 1.0);
+            } else if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-v") == 0) {
+                printf("SuperCCD2DNG version %s\n", APP_VERSION_STRING);
+                return 0;
             }
         }
 

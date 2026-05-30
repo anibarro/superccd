@@ -39,6 +39,7 @@ private slots:
     void onPreviewZoomChanged(int value);
     void onPreviewExposureChanged(int value);
     void onPreviewWhiteBalanceChanged(int value);
+    void onPreviewTintChanged(int value);
     void onSaveDefaults();
     void onResetDefaults();
     void onAutoPreviewTimer();
@@ -59,7 +60,6 @@ private:
 
     QListWidget *m_fileList;
     QLineEdit *m_outputFolder;
-    QRadioButton *m_radio6MPCfa;
     QSlider *m_rTransitionDelaySlider;
     QLabel *m_rTransitionDelayValueLabel;
     QSlider *m_rTransitionSmoothnessSlider;
@@ -70,6 +70,8 @@ private:
     QLabel *m_previewExposureValueLabel;
     QSlider *m_previewWhiteBalanceSlider;
     QLabel *m_previewWhiteBalanceValueLabel;
+    QSlider *m_previewTintSlider;
+    QLabel *m_previewTintValueLabel;
     QComboBox *m_previewRotationCombo;
     QCheckBox *m_autoPreviewCheckBox;
     QScrollArea *m_previewScrollArea;

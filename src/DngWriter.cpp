@@ -59,6 +59,21 @@ namespace {
 #ifndef TIFFTAG_BASELINEEXPOSURE
 #define TIFFTAG_BASELINEEXPOSURE 50730
 #endif
+#ifndef TIFFTAG_FNUMBER
+#define TIFFTAG_FNUMBER 33437
+#endif
+#ifndef TIFFTAG_EXPOSURETIME
+#define TIFFTAG_EXPOSURETIME 33434
+#endif
+#ifndef TIFFTAG_ISOSPEEDRATINGS
+#define TIFFTAG_ISOSPEEDRATINGS 37393
+#endif
+#ifndef TIFFTAG_EXPOSURETIME
+#define TIFFTAG_EXPOSURETIME 33434
+#endif
+#ifndef TIFFTAG_ISOSPEEDRATINGS
+#define TIFFTAG_ISOSPEEDRATINGS 37393
+#endif
 #ifndef TIFFTAG_PHOTOMETRIC
 #define TIFFTAG_PHOTOMETRIC 262
 #endif
@@ -130,7 +145,9 @@ static const TIFFFieldInfo dngFieldInfo[] = {
     { TIFFTAG_DEFAULTSCALE, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_RATIONAL, FIELD_CUSTOM, 1, 1, const_cast<char *>("DefaultScale") },
     { TIFFTAG_COLORMATRIX1, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_SRATIONAL, FIELD_CUSTOM, 1, 1, const_cast<char *>("ColorMatrix1") },
     { TIFFTAG_ASSHOTNEUTRAL, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_RATIONAL, FIELD_CUSTOM, 1, 1, const_cast<char *>("AsShotNeutral") },
-    { TIFFTAG_BASELINEEXPOSURE, 1, 1, TIFF_SRATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("BaselineExposure") },
+    { TIFFTAG_FNUMBER, 1, 1, TIFF_RATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("FNumber") },
+    { TIFFTAG_EXPOSURETIME, 1, 1, TIFF_RATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("ExposureTime") },
+    { TIFFTAG_ISOSPEEDRATINGS, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_SHORT, FIELD_CUSTOM, 1, 1, const_cast<char *>("ISOSpeedRatings") },
 };
 
 static const TIFFField *findTiffField(TIFF *tif, uint32_t tag, TIFFDataType type)
@@ -198,7 +215,29 @@ static void setSRationalArrayField(TIFF *tif, uint32_t tag, uint32_t count, cons
 
 static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
 {
-    TIFFSetField(tif, tag, static_cast<double>(value));
+    // SRATIONAL is signed rational: (numerator, denominator)
+    if (value > 0.0f) {
+        TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
+    } else if (value < 0.0f) {
+        TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
+    } else {
+        TIFFSetField(tif, tag, 0, 1);
+    }
+}
+
+static void setSingleRationalField(TIFF *tif, uint32_t tag, float value)
+{
+    // RATIONAL is two unsigned 32-bit integers: (numerator, denominator)
+    // For example, 0.004s (1/250) -> (1, 250), 2.5s -> (5, 2)
+    if (value > 0.0f) {
+        float inv = 1.0f / value;
+        int denom = static_cast<int>(inv + 0.5f);
+        if (denom < 1) denom = 1;
+        if (denom > 1000000) denom = 1000000;
+        TIFFSetField(tif, tag, 1, denom);
+    } else {
+        TIFFSetField(tif, tag, 0, 1);
+    }
 }
 
 static bool writeReducedPreviewDirectory(TIFF *tif, const QImage &thumbnail)
@@ -353,7 +392,46 @@ bool writeDngWithLibTiff(const QString &outputPath,
           logProcessing("writing BaselineExposure tag: %.6f", baselineExposure);
           setSingleSRationalField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
       }
-
+      if (metadata.aperture > 0.0) {
+          const float fNumber = static_cast<float>(metadata.aperture);
+          logProcessing("writing FNumber tag: %.2f", fNumber);
+          setSingleRationalField(tif, TIFFTAG_FNUMBER, fNumber);
+      }
+      if (metadata.shutter > 0.0) {
+          const float exposureTime = static_cast<float>(metadata.shutter);
+          logProcessing("writing ExposureTime tag: %.6f", exposureTime);
+          setSingleRationalField(tif, TIFFTAG_EXPOSURETIME, exposureTime);
+      }
+      if (metadata.iso > 0) {
+          const uint16_t iso = static_cast<uint16_t>(metadata.iso);
+          logProcessing("writing ISOSpeedRatings tag: %u", iso);
+          TIFFSetField(tif, TIFFTAG_ISOSPEEDRATINGS, 1, &iso);
+      }
+      if (metadata.hasFlip) {
+          // LibRaw flip: 0=none, 1=90CCW, 2=180, 3=270, negative=mirrored
+          // TIFF orientation: 1=TLL, 2=TR, 3=BRL, 4=BL, 5=LR, 6=RT, 7=RB, 8=LB
+          uint16_t orientation = 1; // default: normal
+          const int flip = metadata.flip;
+          if (flip == 1) {
+              orientation = 6; // RIGHTTOP - 90° CCW
+          } else if (flip == 2) {
+              orientation = 3; // BOTRIGHT - 180°
+          } else if (flip == 3) {
+              orientation = 8; // LEFTBOT - 270° (90° CW)
+          } else if (flip < 0) {
+              // Mirrored - use negative flip to determine base orientation
+              int baseFlip = -flip;
+              if (baseFlip == 1) {
+                  orientation = 5; // LEFTOP - mirrored 90° CCW
+              } else if (baseFlip == 2) {
+                  orientation = 2; // TOPRIGHT - mirrored horizontal
+              } else if (baseFlip == 3) {
+                  orientation = 7; // RIGHTBOT - mirrored 90° CW
+              }
+          }
+          logProcessing("writing Orientation tag: %d (from RAF flip=%d)", orientation, flip);
+          TIFFSetField(tif, TIFFTAG_ORIENTATION, orientation);
+      }
     logProcessing("TIFFSetField calls completed");
 
     for (int row = 0; row < height; ++row) {

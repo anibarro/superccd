@@ -9,6 +9,7 @@
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QFormLayout>
+#include <QGroupBox>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QLineEdit>
@@ -32,11 +33,12 @@
 #include <algorithm>
 
 namespace {
-constexpr int kDefaultDelaySliderValue = 0;
-constexpr int kDefaultSmoothnessSliderValue = 65;
-constexpr int kDefaultPreviewExposureSliderValue = 20;
+constexpr int kDefaultDelaySliderValue = 50;
+constexpr int kDefaultSmoothnessSliderValue = 50;
+constexpr int kDefaultPreviewExposureSliderValue = 0;
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
-constexpr int kDefaultPreviewZoomSliderValue = 100;
+constexpr int kDefaultPreviewTintSliderValue = 0;
+constexpr int kDefaultPreviewZoomSliderValue = 20;
 constexpr bool kDefaultAutoPreview = false;
 
 QSettings appSettings()
@@ -90,7 +92,6 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_fileList(new QListWidget(this))
     , m_outputFolder(new QLineEdit(this))
-    , m_radio6MPCfa(new QRadioButton(tr("6MP Raw CFA"), this))
     , m_rTransitionDelaySlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionDelayValueLabel(new QLabel(this))
     , m_rTransitionSmoothnessSlider(new QSlider(Qt::Horizontal, this))
@@ -101,6 +102,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewExposureValueLabel(new QLabel(this))
     , m_previewWhiteBalanceSlider(new QSlider(Qt::Horizontal, this))
     , m_previewWhiteBalanceValueLabel(new QLabel(this))
+    , m_previewTintSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewTintValueLabel(new QLabel(this))
     , m_previewRotationCombo(new QComboBox(this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
     , m_previewScrollArea(new QScrollArea(this))
@@ -127,22 +130,26 @@ MainWindow::MainWindow(QWidget *parent)
         tr("Note: the first preview or conversion for a RAF file is slower because the app has to decode and cache the raw data."),
         this);
 
-    m_radio6MPCfa->setChecked(true);
     m_rTransitionDelaySlider->setRange(0, 100);
     m_rTransitionDelaySlider->setValue(kDefaultDelaySliderValue);
-    m_rTransitionDelayValueLabel->setText(QStringLiteral("0.00"));
+    m_rTransitionDelayValueLabel->setText(QString::number(kDefaultDelaySliderValue / 100.0, 'f', 2));
     m_rTransitionSmoothnessSlider->setRange(0, 100);
     m_rTransitionSmoothnessSlider->setValue(kDefaultSmoothnessSliderValue);
-    m_rTransitionSmoothnessValueLabel->setText(QStringLiteral("0.65"));
+    m_rTransitionSmoothnessValueLabel->setText(QString::number(kDefaultSmoothnessSliderValue / 100.0, 'f', 2));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
-    m_previewZoomValueLabel->setText(QStringLiteral("100%"));
+    m_previewZoomValueLabel->setText(QStringLiteral("%1%").arg(kDefaultPreviewZoomSliderValue));
     m_previewExposureSlider->setRange(-30, 40);
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
-    m_previewExposureValueLabel->setText(QStringLiteral("+2.0 EV"));
+    m_previewExposureValueLabel->setText(QStringLiteral("%1%2 EV")
+                                             .arg(kDefaultPreviewExposureSliderValue >= 0 ? "+" : "")
+                                             .arg(kDefaultPreviewExposureSliderValue / 10.0, 0, 'f', 1));
     m_previewWhiteBalanceSlider->setRange(-100, 100);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
-    m_previewWhiteBalanceValueLabel->setText(QStringLiteral("0"));
+    m_previewWhiteBalanceValueLabel->setText(QString::number(kDefaultPreviewWhiteBalanceSliderValue));
+    m_previewTintSlider->setRange(-100, 100);
+    m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
+    m_previewTintValueLabel->setText(QString::number(kDefaultPreviewTintSliderValue));
     m_previewRotationCombo->addItem(tr("Normal"), 0);
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
@@ -170,54 +177,67 @@ MainWindow::MainWindow(QWidget *parent)
     warmupNoteLabel->setWordWrap(true);
     warmupNoteLabel->setStyleSheet(QStringLiteral("color:#808080;"));
 
-    QButtonGroup *resolutionGroup = new QButtonGroup(this);
-    resolutionGroup->addButton(m_radio6MPCfa);
-
     QHBoxLayout *fileButtonsLayout = new QHBoxLayout;
     fileButtonsLayout->addWidget(addFilesButton);
     fileButtonsLayout->addWidget(removeFilesButton);
-
-    QVBoxLayout *leftLayout = new QVBoxLayout;
-    leftLayout->addLayout(fileButtonsLayout);
-    leftLayout->addWidget(m_fileList);
-
-    QFormLayout *optionsLayout = new QFormLayout;
-    optionsLayout->addRow(tr("Output folder:"), m_outputFolder);
-    optionsLayout->addRow(tr(""), selectFolderButton);
-    optionsLayout->addRow(tr("Mode:"), m_radio6MPCfa);
-    optionsLayout->addRow(tr("R handoff delay:"), m_rTransitionDelaySlider);
-    optionsLayout->addRow(tr(""), m_rTransitionDelayValueLabel);
-    optionsLayout->addRow(tr("R transition smoothness:"), m_rTransitionSmoothnessSlider);
-    optionsLayout->addRow(tr(""), m_rTransitionSmoothnessValueLabel);
-    optionsLayout->addRow(tr("Preview exposure:"), m_previewExposureSlider);
-    optionsLayout->addRow(tr(""), m_previewExposureValueLabel);
-    optionsLayout->addRow(tr("Preview WB:"), m_previewWhiteBalanceSlider);
-    optionsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
-    optionsLayout->addRow(tr("Preview rotation:"), m_previewRotationCombo);
-    optionsLayout->addRow(tr("Preview zoom:"), m_previewZoomSlider);
-    optionsLayout->addRow(tr(""), m_previewZoomValueLabel);
-    optionsLayout->addRow(tr(""), m_autoPreviewCheckBox);
-
-    QHBoxLayout *defaultsButtonsLayout = new QHBoxLayout;
-    defaultsButtonsLayout->addWidget(m_resetDefaultsButton);
-    defaultsButtonsLayout->addWidget(m_saveDefaultsButton);
+    fileButtonsLayout->addStretch();
 
     QHBoxLayout *convertButtonsLayout = new QHBoxLayout;
     convertButtonsLayout->addWidget(m_convertCurrentButton);
     convertButtonsLayout->addWidget(m_convertAllButton);
+    convertButtonsLayout->addStretch();
+
+    QVBoxLayout *leftLayout = new QVBoxLayout;
+    leftLayout->addLayout(fileButtonsLayout);
+    leftLayout->addWidget(m_fileList, 1);
+    leftLayout->addLayout(convertButtonsLayout);
+
+    // Transition controls group box
+    QGroupBox *transitionGroup = new QGroupBox(tr("Transition Settings"), this);
+    QFormLayout *transitionLayout = new QFormLayout(transitionGroup);
+    transitionLayout->addRow(tr("Handoff delay:"), m_rTransitionDelaySlider);
+    transitionLayout->addRow(tr(""), m_rTransitionDelayValueLabel);
+    transitionLayout->addRow(tr("Smoothness:"), m_rTransitionSmoothnessSlider);
+    transitionLayout->addRow(tr(""), m_rTransitionSmoothnessValueLabel);
+
+    // Preview controls group box
+    QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
+    QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
+    previewControlsLayout->addRow(tr("Exposure:"), m_previewExposureSlider);
+    previewControlsLayout->addRow(tr(""), m_previewExposureValueLabel);
+    previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
+    previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
+    previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
+    previewControlsLayout->addRow(tr(""), m_previewTintValueLabel);
+    previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
+    previewControlsLayout->addRow(tr("Zoom:"), m_previewZoomSlider);
+    previewControlsLayout->addRow(tr(""), m_previewZoomValueLabel);
+    previewControlsLayout->addRow(tr(""), m_autoPreviewCheckBox);
+
+    QFormLayout *optionsLayout = new QFormLayout;
+    optionsLayout->addRow(tr("Output folder:"), m_outputFolder);
+    optionsLayout->addRow(tr(""), selectFolderButton);
+    optionsLayout->addRow(transitionGroup);
+    optionsLayout->addRow(previewGroup);
+
+    QHBoxLayout *defaultsButtonsLayout = new QHBoxLayout;
+    defaultsButtonsLayout->addWidget(m_resetDefaultsButton);
+    defaultsButtonsLayout->addWidget(m_saveDefaultsButton);
 
     QVBoxLayout *rightLayout = new QVBoxLayout;
     rightLayout->addLayout(optionsLayout);
     rightLayout->addLayout(defaultsButtonsLayout);
     rightLayout->addWidget(m_previewButton);
     rightLayout->addWidget(warmupNoteLabel);
-    rightLayout->addWidget(m_previewScrollArea, 1);
-    rightLayout->addLayout(convertButtonsLayout);
-    rightLayout->addWidget(m_statusLabel);
 
-    QHBoxLayout *mainLayout = new QHBoxLayout;
-    mainLayout->addLayout(leftLayout, 2);
-    mainLayout->addLayout(rightLayout, 1);
+    QHBoxLayout *topRowLayout = new QHBoxLayout;
+    topRowLayout->addLayout(leftLayout, 2);
+    topRowLayout->addLayout(rightLayout, 1);
+
+    QVBoxLayout *mainLayout = new QVBoxLayout;
+    mainLayout->addLayout(topRowLayout, 1);
+    mainLayout->addWidget(m_previewScrollArea, 2);
+    mainLayout->addWidget(m_statusLabel);
     central->setLayout(mainLayout);
 
     connect(addFilesButton, &QPushButton::clicked, this, &MainWindow::onAddFiles);
@@ -226,6 +246,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_convertCurrentButton, &QPushButton::clicked, this, &MainWindow::onConvertCurrent);
     connect(m_convertAllButton, &QPushButton::clicked, this, &MainWindow::onConvertAll);
     connect(m_previewButton, &QPushButton::clicked, this, &MainWindow::onUpdatePreview);
+    connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
+        if (row >= 0) {
+            queueAutoPreview();
+            updateControls(false);
+        }
+    });
     connect(m_resetDefaultsButton, &QPushButton::clicked, this, &MainWindow::onResetDefaults);
     connect(m_saveDefaultsButton, &QPushButton::clicked, this, &MainWindow::onSaveDefaults);
     connect(m_statusClearTimer, &QTimer::timeout, m_statusLabel, &QLabel::clear);
@@ -241,11 +267,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewZoomChanged);
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
+    connect(m_previewTintSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewTintChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
-        queueAutoPreview();
-    });
-    connect(m_radio6MPCfa, &QRadioButton::toggled, this, [this](bool) {
-        updateControls(m_busy);
         queueAutoPreview();
     });
     connect(m_autoPreviewCheckBox, &QCheckBox::toggled, this, [this](bool enabled) {
@@ -408,15 +431,39 @@ void MainWindow::onConvertCurrent()
         return;
     }
 
-    if (m_lastPreviewedInputPath.isEmpty()) {
-        showStatus(tr("Please preview a RAF file first."));
+    QListWidgetItem *currentItem = m_fileList->currentItem();
+    if (!currentItem) {
+        showStatus(tr("Please select a RAF file from the list."));
         return;
     }
 
+    const QString inputPath = listItemPath(currentItem);
     const QString outputFolder = m_outputFolder->text().trimmed();
     if (outputFolder.isEmpty()) {
         showStatus(tr("Please select an output folder."));
         return;
+    }
+
+    // If the selected file hasn't been previewed yet, render preview first
+    if (m_lastPreviewedInputPath != inputPath) {
+        showStatus(tr("Rendering preview for %1...").arg(QFileInfo(inputPath).fileName()));
+        m_busy = true;
+        updateControls(true);
+        QCoreApplication::processEvents();
+
+        QImage preview;
+        QString error;
+        if (!m_processor.renderPreview(inputPath, currentSettings(), preview, error)) {
+            showStatus(tr("Preview failed: %1").arg(error));
+            m_busy = false;
+            updateControls(false);
+            return;
+        }
+
+        m_currentPreviewImage = preview;
+        m_lastPreviewedInputPath = inputPath;
+        m_previewLabel->setPixmap(QPixmap::fromImage(preview.scaled(m_previewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
 
     m_busy = true;
@@ -574,21 +621,22 @@ void MainWindow::updateControls(bool busy)
 {
     m_fileList->setEnabled(!busy);
     m_outputFolder->setEnabled(!busy);
-    m_radio6MPCfa->setEnabled(!busy);
-    m_rTransitionDelaySlider->setEnabled(!busy && m_radio6MPCfa->isChecked());
-    m_rTransitionDelayValueLabel->setEnabled(m_radio6MPCfa->isChecked());
-    m_rTransitionSmoothnessSlider->setEnabled(!busy && m_radio6MPCfa->isChecked());
-    m_rTransitionSmoothnessValueLabel->setEnabled(m_radio6MPCfa->isChecked());
+    m_rTransitionDelaySlider->setEnabled(!busy);
+    m_rTransitionDelayValueLabel->setEnabled(!busy);
+    m_rTransitionSmoothnessSlider->setEnabled(!busy);
+    m_rTransitionSmoothnessValueLabel->setEnabled(!busy);
     m_previewZoomSlider->setEnabled(!busy);
     m_previewZoomValueLabel->setEnabled(!busy);
     m_previewExposureSlider->setEnabled(!busy);
     m_previewExposureValueLabel->setEnabled(!busy);
     m_previewWhiteBalanceSlider->setEnabled(!busy);
     m_previewWhiteBalanceValueLabel->setEnabled(!busy);
+    m_previewTintSlider->setEnabled(!busy);
+    m_previewTintValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
     m_autoPreviewCheckBox->setEnabled(!busy);
-    m_convertCurrentButton->setEnabled(!busy && !m_lastPreviewedInputPath.isEmpty());
+    m_convertCurrentButton->setEnabled(!busy && m_fileList->currentItem() != nullptr);
     m_convertAllButton->setEnabled(!busy);
     m_resetDefaultsButton->setEnabled(!busy);
     m_saveDefaultsButton->setEnabled(!busy);
@@ -618,6 +666,12 @@ void MainWindow::onPreviewWhiteBalanceChanged(int value)
     updatePreviewDisplay();
 }
 
+void MainWindow::onPreviewTintChanged(int value)
+{
+    m_previewTintValueLabel->setText(QString::number(value));
+    updatePreviewDisplay();
+}
+
 void MainWindow::updatePreviewDisplay()
 {
     if (m_currentPreviewImage.isNull()) {
@@ -644,12 +698,14 @@ void MainWindow::updatePreviewDisplay()
     const double wbBias = static_cast<double>(m_previewWhiteBalanceSlider->value()) / 100.0;
     const double redScale = std::pow(2.0, wbBias);
     const double blueScale = std::pow(2.0, -wbBias);
+    const double tintBias = static_cast<double>(m_previewTintSlider->value()) / 100.0;
+    const double greenScale = std::pow(2.0, -tintBias);
     for (int y = 0; y < displayImage.height(); ++y) {
         QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
         for (int x = 0; x < displayImage.width(); ++x) {
             const QRgb src = scanLine[x];
             const int r = std::clamp(static_cast<int>(qRed(src) * exposureScale * redScale + 0.5), 0, 255);
-            const int g = std::clamp(static_cast<int>(qGreen(src) * exposureScale + 0.5), 0, 255);
+            const int g = std::clamp(static_cast<int>(qGreen(src) * exposureScale * greenScale + 0.5), 0, 255);
             const int b = std::clamp(static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5), 0, 255);
             scanLine[x] = qRgb(r, g, b);
         }
@@ -691,10 +747,8 @@ void MainWindow::loadSavedDefaults()
     QSettings settingsStore = appSettings();
     ConversionSettings defaults;
     defaults.exportMode = ExportMode::RawCfa6MP;
-    defaults.rTransitionDelay = settingsStore.value(QStringLiteral("defaults/rTransitionDelay"), 0.0).toDouble();
-    defaults.rTransitionSmoothness = settingsStore.value(QStringLiteral("defaults/rTransitionSmoothness"), 0.65).toDouble();
-
-    m_radio6MPCfa->setChecked(true);
+    defaults.rTransitionDelay = settingsStore.value(QStringLiteral("defaults/rTransitionDelay"), 0.5).toDouble();
+    defaults.rTransitionSmoothness = settingsStore.value(QStringLiteral("defaults/rTransitionSmoothness"), 0.5).toDouble();
 
     applyParameterSettings(defaults);
 
@@ -708,6 +762,11 @@ void MainWindow::loadSavedDefaults()
     m_previewWhiteBalanceSlider->setValue(std::clamp(previewWhiteBalance,
                                                      m_previewWhiteBalanceSlider->minimum(),
                                                      m_previewWhiteBalanceSlider->maximum()));
+    const int previewTint = settingsStore.value(QStringLiteral("defaults/previewTintSlider"),
+                                                kDefaultPreviewTintSliderValue).toInt();
+    m_previewTintSlider->setValue(std::clamp(previewTint,
+                                             m_previewTintSlider->minimum(),
+                                             m_previewTintSlider->maximum()));
     const int previewRotation = settingsStore.value(QStringLiteral("defaults/previewRotation"), 0).toInt();
     const int rotationIndex = m_previewRotationCombo->findData(previewRotation);
     m_previewRotationCombo->setCurrentIndex(rotationIndex >= 0 ? rotationIndex : 0);
@@ -724,6 +783,7 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/rTransitionSmoothness"), settings.rTransitionSmoothness);
     settingsStore.setValue(QStringLiteral("defaults/previewExposureSlider"), m_previewExposureSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewWhiteBalanceSlider"), m_previewWhiteBalanceSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewTintSlider"), m_previewTintSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
     settingsStore.setValue(QStringLiteral("defaults/autoPreview"), m_autoPreviewCheckBox->isChecked());
 }
@@ -736,16 +796,14 @@ void MainWindow::onSaveDefaults()
 
 void MainWindow::onResetDefaults()
 {
-    if (m_radio6MPCfa->isChecked() == false) {
-        m_radio6MPCfa->setChecked(true);
-    }
     ConversionSettings defaults;
     defaults.exportMode = ExportMode::RawCfa6MP;
-    defaults.rTransitionDelay = 0.0;
-    defaults.rTransitionSmoothness = 0.65;
+    defaults.rTransitionDelay = 0.5;
+    defaults.rTransitionSmoothness = 0.5;
     applyParameterSettings(defaults);
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
+    m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     queueAutoPreview();
