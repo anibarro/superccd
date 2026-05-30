@@ -15,6 +15,7 @@
 #include <QLineEdit>
 #include <QListWidget>
 #include <QListWidgetItem>
+#include <QMimeData>
 #include <QMouseEvent>
 #include <QPixmap>
 #include <QPushButton>
@@ -111,6 +112,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewButton(new QPushButton(tr("Update Preview"), this))
     , m_convertCurrentButton(new QPushButton(tr("Convert"), this))
     , m_convertAllButton(new QPushButton(tr("Convert All"), this))
+    , m_exportPlaneImagesCheckBox(new QCheckBox(tr("Export S/R Planes"), this))
     , m_resetDefaultsButton(new QPushButton(tr("Reset Defaults"), this))
     , m_saveDefaultsButton(new QPushButton(tr("Save Current As Default"), this))
     , m_statusLabel(new QLabel(tr("Ready."), this))
@@ -119,6 +121,7 @@ MainWindow::MainWindow(QWidget *parent)
 {
     setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
     resize(1180, 760);
+    setAcceptDrops(true);
 
     QWidget *central = new QWidget(this);
     setCentralWidget(central);
@@ -155,10 +158,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
     m_previewRotationCombo->addItem(tr("Rotate 90 CCW"), 270);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
+    m_exportPlaneImagesCheckBox->setChecked(false);
     m_fileList->setSelectionMode(QAbstractItemView::SingleSelection);
     m_fileList->setIconSize(QSize(96, 96));
     m_fileList->setUniformItemSizes(false);
     m_fileList->setWordWrap(true);
+    m_fileList->setAcceptDrops(true);
+    m_fileList->setDropIndicatorShown(true);
     m_previewLabel->setMinimumSize(480, 480);
     m_previewLabel->setAlignment(Qt::AlignCenter);
     m_previewLabel->setStyleSheet(QStringLiteral("background:#202020; color:#d0d0d0; border:1px solid #505050;"));
@@ -185,6 +191,7 @@ MainWindow::MainWindow(QWidget *parent)
     QHBoxLayout *convertButtonsLayout = new QHBoxLayout;
     convertButtonsLayout->addWidget(m_convertCurrentButton);
     convertButtonsLayout->addWidget(m_convertAllButton);
+    convertButtonsLayout->addWidget(m_exportPlaneImagesCheckBox);
     convertButtonsLayout->addStretch();
 
     QVBoxLayout *leftLayout = new QVBoxLayout;
@@ -341,6 +348,72 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::dragEnterEvent(QDragEnterEvent *event)
+{
+    if (event->mimeData()->hasUrls()) {
+        // Accept if at least one URL is a RAF file
+        for (const QUrl &url : event->mimeData()->urls()) {
+            if (url.isLocalFile()) {
+                const QString file = url.toLocalFile();
+                if (file.endsWith(QLatin1String(".raf"), Qt::CaseInsensitive)) {
+                    event->acceptProposedAction();
+                    return;
+                }
+            }
+        }
+    }
+    event->ignore();
+}
+
+void MainWindow::dropEvent(QDropEvent *event)
+{
+    if (!event->mimeData()->hasUrls()) {
+        event->ignore();
+        return;
+    }
+
+    QStringList newFiles;
+    for (const QUrl &url : event->mimeData()->urls()) {
+        if (!url.isLocalFile())
+            continue;
+        const QString file = url.toLocalFile();
+        if (!file.endsWith(QLatin1String(".raf"), Qt::CaseInsensitive))
+            continue;
+
+        // Check if already in list
+        bool exists = false;
+        for (int i = 0; i < m_fileList->count(); ++i) {
+            if (listItemPath(m_fileList->item(i)) == file) {
+                exists = true;
+                break;
+            }
+        }
+        if (!exists) {
+            newFiles.append(file);
+        }
+    }
+
+    if (!newFiles.isEmpty()) {
+        for (const QString &file : newFiles) {
+            const QFileInfo info(file);
+            auto *item = new QListWidgetItem(QString(), m_fileList);
+            item->setToolTip(file);
+            item->setData(Qt::UserRole, file);
+            item->setSizeHint(QSize(0, 104));
+            QImage thumbnail;
+            SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, nullptr);
+            m_fileList->setItemWidget(item, createFileListRow(info.fileName(), file, thumbnail, m_fileList));
+        }
+
+        if (!m_fileList->currentItem() && m_fileList->count() > 0) {
+            m_fileList->setCurrentRow(m_fileList->count() - 1);
+        }
+        showStatus(tr("Added %1 file(s) by drag and drop.").arg(newFiles.size()));
+    }
+
+    event->acceptProposedAction();
 }
 
 void MainWindow::onAddFiles()
@@ -838,5 +911,6 @@ ConversionSettings MainWindow::currentSettings() const
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
     settings.previewRotation = m_previewRotationCombo->currentData().toInt();
     settings.linearChromaSuppression = 1.0;
+    settings.exportPlaneImages = m_exportPlaneImagesCheckBox->isChecked();
     return settings;
 }

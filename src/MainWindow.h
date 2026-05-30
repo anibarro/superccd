@@ -28,6 +28,8 @@ public:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void dragEnterEvent(QDragEnterEvent *event) override;
+    void dropEvent(QDropEvent *event) override;
 
 private slots:
     void onAddFiles();
@@ -79,6 +81,7 @@ private:
     QPushButton *m_previewButton;
     QPushButton *m_convertCurrentButton;
     QPushButton *m_convertAllButton;
+    QCheckBox *m_exportPlaneImagesCheckBox;
     QPushButton *m_resetDefaultsButton;
     QPushButton *m_saveDefaultsButton;
     QLabel *m_statusLabel;

@@ -20,6 +20,7 @@ struct ConversionSettings {
     double rTransitionDelay = 0.0;
     double rTransitionSmoothness = 0.65;
     double linearChromaSuppression = 1.0;
+    bool exportPlaneImages = false;  // Export S and R plane images alongside merged DNG
 };
 
 struct SuperCCDMetadata {

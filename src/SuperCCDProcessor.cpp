@@ -2279,16 +2279,24 @@ bool SuperCCDProcessor::process(const QString &inputPath,
             {"_sr_merged.dng", &mergedRgb},
         };
 
-        for (const OutputSpec &outputSpec : outputs) {
-            QString planeOutputPath = outputPath;
-            if (planeOutputPath.endsWith(QLatin1String(".dng"), Qt::CaseInsensitive)) {
-                planeOutputPath.chop(4);
-                planeOutputPath += QString::fromLatin1(outputSpec.suffix);
-            } else {
-                planeOutputPath += QString::fromLatin1(outputSpec.suffix);
-            }
-            if (!DngWriter::writeLinearDng(planeOutputPath, *outputSpec.buffer, sWidth, sHeight, 16, metadata, error)) {
+        if (!settings.exportPlaneImages) {
+            // Only export merged DNG with original filename
+            if (!DngWriter::writeLinearDng(outputPath, mergedRgb, sWidth, sHeight, 16, metadata, error)) {
                 return false;
+            }
+        } else {
+            // Export all plane images
+            for (const OutputSpec &outputSpec : outputs) {
+                QString planeOutputPath = outputPath;
+                if (planeOutputPath.endsWith(QLatin1String(".dng"), Qt::CaseInsensitive)) {
+                    planeOutputPath.chop(4);
+                    planeOutputPath += QString::fromLatin1(outputSpec.suffix);
+                } else {
+                    planeOutputPath += QString::fromLatin1(outputSpec.suffix);
+                }
+                if (!DngWriter::writeLinearDng(planeOutputPath, *outputSpec.buffer, sWidth, sHeight, 16, metadata, error)) {
+                    return false;
+                }
             }
         }
         return true;
@@ -2330,15 +2338,9 @@ bool SuperCCDProcessor::process(const QString &inputPath,
         {"SR", "_sr_merged.dng", &mergedSr},
     };
 
-    for (const OutputSpec &outputSpec : outputs) {
-        QString planeOutputPath = outputPath;
-        if (planeOutputPath.endsWith(QLatin1String(".dng"), Qt::CaseInsensitive)) {
-            planeOutputPath.chop(4);
-            planeOutputPath += QString::fromLatin1(outputSpec.suffix);
-        } else {
-            planeOutputPath += QString::fromLatin1(outputSpec.suffix);
-        }
-
+    // If not exporting plane images, only export merged DNG with original filename
+    if (!settings.exportPlaneImages) {
+        const OutputSpec &outputSpec = outputs[2]; // SR merged
         SuperCCDMetadata outputMetadata = m_cfaPreviewCache.metadata;
         uint16_t outputWhiteLevel = 0;
         for (uint16_t sample : *outputSpec.buffer) {
@@ -2346,46 +2348,89 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                 outputWhiteLevel = sample;
             }
         }
-        outputMetadata.whiteLevel = outputWhiteLevel;
-        if (std::strcmp(outputSpec.label, "SR") == 0) {
-            const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
-                ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
-                : 1.0;
-            const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
-                std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
-            outputMetadata.whiteLevel = mergedWhiteLevel;
-            outputMetadata.baselineExposure = 0.0;
-            outputMetadata.hasBaselineExposure = false;
-            logProcessing("merged CFA metadata before write: sourceWhite=%.6f outputWhite=%u appliedScale=%.9f baselineExposure=%.6f hasBaselineExposure=%d",
-                          sourceWhiteLevel,
-                          outputMetadata.whiteLevel,
-                          appliedOutputScale,
-                          outputMetadata.baselineExposure,
-                          outputMetadata.hasBaselineExposure ? 1 : 0);
-        }
+        const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
+            ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
+            : 1.0;
+        const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
+            std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
+        outputMetadata.whiteLevel = mergedWhiteLevel;
+        outputMetadata.baselineExposure = 0.0;
+        outputMetadata.hasBaselineExposure = false;
 
-        logProcessing("starting DngWriter::writeDng: %s (%dx%d)",
-                      planeOutputPath.toUtf8().constData(),
+        logProcessing("starting DngWriter::writeDng (merged only): %s (%dx%d)",
+                      outputPath.toUtf8().constData(),
                       m_cfaPreviewCache.width,
                       m_cfaPreviewCache.height);
-        if (!DngWriter::writeDng(planeOutputPath,
+        if (!DngWriter::writeDng(outputPath,
                                  *outputSpec.buffer,
                                  m_cfaPreviewCache.width,
                                  m_cfaPreviewCache.height,
                                  m_cfaPreviewCache.bitDepth,
                                  outputMetadata,
                                  error)) {
-            logProcessing("writeDng failed for %s: %s",
-                          outputSpec.label,
-                          error.toUtf8().constData());
-            if (firstError.isEmpty()) {
-                firstError = error;
-            }
-            continue;
+            logProcessing("writeDng failed for merged output: %s", error.toUtf8().constData());
+            return false;
         }
-
         wroteAny = true;
-        logProcessing("DngWriter::writeDng returned successfully for %s", planeOutputPath.toUtf8().constData());
+        logProcessing("DngWriter::writeDng returned successfully for merged output");
+    } else {
+        for (const OutputSpec &outputSpec : outputs) {
+            QString planeOutputPath = outputPath;
+            if (planeOutputPath.endsWith(QLatin1String(".dng"), Qt::CaseInsensitive)) {
+                planeOutputPath.chop(4);
+                planeOutputPath += QString::fromLatin1(outputSpec.suffix);
+            } else {
+                planeOutputPath += QString::fromLatin1(outputSpec.suffix);
+            }
+
+            SuperCCDMetadata outputMetadata = m_cfaPreviewCache.metadata;
+            uint16_t outputWhiteLevel = 0;
+            for (uint16_t sample : *outputSpec.buffer) {
+                if (sample > outputWhiteLevel) {
+                    outputWhiteLevel = sample;
+                }
+            }
+            outputMetadata.whiteLevel = outputWhiteLevel;
+            if (std::strcmp(outputSpec.label, "SR") == 0) {
+                const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
+                    ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
+                    : 1.0;
+                const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
+                    std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
+                outputMetadata.whiteLevel = mergedWhiteLevel;
+                outputMetadata.baselineExposure = 0.0;
+                outputMetadata.hasBaselineExposure = false;
+                logProcessing("merged CFA metadata before write: sourceWhite=%.6f outputWhite=%u appliedScale=%.9f baselineExposure=%.6f hasBaselineExposure=%d",
+                              sourceWhiteLevel,
+                              outputMetadata.whiteLevel,
+                              appliedOutputScale,
+                              outputMetadata.baselineExposure,
+                              outputMetadata.hasBaselineExposure ? 1 : 0);
+            }
+
+            logProcessing("starting DngWriter::writeDng: %s (%dx%d)",
+                          planeOutputPath.toUtf8().constData(),
+                          m_cfaPreviewCache.width,
+                          m_cfaPreviewCache.height);
+            if (!DngWriter::writeDng(planeOutputPath,
+                                     *outputSpec.buffer,
+                                     m_cfaPreviewCache.width,
+                                     m_cfaPreviewCache.height,
+                                     m_cfaPreviewCache.bitDepth,
+                                     outputMetadata,
+                                     error)) {
+                logProcessing("writeDng failed for %s: %s",
+                              outputSpec.label,
+                              error.toUtf8().constData());
+                if (firstError.isEmpty()) {
+                    firstError = error;
+                }
+                continue;
+            }
+
+            wroteAny = true;
+            logProcessing("DngWriter::writeDng returned successfully for %s", planeOutputPath.toUtf8().constData());
+        }
     }
 
     if (!wroteAny) {
