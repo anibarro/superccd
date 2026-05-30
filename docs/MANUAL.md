@@ -84,6 +84,22 @@ Preview-only white-balance bias.
 - positive values warm the preview
 - does not affect export
 
+### Preview Tint
+
+Preview-only tint adjustment for green channel balance.
+
+- negative values shift toward magenta
+- positive values shift toward green
+- does not affect export
+
+### Preview Rotation
+
+Rotates the preview display for orientation checking.
+
+- Normal, Rotate 90 CW, Rotate 180, Rotate 90 CCW
+- does not affect export
+- useful for checking image orientation before opening in RawTherapee
+
 ### Preview zoom
 
 Controls the displayed preview scale.
@@ -91,6 +107,10 @@ Controls the displayed preview scale.
 - wheel zoom is supported
 - drag with left mouse button to pan
 - zoom keeps the viewport center stable
+
+### Drag and Drop
+
+You can drag RAF files directly onto the file list to add them. The application accepts `.raf` files dropped anywhere on the list area.
 
 ## Merge Controls
 
@@ -115,6 +135,21 @@ Use it when:
 - you want a more natural rolloff
 
 The current defaults are intentionally tuned around a stable working result. Do not expect them to behave like generic HDR sliders.
+
+### Export S/R Planes
+
+When enabled, exports individual S and R plane DNG files alongside the merged result.
+
+- `*_s_pixels.dng` - the S (primary/highlight) sensor response
+- `*_r_pixels.dng` - the R (secondary/shadow) sensor response
+
+These files are useful for:
+
+- Understanding the merge behavior
+- Experimenting with alternative blending approaches
+- Diagnostic purposes
+
+The main output file `*_sr_merged.dng` is always exported regardless of this setting.
 
 ## Defaults
 
@@ -147,10 +182,6 @@ Important:
 
 - the exported DNG is currently rotated by design
 - final orientation and crop are part of the expected RawTherapee workflow
-
-Current recommendation from development testing:
-
-- `RCD + VNG4`
 
 ## Important Behavior
 
@@ -190,3 +221,42 @@ The application caches decoded `S`, `R`, and projected merge data after the firs
 ### The merged DNG opens darker than expected
 
 That is normal for the highlight-safe workflow. Adjust exposure in the raw editor.
+
+## Frequently Asked Questions
+
+### What is Super CCD SR II?
+
+The Fujifilm Super CCD SR II is a sensor technology found in the FinePix S3 Pro camera. It uses two photodiodes per pixel site - a primary "S" (Sensitivity) diode optimized for highlight capture and a secondary "R" (Range) diode optimized for shadow detail. This application merges the separate S and R captures into a single usable raw file.
+
+### Why does the output look dark?
+
+The merged DNG is intentionally highlight-safe. It preserves highlight detail by keeping the image darker overall, expecting you to adjust exposure in your raw processor. This is a deliberate tradeoff for improved dynamic range.
+
+### Why is the image rotated?
+
+The S3 Pro captures images in a rotated orientation internally. The exported DNG retains this rotation. Rotate and crop the image in RawTherapee as part of your standard workflow.
+
+
+### Can I use files from other cameras?
+
+No. This application is specifically designed for Fujifilm FinePix S3 Pro RAF files. Files from other cameras will not work.
+
+### Where are my saved settings stored?
+
+Settings are stored in your user profile via Qt's QSettings. On Windows, this is typically in the Registry under `HKEY_CURRENT_USER\SuperCCD\superccd2dng`.
+
+### What is the Export S/R Planes option?
+
+When enabled, this exports the individual S and R sensor responses as separate DNG files. These are useful for understanding the merge behavior or experimenting with alternative blending methods.
+
+### Can I convert files from the command line?
+
+Yes. Use: `superccd2dng.exe input.raf output.dng --6mp-cfa`
+
+### What does the R handoff delay do?
+
+This controls where in the highlight range the R (shadow) sensor starts being blended with the S (highlight) sensor. Higher values let S clip more before R takes over. Lower values bring R in earlier.
+
+### What does the R transition smoothness do?
+
+This controls how gradual the S to R transition is. Higher values create a smoother, more gradual blend. Lower values create a sharper transition.

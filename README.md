@@ -75,10 +75,13 @@ Important:
 - RAF file list with embedded thumbnails
 - preview of the currently selected RAF file
 - draggable and zoomable preview
-- preview exposure and white-balance controls
+- preview exposure, white-balance, and tint controls
+- preview rotation options
 - adjustable `S -> R` highlight handoff parameters
+- optional export of individual S and R plane images
 - convert current previewed RAF
 - convert all listed RAF files
+- drag-and-drop support for adding RAF files
 - save and restore default parameter values
 
 Performance note:
@@ -158,15 +161,6 @@ Example:
 ```powershell
 build\superccd2dng.exe samples\DSCF0125.RAF tests\DSCF0125.dng --6mp-cfa
 ```
-
-## RawTherapee Notes
-
-The best demosaic results seen during development came from:
-
-- `RCD + VNG4`
-
-That is not enforced by this application; it is simply the current recommended downstream workflow after rotating and cropping the exported DNG.
-
 ## Repository Structure
 
 - [src](src)
