@@ -109,6 +109,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewGammaValueLabel(new QLabel(this))
     , m_previewContrastSlider(new QSlider(Qt::Horizontal, this))
     , m_previewContrastValueLabel(new QLabel(this))
+    , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewSaturationValueLabel(new QLabel(this))
     , m_previewRotationCombo(new QComboBox(this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
     , m_previewScrollArea(new QScrollArea(this))
@@ -157,14 +159,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewTintSlider->setRange(-100, 100);
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_previewTintValueLabel->setText(QString::number(kDefaultPreviewTintSliderValue));
-    // Gamma slider: range 0-300 (0 to 3.0), default 220 (gamma 2.2)
-    m_previewGammaSlider->setRange(0, 300);
+    // Gamma slider: range 50-500 (0.5 to 5.0), default 220 (gamma 2.2)
+    m_previewGammaSlider->setRange(50, 500);
     m_previewGammaSlider->setValue(220);
     m_previewGammaValueLabel->setText(QStringLiteral("2.20"));
     // Contrast slider: range -200 to +200, default 0
     m_previewContrastSlider->setRange(-200, 200);
     m_previewContrastSlider->setValue(0);
     m_previewContrastValueLabel->setText(QStringLiteral("0"));
+    // Saturation slider: range -100 to +100, default 0
+    m_previewSaturationSlider->setRange(-100, 100);
+    m_previewSaturationSlider->setValue(0);
+    m_previewSaturationValueLabel->setText(QStringLiteral("0"));
     m_previewRotationCombo->addItem(tr("Normal"), 0);
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
@@ -224,14 +230,16 @@ MainWindow::MainWindow(QWidget *parent)
     QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
     previewControlsLayout->addRow(tr("Exposure:"), m_previewExposureSlider);
     previewControlsLayout->addRow(tr(""), m_previewExposureValueLabel);
-    previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
-    previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
-    previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
-    previewControlsLayout->addRow(tr(""), m_previewTintValueLabel);
     previewControlsLayout->addRow(tr("Gamma:"), m_previewGammaSlider);
     previewControlsLayout->addRow(tr(""), m_previewGammaValueLabel);
     previewControlsLayout->addRow(tr("Contrast:"), m_previewContrastSlider);
     previewControlsLayout->addRow(tr(""), m_previewContrastValueLabel);
+    previewControlsLayout->addRow(tr("Saturation:"), m_previewSaturationSlider);
+    previewControlsLayout->addRow(tr(""), m_previewSaturationValueLabel);
+    previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
+    previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
+    previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
+    previewControlsLayout->addRow(tr(""), m_previewTintValueLabel);
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
     previewControlsLayout->addRow(tr("Zoom:"), m_previewZoomSlider);
     previewControlsLayout->addRow(tr(""), m_previewZoomValueLabel);
@@ -293,6 +301,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewTintSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewTintChanged);
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
+    connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
     });
@@ -728,6 +737,8 @@ void MainWindow::updateControls(bool busy)
     m_previewGammaValueLabel->setEnabled(!busy);
     m_previewContrastSlider->setEnabled(!busy);
     m_previewContrastValueLabel->setEnabled(!busy);
+    m_previewSaturationSlider->setEnabled(!busy);
+    m_previewSaturationValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
     m_autoPreviewCheckBox->setEnabled(!busy);
@@ -777,6 +788,12 @@ void MainWindow::onPreviewGammaChanged(int value)
 void MainWindow::onPreviewContrastChanged(int value)
 {
     m_previewContrastValueLabel->setText(QString::number(value));
+    updatePreviewDisplay();
+}
+
+void MainWindow::onPreviewSaturationChanged(int value)
+{
+    m_previewSaturationValueLabel->setText(QString::number(value));
     updatePreviewDisplay();
 }
 
@@ -836,7 +853,11 @@ void MainWindow::updatePreviewDisplay()
         gammaLut[i] = static_cast<uint8_t>(v + 0.5);
     }
 
-    // Fast pixel processing - LUT lookup for gamma/contrast, multiplication for exposure/WB/tint
+    // Saturation adjustment: -100 to +100 maps to 0.0 to 2.0 saturation multiplier
+    const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
+    const double saturationScale = 1.0 + saturationBias;
+
+    // Fast pixel processing - LUT lookup for gamma/contrast, multiplication for exposure/WB/tint, saturation
     for (int y = 0; y < displayImage.height(); ++y) {
         QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
         for (int x = 0; x < displayImage.width(); ++x) {
@@ -848,9 +869,19 @@ void MainWindow::updatePreviewDisplay()
             int b = static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5);
 
             // Gamma/contrast via LUT (fast lookup)
-            scanLine[x] = qRgb(gammaLut[std::clamp(r, 0, 255)],
-                               gammaLut[std::clamp(g, 0, 255)],
-                               gammaLut[std::clamp(b, 0, 255)]);
+            r = gammaLut[std::clamp(r, 0, 255)];
+            g = gammaLut[std::clamp(g, 0, 255)];
+            b = gammaLut[std::clamp(b, 0, 255)];
+
+            // Apply saturation
+            if (saturationScale != 1.0) {
+                const double gray = (r + g + b) / 3.0;
+                r = static_cast<int>(std::clamp(gray + (r - gray) * saturationScale, 0.0, 255.0) + 0.5);
+                g = static_cast<int>(std::clamp(gray + (g - gray) * saturationScale, 0.0, 255.0) + 0.5);
+                b = static_cast<int>(std::clamp(gray + (b - gray) * saturationScale, 0.0, 255.0) + 0.5);
+            }
+
+            scanLine[x] = qRgb(r, g, b);
         }
     }
 

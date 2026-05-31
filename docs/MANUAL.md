@@ -69,14 +69,38 @@ Important behavior:
 
 When enabled, parameter changes trigger preview regeneration automatically after a short delay.
 
-### Preview exposure
+### Preview Exposure
 
 Preview-only control.
 
 - does not affect export
 - useful because the highlight-safe raw opens dark by design
 
-### Preview WB
+### Preview Gamma
+
+Preview-only gamma correction adjustment.
+
+- range: 0.0 to 3.0 (default 2.2)
+- lower values brighten shadows, higher values increase contrast
+- does not affect export
+
+### Preview Contrast
+
+Preview-only contrast adjustment.
+
+- range: -200 to +200 (default 0)
+- negative values reduce contrast, positive values increase contrast
+- does not affect export
+
+### Preview Saturation
+
+Preview-only saturation adjustment.
+
+- range: -100 to +100 (default 0)
+- negative values desaturate, positive values increase color intensity
+- does not affect export
+
+### Preview White Balance
 
 Preview-only white-balance bias.
 
@@ -167,6 +191,8 @@ Saved values include:
 - `R transition smoothness`
 - preview exposure
 - preview white balance
+- preview tint
+- preview rotation
 - auto-preview state
 
 ## Recommended Post-Processing

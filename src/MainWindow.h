@@ -44,6 +44,7 @@ private slots:
     void onPreviewTintChanged(int value);
     void onPreviewGammaChanged(int value);
     void onPreviewContrastChanged(int value);
+    void onPreviewSaturationChanged(int value);
     void onSaveDefaults();
     void onResetDefaults();
     void onAutoPreviewTimer();
@@ -80,6 +81,8 @@ private:
     QLabel *m_previewGammaValueLabel;
     QSlider *m_previewContrastSlider;
     QLabel *m_previewContrastValueLabel;
+    QSlider *m_previewSaturationSlider;
+    QLabel *m_previewSaturationValueLabel;
     QComboBox *m_previewRotationCombo;
     QCheckBox *m_autoPreviewCheckBox;
     QScrollArea *m_previewScrollArea;
