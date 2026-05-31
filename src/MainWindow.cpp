@@ -157,8 +157,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewTintSlider->setRange(-100, 100);
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_previewTintValueLabel->setText(QString::number(kDefaultPreviewTintSliderValue));
-    // Gamma slider: range 50-500 (0.5 to 5.0), default 220 (gamma 2.2)
-    m_previewGammaSlider->setRange(50, 500);
+    // Gamma slider: range 0-300 (0 to 3.0), default 220 (gamma 2.2)
+    m_previewGammaSlider->setRange(0, 300);
     m_previewGammaSlider->setValue(220);
     m_previewGammaValueLabel->setText(QStringLiteral("2.20"));
     // Contrast slider: range -200 to +200, default 0
