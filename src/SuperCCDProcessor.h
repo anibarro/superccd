@@ -21,6 +21,8 @@ struct ConversionSettings {
     double rTransitionSmoothness = 0.65;
     double linearChromaSuppression = 1.0;
     bool exportPlaneImages = false;  // Export S and R plane images alongside merged DNG
+    double toneGamma = 2.2;  // Preview gamma (default sRGB gamma)
+    double toneContrast = 0.0;  // Preview contrast adjustment (-0.5 to +0.5 range)
 };
 
 struct SuperCCDMetadata {
