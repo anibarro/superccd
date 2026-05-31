@@ -916,6 +916,8 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                               const SuperCCDMetadata &metadata,
                               int maxSize,
                               int previewRotation,
+                              double toneGamma,
+                              double toneContrast,
                               QImage &preview,
                               QString &error)
 {
@@ -1047,13 +1049,26 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         QRgb *scanLine = reinterpret_cast<QRgb *>(image.scanLine(y));
         for (int x = 0; x < width; ++x) {
             const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
-            const double linearR = std::clamp((linearRgb[idx + 0] * gainR * scaleR) / 65535.0, 0.0, 1.0);
-            const double linearG = std::clamp((linearRgb[idx + 1] * gainG * scaleG) / 65535.0, 0.0, 1.0);
-            const double linearB = std::clamp((linearRgb[idx + 2] * gainB * scaleB) / 65535.0, 0.0, 1.0);
+            // Apply tone curve: contrast first, then gamma
+            const double center = 0.5;
+            const double contrastFactor = std::pow(2.0, toneContrast);
+            double linearR = (linearRgb[idx + 0] * gainR * scaleR) / 65535.0;
+            double linearG = (linearRgb[idx + 1] * gainG * scaleG) / 65535.0;
+            double linearB = (linearRgb[idx + 2] * gainB * scaleB) / 65535.0;
+            
+            // Apply contrast (S-curve around midpoint)
+            linearR = center + (linearR - center) * contrastFactor;
+            linearG = center + (linearG - center) * contrastFactor;
+            linearB = center + (linearB - center) * contrastFactor;
+            
+            // Clamp after contrast
+            linearR = std::clamp(linearR, 0.0, 1.0);
+            linearG = std::clamp(linearG, 0.0, 1.0);
+            linearB = std::clamp(linearB, 0.0, 1.0);
 
-            const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 255.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, 1.0 / 2.2) * 255.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, 1.0 / 2.2) * 255.0 + 0.5);
+            const int outR = static_cast<int>(std::pow(linearR, 1.0 / toneGamma) * 255.0 + 0.5);
+            const int outG = static_cast<int>(std::pow(linearG, 1.0 / toneGamma) * 255.0 + 0.5);
+            const int outB = static_cast<int>(std::pow(linearB, 1.0 / toneGamma) * 255.0 + 0.5);
             scanLine[x] = qRgb(std::clamp(outR, 0, 255),
                                std::clamp(outG, 0, 255),
                                std::clamp(outB, 0, 255));
@@ -2348,12 +2363,9 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                 outputWhiteLevel = sample;
             }
         }
-        const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
-            ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
-            : 1.0;
-        const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
-            std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
-        outputMetadata.whiteLevel = mergedWhiteLevel;
+        // Use actual maximum from buffer - don't scale white level by appliedOutputScale
+        // as that would incorrectly lower it when merge scales down values
+        outputMetadata.whiteLevel = std::max<uint16_t>(outputWhiteLevel, 1);
         outputMetadata.baselineExposure = 0.0;
         outputMetadata.hasBaselineExposure = false;
 
@@ -2390,20 +2402,14 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                     outputWhiteLevel = sample;
                 }
             }
-            outputMetadata.whiteLevel = outputWhiteLevel;
+            // Use actual maximum from buffer - don't scale white level by appliedOutputScale
+            // as that would incorrectly lower it when merge scales down values
+            outputMetadata.whiteLevel = std::max<uint16_t>(outputWhiteLevel, 1);
             if (std::strcmp(outputSpec.label, "SR") == 0) {
-                const double sourceWhiteLevel = m_cfaPreviewCache.metadata.whiteLevel > 0
-                    ? static_cast<double>(m_cfaPreviewCache.metadata.whiteLevel)
-                    : 1.0;
-                const uint16_t mergedWhiteLevel = static_cast<uint16_t>(
-                    std::clamp<int>(static_cast<int>(sourceWhiteLevel * appliedOutputScale + 0.5), 1, 65535));
-                outputMetadata.whiteLevel = mergedWhiteLevel;
                 outputMetadata.baselineExposure = 0.0;
                 outputMetadata.hasBaselineExposure = false;
-                logProcessing("merged CFA metadata before write: sourceWhite=%.6f outputWhite=%u appliedScale=%.9f baselineExposure=%.6f hasBaselineExposure=%d",
-                              sourceWhiteLevel,
+                logProcessing("merged CFA metadata before write: outputWhite=%u baselineExposure=%.6f hasBaselineExposure=%d",
                               outputMetadata.whiteLevel,
-                              appliedOutputScale,
                               outputMetadata.baselineExposure,
                               outputMetadata.hasBaselineExposure ? 1 : 0);
             }
@@ -2515,6 +2521,8 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                     m_cfaPreviewCache.metadata,
                                     settings.previewMaxSize,
                                     settings.previewRotation,
+                                    settings.toneGamma,
+                                    settings.toneContrast,
                                     preview,
                                     error);
 }
