@@ -68,6 +68,9 @@ foreach ($dir in $runtimeDirs) {
 $docsDir = Join-Path $stageDir "docs"
 New-Item -ItemType Directory -Path $docsDir | Out-Null
 
+$rawTherapeeProfileDir = Join-Path $RepoRoot "RawTherapee profile"
+$stageRawTherapeeProfileDir = Join-Path $stageDir "RawTherapee profile"
+
 Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination $stageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $stageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") -Destination $stageDir
@@ -75,6 +78,10 @@ Copy-Item -LiteralPath (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") -Destinati
 $manualPath = Join-Path $RepoRoot "docs\MANUAL.md"
 if (Test-Path $manualPath) {
     Copy-Item -LiteralPath $manualPath -Destination $docsDir
+}
+
+if (Test-Path $rawTherapeeProfileDir) {
+    Copy-Item -LiteralPath $rawTherapeeProfileDir -Destination $stageRawTherapeeProfileDir -Recurse
 }
 
 $vcRedistPath = Join-Path $BuildDir "vc_redist.x64.exe"
