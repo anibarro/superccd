@@ -55,13 +55,53 @@ The intended post-processing workflow is:
 
 1. Convert RAF to `6MP Raw CFA DNG`
 2. Open the DNG in RawTherapee
-3. Rotate and crop the image there
+3. Apply the included RawTherapee profile from `RawTherapee profile\s3pro_dng.pp3`
 4. Demosaic and finish the image there
 
 Important:
 
 - the generated DNG is currently a rotated output
 - final orientation and framing are expected to be corrected in RawTherapee
+
+## Included RawTherapee Profile
+
+This repository includes a starter RawTherapee processing profile:
+
+- `RawTherapee profile\s3pro_dng.pp3`
+
+It is meant as a basic correction preset for the generated S3 Pro DNG files. The profile applies a starting point for:
+
+- exposure compensation and highlight compression
+- white balance based on camera metadata
+- tone equalizer adjustments
+- a default crop and rotation
+- AMaZE demosaicing
+- post-demosaic sharpening
+
+Use it as a baseline, not as a finished look. You should still expect to fine-tune exposure, crop, color, and sharpening per image.
+The included crop and rotation are already part of the profile.
+
+### Using The Profile Manually
+
+1. Open a converted `*_sr_merged.dng` in RawTherapee.
+2. Load `RawTherapee profile\s3pro_dng.pp3` as a processing profile.
+3. Adjust the result as needed for the specific image.
+
+### Setting Up A Dynamic Default Profile In RawTherapee
+
+If you want RawTherapee to apply this profile automatically to these DNG files:
+
+1. Make the profile available to RawTherapee.
+2. In RawTherapee, open `Preferences`.
+3. Set the default processing profile for raw files to `(Dynamic)`.
+4. Open the `Dynamic Profile Rules` section.
+5. Add a rule for the Fujifilm S3 Pro DNG workflow.
+6. Set the `Camera` condition to match the camera metadata shown by RawTherapee for these files.
+7. Attach `s3pro_dng.pp3` to that rule.
+8. Keep the rule near the end of the rule list if you want it to override more general raw defaults.
+9. For files already visible in the file browser, use `Processing Profile Operations > Reset to Default` so the dynamic chain is applied again.
+
+RawPedia notes that dynamic rules are combined in list order, and later matching rules can override earlier ones. See: https://rawpedia.rawtherapee.com/Dynamic_processing_profiles
 
 ## Key Limitations
 

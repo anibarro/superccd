@@ -198,16 +198,57 @@ Saved values include:
 ## Recommended Post-Processing
 
 1. Open `*_sr_merged.dng` in RawTherapee.
-2. Rotate the image to the correct orientation.
-3. Crop the frame as needed.
-4. Use the demosaic settings that work best for this workflow.
-5. Adjust exposure manually as needed.
-6. Finish the image there.
+2. Apply the included `RawTherapee profile\s3pro_dng.pp3` processing profile.
+3. Use the demosaic settings that work best for this workflow.
+4. Adjust exposure manually as needed.
+5. Finish the image there.
 
 Important:
 
 - the exported DNG is currently rotated by design
 - final orientation and crop are part of the expected RawTherapee workflow
+
+### Included RawTherapee Profile
+
+The repository includes a RawTherapee processing profile here:
+
+- `RawTherapee profile\s3pro_dng.pp3`
+
+This is a basic correction profile intended specifically for the merged S3 Pro DNG output. It provides a starting point for:
+
+- exposure and highlight handling
+- white balance
+- tone equalizer shaping
+- crop and rotation
+- demosaicing
+- sharpening
+
+It is a baseline profile, not a final look. You should still adjust each image as needed.
+Its default crop and rotation are already built into the profile.
+
+### Applying The Profile Manually
+
+1. Open `*_sr_merged.dng` in RawTherapee.
+2. Load `s3pro_dng.pp3`.
+3. Review exposure, crop, rotation, and color before exporting.
+
+### Setting A Dynamic Default Profile In RawTherapee
+
+If you want RawTherapee to assign this profile automatically when these files are opened:
+
+1. Make sure `s3pro_dng.pp3` is available from RawTherapee as a processing profile.
+2. In RawTherapee, open `Preferences`.
+3. Set the default processing profile for raw images to `(Dynamic)`.
+4. Open `Dynamic Profile Rules`.
+5. Add a new rule and attach `s3pro_dng.pp3`.
+6. Set the `Camera` field so it matches the metadata shown by RawTherapee for these converted S3 Pro DNG files.
+7. Optionally add other conditions only if you want to narrow the rule further.
+8. Order the rules intentionally, because later matching rules override earlier ones.
+9. If files were already browsed before creating the rule, select them in the file browser and run `Processing Profile Operations > Reset to Default`.
+
+According to RawPedia, dynamic rules are evaluated from top to bottom, all matching rules are combined, and later ones can override earlier ones:
+
+- https://rawpedia.rawtherapee.com/Dynamic_processing_profiles
 
 ## Important Behavior
 
