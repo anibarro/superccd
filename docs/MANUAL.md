@@ -67,6 +67,7 @@ Saves the currently rendered preview as a `JPG`.
 
 - opens a popup to choose the destination folder
 - lets you set JPEG quality from `1` to `100`
+- can export at original size or resized so the short side is `2016 px`
 - exports the same preview adjustments currently shown in the app, including highlight compression
 - requires the selected RAF file to have an up-to-date preview first
 

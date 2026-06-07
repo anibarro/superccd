@@ -41,10 +41,13 @@
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
 constexpr int kDefaultSmoothnessSliderValue = 50;
-constexpr int kDefaultPreviewExposureSliderValue = 0;
+constexpr int kDefaultPreviewExposureSliderValue = 12;
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
-constexpr int kDefaultPreviewHighlightCompressionSliderValue = 0;
+constexpr int kDefaultPreviewGammaSliderValue = 31;
+constexpr int kDefaultPreviewContrastSliderValue = 18;
+constexpr int kDefaultPreviewSaturationSliderValue = 64;
+constexpr int kDefaultPreviewHighlightCompressionSliderValue = 39;
 constexpr int kDefaultPreviewZoomSliderValue = 20;
 constexpr bool kDefaultAutoPreview = false;
 constexpr int kPreviewToneLutMaxInput = 8192;
@@ -93,6 +96,37 @@ QWidget *createFileListRow(const QString &displayName,
     layout->addWidget(thumbLabel, 0);
     layout->addWidget(textLabel, 1);
     return row;
+}
+
+QImage resizeForPreviewExport(const QImage &image, bool export6Mp)
+{
+    if (image.isNull() || !export6Mp) {
+        return image;
+    }
+
+    constexpr int kTargetShortSide = 2016;
+    const int shortSide = std::min(image.width(), image.height());
+    if (shortSide <= kTargetShortSide) {
+        return image;
+    }
+
+    const double scale = static_cast<double>(kTargetShortSide) / static_cast<double>(shortSide);
+    const QSize targetSize(std::max(1, static_cast<int>(std::round(image.width() * scale))),
+                           std::max(1, static_cast<int>(std::round(image.height() * scale))));
+
+    QImage scaled = image;
+    while (scaled.width() / 2 >= targetSize.width() && scaled.height() / 2 >= targetSize.height()) {
+        scaled = scaled.scaled(QSize(std::max(targetSize.width(), scaled.width() / 2),
+                                     std::max(targetSize.height(), scaled.height() / 2)),
+                               Qt::IgnoreAspectRatio,
+                               Qt::SmoothTransformation);
+    }
+
+    if (scaled.size() != targetSize) {
+        scaled = scaled.scaled(targetSize, Qt::IgnoreAspectRatio, Qt::SmoothTransformation);
+    }
+
+    return scaled;
 }
 }
 
@@ -171,15 +205,15 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewTintValueLabel->setText(QString::number(kDefaultPreviewTintSliderValue));
     // Gamma slider: range 0-300 (0 to 3.0), default 220 (gamma 2.2)
     m_previewGammaSlider->setRange(0, 300);
-    m_previewGammaSlider->setValue(220);
+    m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
     m_previewGammaValueLabel->setText(QStringLiteral("2.20"));
     // Contrast slider: range -200 to +200, default 0
     m_previewContrastSlider->setRange(-200, 200);
-    m_previewContrastSlider->setValue(0);
+    m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
     m_previewContrastValueLabel->setText(QStringLiteral("0"));
     // Saturation slider: range -100 to +100, default 0
     m_previewSaturationSlider->setRange(-100, 100);
-    m_previewSaturationSlider->setValue(0);
+    m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
     m_previewSaturationValueLabel->setText(QStringLiteral("0"));
     // Highlight compression slider: range 0 to 100, default 0
     m_previewHighlightCompressionSlider->setRange(0, 100);
@@ -779,6 +813,13 @@ void MainWindow::onExportPreview()
     qualitySpinBox->setSuffix(tr("%"));
     layout->addRow(tr("JPEG quality:"), qualitySpinBox);
 
+    QComboBox *sizeComboBox = new QComboBox(&dialog);
+    sizeComboBox->addItem(tr("Original"), false);
+    sizeComboBox->addItem(tr("6 MP"), true);
+    const bool export6Mp = settingsStore.value(QStringLiteral("previewExport/export6Mp"), false).toBool();
+    sizeComboBox->setCurrentIndex(sizeComboBox->findData(export6Mp));
+    layout->addRow(tr("Export size:"), sizeComboBox);
+
     QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addRow(buttonBox);
 
@@ -819,9 +860,15 @@ void MainWindow::onExportPreview()
         }
     }
 
-    const QImage exportImage = buildAdjustedPreviewImage();
+    QImage exportImage = buildAdjustedPreviewImage();
     if (exportImage.isNull()) {
         showStatus(tr("Preview export failed."));
+        return;
+    }
+
+    exportImage = resizeForPreviewExport(exportImage, sizeComboBox->currentData().toBool());
+    if (exportImage.isNull()) {
+        showStatus(tr("Preview export resize failed."));
         return;
     }
 
@@ -833,6 +880,7 @@ void MainWindow::onExportPreview()
 
     settingsStore.setValue(QStringLiteral("previewExport/folder"), targetFolder);
     settingsStore.setValue(QStringLiteral("previewExport/quality"), quality);
+    settingsStore.setValue(QStringLiteral("previewExport/export6Mp"), sizeComboBox->currentData().toBool());
     showStatus(tr("Preview exported to %1").arg(outputPath));
 }
 
@@ -1090,6 +1138,31 @@ void MainWindow::loadSavedDefaults()
     m_previewTintSlider->setValue(std::clamp(previewTint,
                                              m_previewTintSlider->minimum(),
                                              m_previewTintSlider->maximum()));
+    const int previewGamma = settingsStore.value(QStringLiteral("defaults/previewGammaSlider"),
+                                                 kDefaultPreviewGammaSliderValue).toInt();
+    m_previewGammaSlider->setValue(std::clamp(previewGamma,
+                                              m_previewGammaSlider->minimum(),
+                                              m_previewGammaSlider->maximum()));
+    const int previewContrast = settingsStore.value(QStringLiteral("defaults/previewContrastSlider"),
+                                                    kDefaultPreviewContrastSliderValue).toInt();
+    m_previewContrastSlider->setValue(std::clamp(previewContrast,
+                                                 m_previewContrastSlider->minimum(),
+                                                 m_previewContrastSlider->maximum()));
+    const int previewSaturation = settingsStore.value(QStringLiteral("defaults/previewSaturationSlider"),
+                                                      kDefaultPreviewSaturationSliderValue).toInt();
+    m_previewSaturationSlider->setValue(std::clamp(previewSaturation,
+                                                   m_previewSaturationSlider->minimum(),
+                                                   m_previewSaturationSlider->maximum()));
+    const int previewHighlightCompression = settingsStore.value(QStringLiteral("defaults/previewHighlightCompressionSlider"),
+                                                                kDefaultPreviewHighlightCompressionSliderValue).toInt();
+    m_previewHighlightCompressionSlider->setValue(std::clamp(previewHighlightCompression,
+                                                             m_previewHighlightCompressionSlider->minimum(),
+                                                             m_previewHighlightCompressionSlider->maximum()));
+    const int previewZoom = settingsStore.value(QStringLiteral("defaults/previewZoomSlider"),
+                                                kDefaultPreviewZoomSliderValue).toInt();
+    m_previewZoomSlider->setValue(std::clamp(previewZoom,
+                                             m_previewZoomSlider->minimum(),
+                                             m_previewZoomSlider->maximum()));
     const int previewRotation = settingsStore.value(QStringLiteral("defaults/previewRotation"), 0).toInt();
     const int rotationIndex = m_previewRotationCombo->findData(previewRotation);
     m_previewRotationCombo->setCurrentIndex(rotationIndex >= 0 ? rotationIndex : 0);
@@ -1107,6 +1180,11 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/previewExposureSlider"), m_previewExposureSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewWhiteBalanceSlider"), m_previewWhiteBalanceSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewTintSlider"), m_previewTintSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewGammaSlider"), m_previewGammaSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewContrastSlider"), m_previewContrastSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewSaturationSlider"), m_previewSaturationSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewHighlightCompressionSlider"), m_previewHighlightCompressionSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewZoomSlider"), m_previewZoomSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
     settingsStore.setValue(QStringLiteral("defaults/autoPreview"), m_autoPreviewCheckBox->isChecked());
 }
@@ -1124,9 +1202,13 @@ void MainWindow::onResetDefaults()
     defaults.rTransitionDelay = 0.5;
     defaults.rTransitionSmoothness = 0.5;
     applyParameterSettings(defaults);
+    m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
+    m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
+    m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
+    m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
     m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
