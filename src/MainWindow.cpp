@@ -36,6 +36,7 @@
 #include <algorithm>
 #include <QMessageBox>
 #include <QSpinBox>
+#include <array>
 
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
@@ -43,8 +44,10 @@ constexpr int kDefaultSmoothnessSliderValue = 50;
 constexpr int kDefaultPreviewExposureSliderValue = 0;
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
+constexpr int kDefaultPreviewHighlightCompressionSliderValue = 0;
 constexpr int kDefaultPreviewZoomSliderValue = 20;
 constexpr bool kDefaultAutoPreview = false;
+constexpr int kPreviewToneLutMaxInput = 8192;
 
 QSettings appSettings()
 {
@@ -115,6 +118,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewContrastValueLabel(new QLabel(this))
     , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
     , m_previewSaturationValueLabel(new QLabel(this))
+    , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewHighlightCompressionValueLabel(new QLabel(this))
     , m_previewRotationCombo(new QComboBox(this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
     , m_previewScrollArea(new QScrollArea(this))
@@ -176,6 +181,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewSaturationSlider->setRange(-100, 100);
     m_previewSaturationSlider->setValue(0);
     m_previewSaturationValueLabel->setText(QStringLiteral("0"));
+    // Highlight compression slider: range 0 to 100, default 0
+    m_previewHighlightCompressionSlider->setRange(0, 100);
+    m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
+    m_previewHighlightCompressionValueLabel->setText(QStringLiteral("0"));
     m_previewRotationCombo->addItem(tr("Normal"), 0);
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
@@ -241,6 +250,8 @@ MainWindow::MainWindow(QWidget *parent)
     previewControlsLayout->addRow(tr(""), m_previewContrastValueLabel);
     previewControlsLayout->addRow(tr("Saturation:"), m_previewSaturationSlider);
     previewControlsLayout->addRow(tr(""), m_previewSaturationValueLabel);
+    previewControlsLayout->addRow(tr("Highlight compression:"), m_previewHighlightCompressionSlider);
+    previewControlsLayout->addRow(tr(""), m_previewHighlightCompressionValueLabel);
     previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
     previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
     previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
@@ -311,6 +322,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
+    connect(m_previewHighlightCompressionSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewHighlightCompressionChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
     });
@@ -846,6 +858,8 @@ void MainWindow::updateControls(bool busy)
     m_previewContrastValueLabel->setEnabled(!busy);
     m_previewSaturationSlider->setEnabled(!busy);
     m_previewSaturationValueLabel->setEnabled(!busy);
+    m_previewHighlightCompressionSlider->setEnabled(!busy);
+    m_previewHighlightCompressionValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
     const bool hasCurrentPreview = m_fileList->currentItem() != nullptr
@@ -908,6 +922,12 @@ void MainWindow::onPreviewSaturationChanged(int value)
     updatePreviewDisplay();
 }
 
+void MainWindow::onPreviewHighlightCompressionChanged(int value)
+{
+    m_previewHighlightCompressionValueLabel->setText(QString::number(value));
+    updatePreviewDisplay();
+}
+
 QImage MainWindow::buildAdjustedPreviewImage() const
 {
     if (m_currentPreviewImage.isNull()) {
@@ -929,6 +949,7 @@ QImage MainWindow::buildAdjustedPreviewImage() const
     const double contrastScale = 1.0 + contrastBias;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
     const double invNewGamma = 1.0 / newGamma;
+    const double highlightCompression = static_cast<double>(m_previewHighlightCompressionSlider->value()) / 100.0;
 
     uint8_t gammaLut[256];
     for (int i = 0; i < 256; ++i) {
@@ -944,6 +965,20 @@ QImage MainWindow::buildAdjustedPreviewImage() const
         gammaLut[i] = static_cast<uint8_t>(v + 0.5);
     }
 
+    std::array<uint8_t, kPreviewToneLutMaxInput + 1> toneLut{};
+    const double compressionStart = 200.0 - highlightCompression * 152.0;
+    const double compressionStrength = highlightCompression * 2.0
+        + highlightCompression * highlightCompression * 14.0;
+    for (int i = 0; i <= kPreviewToneLutMaxInput; ++i) {
+        double compressed = static_cast<double>(i);
+        if (highlightCompression > 0.0 && compressed > compressionStart) {
+            const double excess = compressed - compressionStart;
+            compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
+        }
+        const int lutIndex = std::clamp(static_cast<int>(compressed + 0.5), 0, 255);
+        toneLut[static_cast<std::size_t>(i)] = gammaLut[lutIndex];
+    }
+
     const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
     const double saturationScale = 1.0 + saturationBias;
 
@@ -956,9 +991,9 @@ QImage MainWindow::buildAdjustedPreviewImage() const
             int g = static_cast<int>(qGreen(src) * exposureScale * greenScale + 0.5);
             int b = static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5);
 
-            r = gammaLut[std::clamp(r, 0, 255)];
-            g = gammaLut[std::clamp(g, 0, 255)];
-            b = gammaLut[std::clamp(b, 0, 255)];
+            r = toneLut[static_cast<std::size_t>(std::clamp(r, 0, kPreviewToneLutMaxInput))];
+            g = toneLut[static_cast<std::size_t>(std::clamp(g, 0, kPreviewToneLutMaxInput))];
+            b = toneLut[static_cast<std::size_t>(std::clamp(b, 0, kPreviewToneLutMaxInput))];
 
             if (saturationScale != 1.0) {
                 const double gray = (r + g + b) / 3.0;
@@ -1092,6 +1127,7 @@ void MainWindow::onResetDefaults()
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
+    m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
     m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     queueAutoPreview();

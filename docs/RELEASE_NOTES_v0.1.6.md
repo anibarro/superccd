@@ -14,6 +14,7 @@ This release focuses on two areas:
 - Added `Preview Gamma` control.
 - Added `Preview Contrast` control.
 - Added `Preview Saturation` control.
+- Added `Preview Highlight Compression` control.
 - Added `Export Preview` with JPEG quality and folder selection.
 - Updated the gamma slider range to `0.0` to `3.0`.
 - Wired preview gamma and contrast settings more cleanly through the CFA preview path.
