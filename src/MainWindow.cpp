@@ -31,7 +31,11 @@
 #include <QFile>
 #include <QTextStream>
 #include <QDateTime>
+#include <QDialog>
+#include <QDialogButtonBox>
 #include <algorithm>
+#include <QMessageBox>
+#include <QSpinBox>
 
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
@@ -116,6 +120,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewScrollArea(new QScrollArea(this))
     , m_previewLabel(new QLabel(this))
     , m_previewButton(new QPushButton(tr("Update Preview"), this))
+    , m_exportPreviewButton(new QPushButton(tr("Export Preview"), this))
     , m_convertCurrentButton(new QPushButton(tr("Convert"), this))
     , m_convertAllButton(new QPushButton(tr("Convert All"), this))
     , m_exportPlaneImagesCheckBox(new QCheckBox(tr("Export S/R Planes"), this))
@@ -258,7 +263,10 @@ MainWindow::MainWindow(QWidget *parent)
     QVBoxLayout *rightLayout = new QVBoxLayout;
     rightLayout->addLayout(optionsLayout);
     rightLayout->addLayout(defaultsButtonsLayout);
-    rightLayout->addWidget(m_previewButton);
+    QHBoxLayout *previewButtonsLayout = new QHBoxLayout;
+    previewButtonsLayout->addWidget(m_previewButton);
+    previewButtonsLayout->addWidget(m_exportPreviewButton);
+    rightLayout->addLayout(previewButtonsLayout);
     rightLayout->addWidget(warmupNoteLabel);
 
     QHBoxLayout *topRowLayout = new QHBoxLayout;
@@ -277,6 +285,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_convertCurrentButton, &QPushButton::clicked, this, &MainWindow::onConvertCurrent);
     connect(m_convertAllButton, &QPushButton::clicked, this, &MainWindow::onConvertAll);
     connect(m_previewButton, &QPushButton::clicked, this, &MainWindow::onUpdatePreview);
+    connect(m_exportPreviewButton, &QPushButton::clicked, this, &MainWindow::onExportPreview);
     connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
         if (row >= 0) {
             queueAutoPreview();
@@ -717,6 +726,104 @@ void MainWindow::onUpdatePreview()
     updateControls(false);
 }
 
+void MainWindow::onExportPreview()
+{
+    QListWidgetItem *current = m_fileList->currentItem();
+    if (!current || m_currentPreviewImage.isNull()) {
+        showStatus(tr("Please render a preview before exporting."));
+        return;
+    }
+
+    const QString inputPath = listItemPath(current);
+    if (inputPath != m_lastPreviewedInputPath) {
+        showStatus(tr("Please update the preview for the selected RAF file before exporting."));
+        return;
+    }
+
+    QSettings settingsStore = appSettings();
+    const QString fallbackFolder = !m_outputFolder->text().trimmed().isEmpty()
+        ? m_outputFolder->text().trimmed()
+        : QFileInfo(inputPath).absolutePath();
+    QString initialFolder = settingsStore.value(QStringLiteral("previewExport/folder"), fallbackFolder).toString();
+    if (initialFolder.isEmpty()) {
+        initialFolder = fallbackFolder;
+    }
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Export Preview"));
+    dialog.setModal(true);
+
+    QFormLayout *layout = new QFormLayout(&dialog);
+    QLineEdit *folderEdit = new QLineEdit(initialFolder, &dialog);
+    QPushButton *browseButton = new QPushButton(tr("Browse..."), &dialog);
+    QHBoxLayout *folderLayout = new QHBoxLayout;
+    folderLayout->addWidget(folderEdit, 1);
+    folderLayout->addWidget(browseButton);
+    layout->addRow(tr("Folder:"), folderLayout);
+
+    QSpinBox *qualitySpinBox = new QSpinBox(&dialog);
+    qualitySpinBox->setRange(1, 100);
+    qualitySpinBox->setValue(std::clamp(settingsStore.value(QStringLiteral("previewExport/quality"), 90).toInt(), 1, 100));
+    qualitySpinBox->setSuffix(tr("%"));
+    layout->addRow(tr("JPEG quality:"), qualitySpinBox);
+
+    QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
+    layout->addRow(buttonBox);
+
+    connect(browseButton, &QPushButton::clicked, &dialog, [&dialog, folderEdit]() {
+        const QString folder = QFileDialog::getExistingDirectory(&dialog,
+                                                                 QObject::tr("Select Export Folder"),
+                                                                 folderEdit->text().trimmed());
+        if (!folder.isEmpty()) {
+            folderEdit->setText(folder);
+        }
+    });
+    connect(buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+
+    const QString targetFolder = folderEdit->text().trimmed();
+    if (targetFolder.isEmpty()) {
+        showStatus(tr("Please select an export folder."));
+        return;
+    }
+
+    QDir dir;
+    if (!dir.mkpath(targetFolder)) {
+        showStatus(tr("Could not create export folder."));
+        return;
+    }
+
+    const QString outputPath = QDir(targetFolder).filePath(QFileInfo(inputPath).completeBaseName() + QStringLiteral("_preview.jpg"));
+    if (QFile::exists(outputPath)) {
+        const auto overwrite = QMessageBox::question(this,
+                                                     tr("Overwrite Preview"),
+                                                     tr("The file already exists:\n%1\n\nOverwrite it?").arg(outputPath));
+        if (overwrite != QMessageBox::Yes) {
+            return;
+        }
+    }
+
+    const QImage exportImage = buildAdjustedPreviewImage();
+    if (exportImage.isNull()) {
+        showStatus(tr("Preview export failed."));
+        return;
+    }
+
+    const int quality = qualitySpinBox->value();
+    if (!exportImage.save(outputPath, "JPG", quality)) {
+        showStatus(tr("Could not save preview JPG."));
+        return;
+    }
+
+    settingsStore.setValue(QStringLiteral("previewExport/folder"), targetFolder);
+    settingsStore.setValue(QStringLiteral("previewExport/quality"), quality);
+    showStatus(tr("Preview exported to %1").arg(outputPath));
+}
+
 void MainWindow::updateControls(bool busy)
 {
     m_fileList->setEnabled(!busy);
@@ -741,6 +848,10 @@ void MainWindow::updateControls(bool busy)
     m_previewSaturationValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
+    const bool hasCurrentPreview = m_fileList->currentItem() != nullptr
+        && !m_currentPreviewImage.isNull()
+        && listItemPath(m_fileList->currentItem()) == m_lastPreviewedInputPath;
+    m_exportPreviewButton->setEnabled(!busy && hasCurrentPreview);
     m_autoPreviewCheckBox->setEnabled(!busy);
     m_convertCurrentButton->setEnabled(!busy && m_fileList->currentItem() != nullptr);
     m_convertAllButton->setEnabled(!busy);
@@ -797,6 +908,72 @@ void MainWindow::onPreviewSaturationChanged(int value)
     updatePreviewDisplay();
 }
 
+QImage MainWindow::buildAdjustedPreviewImage() const
+{
+    if (m_currentPreviewImage.isNull()) {
+        return QImage();
+    }
+
+    QImage displayImage = m_currentPreviewImage.convertToFormat(QImage::Format_RGB32);
+
+    const double exposureEv = static_cast<double>(m_previewExposureSlider->value()) / 10.0;
+    const double exposureScale = std::pow(2.0, exposureEv);
+    const double wbBias = static_cast<double>(m_previewWhiteBalanceSlider->value()) / 100.0;
+    const double redScale = std::pow(2.0, wbBias);
+    const double blueScale = std::pow(2.0, -wbBias);
+    const double tintBias = static_cast<double>(m_previewTintSlider->value()) / 100.0;
+    const double greenScale = std::pow(2.0, -tintBias);
+    constexpr double kOriginalGamma = 2.2;
+    const double newGamma = static_cast<double>(m_previewGammaSlider->value()) / 100.0;
+    const double contrastBias = static_cast<double>(m_previewContrastSlider->value()) / 100.0;
+    const double contrastScale = 1.0 + contrastBias;
+    const double invOriginalGamma = 1.0 / kOriginalGamma;
+    const double invNewGamma = 1.0 / newGamma;
+
+    uint8_t gammaLut[256];
+    for (int i = 0; i < 256; ++i) {
+        double v = static_cast<double>(i);
+
+        double vLinear = std::pow(std::clamp(v / 255.0, 0.0, 1.0), invOriginalGamma);
+
+        if (contrastScale != 1.0) {
+            vLinear = (vLinear - 0.5) * contrastScale + 0.5;
+        }
+
+        v = std::clamp(std::pow(std::clamp(vLinear, 0.0, 1.0), invNewGamma) * 255.0, 0.0, 255.0);
+        gammaLut[i] = static_cast<uint8_t>(v + 0.5);
+    }
+
+    const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
+    const double saturationScale = 1.0 + saturationBias;
+
+    for (int y = 0; y < displayImage.height(); ++y) {
+        QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
+        for (int x = 0; x < displayImage.width(); ++x) {
+            const QRgb src = scanLine[x];
+
+            int r = static_cast<int>(qRed(src) * exposureScale * redScale + 0.5);
+            int g = static_cast<int>(qGreen(src) * exposureScale * greenScale + 0.5);
+            int b = static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5);
+
+            r = gammaLut[std::clamp(r, 0, 255)];
+            g = gammaLut[std::clamp(g, 0, 255)];
+            b = gammaLut[std::clamp(b, 0, 255)];
+
+            if (saturationScale != 1.0) {
+                const double gray = (r + g + b) / 3.0;
+                r = static_cast<int>(std::clamp(gray + (r - gray) * saturationScale, 0.0, 255.0) + 0.5);
+                g = static_cast<int>(std::clamp(gray + (g - gray) * saturationScale, 0.0, 255.0) + 0.5);
+                b = static_cast<int>(std::clamp(gray + (b - gray) * saturationScale, 0.0, 255.0) + 0.5);
+            }
+
+            scanLine[x] = qRgb(r, g, b);
+        }
+    }
+
+    return displayImage;
+}
+
 void MainWindow::updatePreviewDisplay()
 {
     if (m_currentPreviewImage.isNull()) {
@@ -817,72 +994,9 @@ void MainWindow::updatePreviewDisplay()
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
     const QSize scaledSize(std::max(1, static_cast<int>(m_currentPreviewImage.width() * zoom)),
                            std::max(1, static_cast<int>(m_currentPreviewImage.height() * zoom)));
-    QImage displayImage = m_currentPreviewImage.convertToFormat(QImage::Format_RGB32);
-
-    // Exposure/WB/tint in gamma-corrected space (FAST - simple multiplication)
-    const double exposureEv = static_cast<double>(m_previewExposureSlider->value()) / 10.0;
-    const double exposureScale = std::pow(2.0, exposureEv);
-    const double wbBias = static_cast<double>(m_previewWhiteBalanceSlider->value()) / 100.0;
-    const double redScale = std::pow(2.0, wbBias);
-    const double blueScale = std::pow(2.0, -wbBias);
-    const double tintBias = static_cast<double>(m_previewTintSlider->value()) / 100.0;
-    const double greenScale = std::pow(2.0, -tintBias);
-
-    // Build gamma/contrast LUT (256 entries) - done once per update
-    constexpr double kOriginalGamma = 2.2;
-    const double newGamma = static_cast<double>(m_previewGammaSlider->value()) / 100.0;
-    const double contrastBias = static_cast<double>(m_previewContrastSlider->value()) / 100.0;
-    const double contrastScale = 1.0 + contrastBias;
-    const double invOriginalGamma = 1.0 / kOriginalGamma;
-    const double invNewGamma = 1.0 / newGamma;
-
-    uint8_t gammaLut[256];
-    for (int i = 0; i < 256; ++i) {
-        double v = static_cast<double>(i);
-
-        // Convert to linear space
-        double vLinear = std::pow(std::clamp(v / 255.0, 0.0, 1.0), invOriginalGamma);
-
-        // Apply contrast in linear space
-        if (contrastScale != 1.0) {
-            vLinear = (vLinear - 0.5) * contrastScale + 0.5;
-        }
-
-        // Apply new gamma and convert back to 0-255
-        v = std::clamp(std::pow(std::clamp(vLinear, 0.0, 1.0), invNewGamma) * 255.0, 0.0, 255.0);
-        gammaLut[i] = static_cast<uint8_t>(v + 0.5);
-    }
-
-    // Saturation adjustment: -100 to +100 maps to 0.0 to 2.0 saturation multiplier
-    const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
-    const double saturationScale = 1.0 + saturationBias;
-
-    // Fast pixel processing - LUT lookup for gamma/contrast, multiplication for exposure/WB/tint, saturation
-    for (int y = 0; y < displayImage.height(); ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
-        for (int x = 0; x < displayImage.width(); ++x) {
-            const QRgb src = scanLine[x];
-
-            // Exposure/WB/tint (fast, unchanged)
-            int r = static_cast<int>(qRed(src) * exposureScale * redScale + 0.5);
-            int g = static_cast<int>(qGreen(src) * exposureScale * greenScale + 0.5);
-            int b = static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5);
-
-            // Gamma/contrast via LUT (fast lookup)
-            r = gammaLut[std::clamp(r, 0, 255)];
-            g = gammaLut[std::clamp(g, 0, 255)];
-            b = gammaLut[std::clamp(b, 0, 255)];
-
-            // Apply saturation
-            if (saturationScale != 1.0) {
-                const double gray = (r + g + b) / 3.0;
-                r = static_cast<int>(std::clamp(gray + (r - gray) * saturationScale, 0.0, 255.0) + 0.5);
-                g = static_cast<int>(std::clamp(gray + (g - gray) * saturationScale, 0.0, 255.0) + 0.5);
-                b = static_cast<int>(std::clamp(gray + (b - gray) * saturationScale, 0.0, 255.0) + 0.5);
-            }
-
-            scanLine[x] = qRgb(r, g, b);
-        }
+    const QImage displayImage = buildAdjustedPreviewImage();
+    if (displayImage.isNull()) {
+        return;
     }
 
     const QPixmap pixmap = QPixmap::fromImage(displayImage.scaled(scaledSize,

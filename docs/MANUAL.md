@@ -19,8 +19,9 @@ The `_s_pixels.dng` and `_r_pixels.dng` files are diagnostic companions and are 
 5. Select a RAF file from the list.
 6. Click `Update Preview`.
 7. Adjust preview and merge settings if needed.
-8. Click `Convert` to export the currently previewed file.
-9. Click `Convert All` to export every RAF in the list.
+8. Click `Export Preview` to save the current preview as a JPG if needed.
+9. Click `Convert` to export the currently previewed file.
+10. Click `Convert All` to export every RAF in the list.
 
 ## File List
 
@@ -59,6 +60,15 @@ The main file is:
 ### Update Preview
 
 Generates a preview for the selected RAF file.
+
+### Export Preview
+
+Saves the currently rendered preview as a `JPG`.
+
+- opens a popup to choose the destination folder
+- lets you set JPEG quality from `1` to `100`
+- exports the same preview adjustments currently shown in the app
+- requires the selected RAF file to have an up-to-date preview first
 
 Important behavior:
 

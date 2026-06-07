@@ -38,6 +38,7 @@ private slots:
     void onConvertCurrent();
     void onConvertAll();
     void onUpdatePreview();
+    void onExportPreview();
     void onPreviewZoomChanged(int value);
     void onPreviewExposureChanged(int value);
     void onPreviewWhiteBalanceChanged(int value);
@@ -51,6 +52,7 @@ private slots:
 
 private:
     void updateControls(bool busy);
+    QImage buildAdjustedPreviewImage() const;
     void updatePreviewDisplay();
     void showStatus(const QString &message);
     ConversionSettings currentSettings() const;
@@ -88,6 +90,7 @@ private:
     QScrollArea *m_previewScrollArea;
     QLabel *m_previewLabel;
     QPushButton *m_previewButton;
+    QPushButton *m_exportPreviewButton;
     QPushButton *m_convertCurrentButton;
     QPushButton *m_convertAllButton;
     QCheckBox *m_exportPlaneImagesCheckBox;
