@@ -51,6 +51,12 @@ constexpr int kDefaultPreviewHighlightCompressionSliderValue = 39;
 constexpr int kDefaultPreviewZoomSliderValue = 20;
 constexpr bool kDefaultAutoPreview = false;
 constexpr int kPreviewToneLutMaxInput = 8192;
+constexpr int kPreviewExportSixMpShortSide = 2016;
+
+enum class PreviewExportSize {
+    FullSize12Mp = 0,
+    SixMp = 1
+};
 
 QSettings appSettings()
 {
@@ -98,19 +104,19 @@ QWidget *createFileListRow(const QString &displayName,
     return row;
 }
 
-QImage resizeForPreviewExport(const QImage &image, bool export6Mp)
+QImage resizeForPreviewExport(const QImage &image, PreviewExportSize exportSize)
 {
-    if (image.isNull() || !export6Mp) {
+    if (image.isNull() || exportSize == PreviewExportSize::FullSize12Mp) {
         return image;
     }
 
-    constexpr int kTargetShortSide = 2016;
+    const int targetShortSide = kPreviewExportSixMpShortSide;
     const int shortSide = std::min(image.width(), image.height());
-    if (shortSide <= kTargetShortSide) {
+    if (shortSide <= targetShortSide) {
         return image;
     }
 
-    const double scale = static_cast<double>(kTargetShortSide) / static_cast<double>(shortSide);
+    const double scale = static_cast<double>(targetShortSide) / static_cast<double>(shortSide);
     const QSize targetSize(std::max(1, static_cast<int>(std::round(image.width() * scale))),
                            std::max(1, static_cast<int>(std::round(image.height() * scale))));
 
@@ -814,10 +820,15 @@ void MainWindow::onExportPreview()
     layout->addRow(tr("JPEG quality:"), qualitySpinBox);
 
     QComboBox *sizeComboBox = new QComboBox(&dialog);
-    sizeComboBox->addItem(tr("Original"), false);
-    sizeComboBox->addItem(tr("6 MP"), true);
-    const bool export6Mp = settingsStore.value(QStringLiteral("previewExport/export6Mp"), false).toBool();
-    sizeComboBox->setCurrentIndex(sizeComboBox->findData(export6Mp));
+    sizeComboBox->addItem(tr("12 MP"), static_cast<int>(PreviewExportSize::FullSize12Mp));
+    sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
+    const int exportSizeSetting = settingsStore.contains(QStringLiteral("previewExport/size"))
+        ? settingsStore.value(QStringLiteral("previewExport/size"), static_cast<int>(PreviewExportSize::FullSize12Mp)).toInt()
+        : (settingsStore.value(QStringLiteral("previewExport/export6Mp"), false).toBool()
+               ? static_cast<int>(PreviewExportSize::SixMp)
+               : static_cast<int>(PreviewExportSize::FullSize12Mp));
+    const int exportSizeIndex = sizeComboBox->findData(exportSizeSetting);
+    sizeComboBox->setCurrentIndex(exportSizeIndex >= 0 ? exportSizeIndex : 0);
     layout->addRow(tr("Export size:"), sizeComboBox);
 
     QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
@@ -850,7 +861,14 @@ void MainWindow::onExportPreview()
         return;
     }
 
-    const QString outputPath = QDir(targetFolder).filePath(QFileInfo(inputPath).completeBaseName() + QStringLiteral("_preview.jpg"));
+    const PreviewExportSize exportSize = static_cast<PreviewExportSize>(sizeComboBox->currentData().toInt());
+    const QString exportSizeSuffix = exportSize == PreviewExportSize::SixMp
+        ? QStringLiteral("_6MP")
+        : QStringLiteral("_12MP");
+    const QString outputPath = QDir(targetFolder).filePath(QFileInfo(inputPath).completeBaseName()
+                                                           + QStringLiteral("_preview")
+                                                           + exportSizeSuffix
+                                                           + QStringLiteral(".jpg"));
     if (QFile::exists(outputPath)) {
         const auto overwrite = QMessageBox::question(this,
                                                      tr("Overwrite Preview"),
@@ -866,7 +884,7 @@ void MainWindow::onExportPreview()
         return;
     }
 
-    exportImage = resizeForPreviewExport(exportImage, sizeComboBox->currentData().toBool());
+    exportImage = resizeForPreviewExport(exportImage, exportSize);
     if (exportImage.isNull()) {
         showStatus(tr("Preview export resize failed."));
         return;
@@ -880,7 +898,7 @@ void MainWindow::onExportPreview()
 
     settingsStore.setValue(QStringLiteral("previewExport/folder"), targetFolder);
     settingsStore.setValue(QStringLiteral("previewExport/quality"), quality);
-    settingsStore.setValue(QStringLiteral("previewExport/export6Mp"), sizeComboBox->currentData().toBool());
+    settingsStore.setValue(QStringLiteral("previewExport/size"), sizeComboBox->currentData().toInt());
     showStatus(tr("Preview exported to %1").arg(outputPath));
 }
 

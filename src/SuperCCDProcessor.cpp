@@ -910,6 +910,67 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                    .arg(static_cast<qulonglong>(replacedCount));
 }
 
+void suppressPreviewFalseColor(std::vector<float> &rgb, int width, int height)
+{
+    if (width < 3 || height < 3 ||
+        rgb.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3) {
+        return;
+    }
+
+    const std::vector<float> source = rgb;
+    static constexpr int spatialWeights[5] = {1, 2, 3, 2, 1};
+
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float centerG = source[idx * 3 + 1];
+            const float centerDr = source[idx * 3 + 0] - centerG;
+            const float centerDb = source[idx * 3 + 2] - centerG;
+            const float edgeThreshold = std::max(512.0f, centerG * 0.025f);
+
+            double sumDr = 0.0;
+            double sumDb = 0.0;
+            double sumWeight = 0.0;
+            for (int dy = -2; dy <= 2; ++dy) {
+                const int ny = std::clamp(y + dy, 0, height - 1);
+                for (int dx = -2; dx <= 2; ++dx) {
+                    const int nx = std::clamp(x + dx, 0, width - 1);
+                    const size_t neighborIdx =
+                        static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
+                    const float neighborG = source[neighborIdx * 3 + 1];
+                    if (std::abs(neighborG - centerG) > edgeThreshold) {
+                        continue;
+                    }
+
+                    const double weight =
+                        static_cast<double>(spatialWeights[dx + 2] * spatialWeights[dy + 2]);
+                    sumDr += static_cast<double>(source[neighborIdx * 3 + 0] - neighborG) * weight;
+                    sumDb += static_cast<double>(source[neighborIdx * 3 + 2] - neighborG) * weight;
+                    sumWeight += weight;
+                }
+            }
+
+            if (sumWeight <= 0.0) {
+                continue;
+            }
+
+            const float filteredDr = static_cast<float>(sumDr / sumWeight);
+            const float filteredDb = static_cast<float>(sumDb / sumWeight);
+            const float chromaDeviation =
+                std::max(std::abs(centerDr - filteredDr), std::abs(centerDb - filteredDb));
+            const float artifactThreshold = std::max(256.0f, centerG * 0.02f);
+            const float artifactStrength =
+                std::clamp(chromaDeviation / artifactThreshold, 0.0f, 1.0f);
+            const float strength = 0.55f + artifactStrength * 0.4f;
+            const float mixedDr = centerDr + (filteredDr - centerDr) * strength;
+            const float mixedDb = centerDb + (filteredDb - centerDb) * strength;
+
+            rgb[idx * 3 + 0] = std::clamp(centerG + mixedDr, 0.0f, 65535.0f);
+            rgb[idx * 3 + 2] = std::clamp(centerG + mixedDb, 0.0f, 65535.0f);
+        }
+    }
+}
+
 bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                               int width,
                               int height,
@@ -921,107 +982,334 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                               QImage &preview,
                               QString &error)
 {
-    if (width < 2 || height < 2 || cfa.empty()) {
+    const size_t sourcePixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    if (width < 2 || height < 2 || cfa.size() < sourcePixelCount) {
         error = QStringLiteral("Invalid CFA data for preview.");
         return false;
     }
 
-    QImage image(width, height, QImage::Format_RGB32);
-    if (image.isNull()) {
-        error = QStringLiteral("Failed to allocate preview image.");
+    enum class CfaColor { Red, Green, Blue };
+    auto colorAt = [](int x, int y) -> CfaColor {
+        if ((y & 1) == 0) {
+            return (x & 1) == 0 ? CfaColor::Green : CfaColor::Blue;
+        }
+        return (x & 1) == 0 ? CfaColor::Red : CfaColor::Green;
+    };
+    auto sample = [&](int x, int y) -> float {
+        x = std::clamp(x, 0, width - 1);
+        y = std::clamp(y, 0, height - 1);
+        return static_cast<float>(cfa[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)]);
+    };
+
+    // Green carries most edge detail. Reconstruct it first along the smoother
+    // direction so red/blue can be interpolated as color differences instead
+    // of as unrelated intensity planes.
+    std::vector<float> green(sourcePixelCount, 0.0f);
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float center = sample(x, y);
+            if (colorAt(x, y) == CfaColor::Green) {
+                green[idx] = center;
+                continue;
+            }
+
+            bool haveHorizontal = x > 0 && x + 1 < width;
+            bool haveVertical = y > 0 && y + 1 < height;
+            float horizontal = 0.0f;
+            float vertical = 0.0f;
+            float gradientHorizontal = 0.0f;
+            float gradientVertical = 0.0f;
+
+            if (haveHorizontal) {
+                const float left = sample(x - 1, y);
+                const float right = sample(x + 1, y);
+                horizontal = (left + right) * 0.5f;
+                gradientHorizontal = std::abs(left - right);
+                if (x > 1 && x + 2 < width) {
+                    const float left2 = sample(x - 2, y);
+                    const float right2 = sample(x + 2, y);
+                    horizontal += (2.0f * center - left2 - right2) * 0.25f;
+                    horizontal = std::clamp(horizontal, std::min(left, right), std::max(left, right));
+                    gradientHorizontal += std::abs(2.0f * center - left2 - right2);
+                }
+            }
+            if (haveVertical) {
+                const float up = sample(x, y - 1);
+                const float down = sample(x, y + 1);
+                vertical = (up + down) * 0.5f;
+                gradientVertical = std::abs(up - down);
+                if (y > 1 && y + 2 < height) {
+                    const float up2 = sample(x, y - 2);
+                    const float down2 = sample(x, y + 2);
+                    vertical += (2.0f * center - up2 - down2) * 0.25f;
+                    vertical = std::clamp(vertical, std::min(up, down), std::max(up, down));
+                    gradientVertical += std::abs(2.0f * center - up2 - down2);
+                }
+            }
+
+            if (haveHorizontal && haveVertical) {
+                if (gradientHorizontal < gradientVertical) {
+                    green[idx] = horizontal;
+                } else if (gradientVertical < gradientHorizontal) {
+                    green[idx] = vertical;
+                } else {
+                    green[idx] = (horizontal + vertical) * 0.5f;
+                }
+            } else if (haveHorizontal) {
+                green[idx] = horizontal;
+            } else if (haveVertical) {
+                green[idx] = vertical;
+            } else {
+                float sum = 0.0f;
+                int count = 0;
+                if (x > 0) {
+                    sum += sample(x - 1, y);
+                    ++count;
+                }
+                if (x + 1 < width) {
+                    sum += sample(x + 1, y);
+                    ++count;
+                }
+                if (y > 0) {
+                    sum += sample(x, y - 1);
+                    ++count;
+                }
+                if (y + 1 < height) {
+                    sum += sample(x, y + 1);
+                    ++count;
+                }
+                green[idx] = count > 0 ? sum / static_cast<float>(count) : center;
+            }
+        }
+    }
+
+    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
+    const int rectWidth = fujiWidth * 2 + 1;
+    const int rectHeight = (height - fujiWidth) * 2 + 1;
+    if (rectWidth <= 0 || rectHeight <= 0) {
+        error = QStringLiteral("Invalid Fuji preview geometry.");
         return false;
     }
 
-    auto sample = [&](int x, int y) -> double {
+    const size_t rectPixelCount = static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight);
+    std::vector<float> rectifiedRgb;
+    std::vector<uint8_t> rectifiedMask;
+    try {
+        rectifiedRgb.assign(rectPixelCount * 3, 0.0f);
+        rectifiedMask.assign(rectPixelCount, 0);
+    } catch (const std::bad_alloc &) {
+        error = QStringLiteral("Failed to allocate rectified preview image.");
+        return false;
+    }
+
+    auto greenAt = [&](int x, int y) -> float {
         x = std::clamp(x, 0, width - 1);
         y = std::clamp(y, 0, height - 1);
-        return static_cast<double>(cfa[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)]);
+        return green[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
+    };
+    auto axisColorDifference = [&](int x, int y, int dx, int dy) -> float {
+        float sum = 0.0f;
+        int count = 0;
+        const int x0 = x - dx;
+        const int y0 = y - dy;
+        if (x0 >= 0 && x0 < width && y0 >= 0 && y0 < height) {
+            sum += sample(x0, y0) - greenAt(x0, y0);
+            ++count;
+        }
+        const int x1 = x + dx;
+        const int y1 = y + dy;
+        if (x1 >= 0 && x1 < width && y1 >= 0 && y1 < height) {
+            sum += sample(x1, y1) - greenAt(x1, y1);
+            ++count;
+        }
+        return count > 0 ? sum / static_cast<float>(count) : 0.0f;
+    };
+    auto diagonalColorDifference = [&](int x, int y) -> float {
+        const bool haveBackslash = x > 0 && x + 1 < width && y > 0 && y + 1 < height;
+        const bool haveSlash = x > 0 && x + 1 < width && y > 0 && y + 1 < height;
+        if (haveBackslash && haveSlash) {
+            const float nw = sample(x - 1, y - 1);
+            const float se = sample(x + 1, y + 1);
+            const float ne = sample(x + 1, y - 1);
+            const float sw = sample(x - 1, y + 1);
+            const float backslash = ((nw - greenAt(x - 1, y - 1)) +
+                                     (se - greenAt(x + 1, y + 1))) * 0.5f;
+            const float slash = ((ne - greenAt(x + 1, y - 1)) +
+                                 (sw - greenAt(x - 1, y + 1))) * 0.5f;
+            const float gradientBackslash = std::abs(nw - se) +
+                                            std::abs(greenAt(x - 1, y - 1) - greenAt(x + 1, y + 1));
+            const float gradientSlash = std::abs(ne - sw) +
+                                        std::abs(greenAt(x + 1, y - 1) - greenAt(x - 1, y + 1));
+            if (gradientBackslash < gradientSlash) {
+                return backslash;
+            }
+            if (gradientSlash < gradientBackslash) {
+                return slash;
+            }
+            return (backslash + slash) * 0.5f;
+        }
+
+        float sum = 0.0f;
+        int count = 0;
+        for (int dy = -1; dy <= 1; dy += 2) {
+            for (int dx = -1; dx <= 1; dx += 2) {
+                const int nx = x + dx;
+                const int ny = y + dy;
+                if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                    continue;
+                }
+                sum += sample(nx, ny) - greenAt(nx, ny);
+                ++count;
+            }
+        }
+        return count > 0 ? sum / static_cast<float>(count) : 0.0f;
+    };
+    auto demosaicPixel = [&](int x, int y, float &r, float &g, float &b) {
+        const float center = sample(x, y);
+        g = greenAt(x, y);
+        switch (colorAt(x, y)) {
+        case CfaColor::Red:
+            r = center;
+            b = g + diagonalColorDifference(x, y);
+            break;
+        case CfaColor::Blue:
+            b = center;
+            r = g + diagonalColorDifference(x, y);
+            break;
+        case CfaColor::Green:
+            if ((y & 1) == 0) {
+                b = g + axisColorDifference(x, y, 1, 0);
+                r = g + axisColorDifference(x, y, 0, 1);
+            } else {
+                r = g + axisColorDifference(x, y, 1, 0);
+                b = g + axisColorDifference(x, y, 0, 1);
+            }
+            break;
+        }
+        r = std::clamp(r, 0.0f, 65535.0f);
+        g = std::clamp(g, 0.0f, 65535.0f);
+        b = std::clamp(b, 0.0f, 65535.0f);
     };
 
-    enum class CfaColor { Red, Green, Blue };
-    auto colorAt = [](int x, int y) -> CfaColor {
-        const bool evenY = (y & 1) == 0;
-        const bool evenX = (x & 1) == 0;
-        if (evenY) {
-            return evenX ? CfaColor::Green : CfaColor::Blue;
+    for (int row = 0; row < height; ++row) {
+        const int start = std::abs(fujiWidth - row);
+        const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
+        for (int col = start; col < end; ++col) {
+            const int y = row + col - fujiWidth;
+            const int x = fujiWidth - row + col;
+            if (x >= 0 && x < rectWidth && y >= 0 && y < rectHeight) {
+                const size_t rectIdx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
+                float r = 0.0f;
+                float g = 0.0f;
+                float b = 0.0f;
+                demosaicPixel(col, row, r, g, b);
+                rectifiedRgb[rectIdx * 3 + 0] = r;
+                rectifiedRgb[rectIdx * 3 + 1] = g;
+                rectifiedRgb[rectIdx * 3 + 2] = b;
+                rectifiedMask[rectIdx] = 1;
+            }
         }
-        return evenX ? CfaColor::Red : CfaColor::Green;
-    };
+    }
+
+    // The diagonal sensor mapping leaves a checkerboard of gaps. Fill those
+    // before tone mapping, using the direction with the smallest green edge.
+    for (int y = 0; y < rectHeight; ++y) {
+        for (int x = 0; x < rectWidth; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
+            if (rectifiedMask[idx]) {
+                continue;
+            }
+
+            const bool haveLeft = x > 0 && rectifiedMask[idx - 1];
+            const bool haveRight = x + 1 < rectWidth && rectifiedMask[idx + 1];
+            const bool haveUp = y > 0 && rectifiedMask[idx - static_cast<size_t>(rectWidth)];
+            const bool haveDown = y + 1 < rectHeight && rectifiedMask[idx + static_cast<size_t>(rectWidth)];
+            const bool haveHorizontal = haveLeft && haveRight;
+            const bool haveVertical = haveUp && haveDown;
+
+            if (haveHorizontal || haveVertical) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    float horizontal = 0.0f;
+                    float vertical = 0.0f;
+                    if (haveHorizontal) {
+                        horizontal = (rectifiedRgb[(idx - 1) * 3 + static_cast<size_t>(channel)] +
+                                      rectifiedRgb[(idx + 1) * 3 + static_cast<size_t>(channel)]) * 0.5f;
+                    }
+                    if (haveVertical) {
+                        vertical = (rectifiedRgb[(idx - static_cast<size_t>(rectWidth)) * 3 + static_cast<size_t>(channel)] +
+                                    rectifiedRgb[(idx + static_cast<size_t>(rectWidth)) * 3 + static_cast<size_t>(channel)]) * 0.5f;
+                    }
+
+                    if (haveHorizontal && haveVertical) {
+                        const float gradientHorizontal =
+                            std::abs(rectifiedRgb[(idx - 1) * 3 + 1] - rectifiedRgb[(idx + 1) * 3 + 1]);
+                        const float gradientVertical =
+                            std::abs(rectifiedRgb[(idx - static_cast<size_t>(rectWidth)) * 3 + 1] -
+                                     rectifiedRgb[(idx + static_cast<size_t>(rectWidth)) * 3 + 1]);
+                        const float horizontalWeight = 1.0f / (1.0f + gradientHorizontal);
+                        const float verticalWeight = 1.0f / (1.0f + gradientVertical);
+                        rectifiedRgb[idx * 3 + static_cast<size_t>(channel)] =
+                            (horizontal * horizontalWeight + vertical * verticalWeight) /
+                            (horizontalWeight + verticalWeight);
+                    } else {
+                        rectifiedRgb[idx * 3 + static_cast<size_t>(channel)] =
+                            haveHorizontal ? horizontal : vertical;
+                    }
+                }
+                continue;
+            }
+
+            float sums[3] = {0.0f, 0.0f, 0.0f};
+            int count = 0;
+            const size_t neighbors[4] = {
+                haveLeft ? idx - 1 : idx,
+                haveRight ? idx + 1 : idx,
+                haveUp ? idx - static_cast<size_t>(rectWidth) : idx,
+                haveDown ? idx + static_cast<size_t>(rectWidth) : idx
+            };
+            const bool present[4] = {haveLeft, haveRight, haveUp, haveDown};
+            for (int neighbor = 0; neighbor < 4; ++neighbor) {
+                if (!present[neighbor]) {
+                    continue;
+                }
+                for (int channel = 0; channel < 3; ++channel) {
+                    sums[channel] += rectifiedRgb[neighbors[neighbor] * 3 + static_cast<size_t>(channel)];
+                }
+                ++count;
+            }
+            if (count > 0) {
+                for (int channel = 0; channel < 3; ++channel) {
+                    rectifiedRgb[idx * 3 + static_cast<size_t>(channel)] =
+                        sums[channel] / static_cast<float>(count);
+                }
+            }
+        }
+    }
+
+    green.clear();
+    green.shrink_to_fit();
+    suppressPreviewFalseColor(rectifiedRgb, rectWidth, rectHeight);
 
     double sumR = 0.0;
     double sumG = 0.0;
     double sumB = 0.0;
-    uint32_t maxR = 1;
-    uint32_t maxG = 1;
-    uint32_t maxB = 1;
-
-    std::vector<double> linearRgb(static_cast<size_t>(width) * static_cast<size_t>(height) * 3, 0.0);
-
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const double center = sample(x, y);
-            double r = 0.0;
-            double g = 0.0;
-            double b = 0.0;
-
-            switch (colorAt(x, y)) {
-            case CfaColor::Red: {
-                r = center;
-                const double gradH = std::abs(sample(x - 1, y) - sample(x + 1, y));
-                const double gradV = std::abs(sample(x, y - 1) - sample(x, y + 1));
-                if (gradH < gradV) {
-                    g = (sample(x - 1, y) + sample(x + 1, y)) * 0.5;
-                } else if (gradV < gradH) {
-                    g = (sample(x, y - 1) + sample(x, y + 1)) * 0.5;
-                } else {
-                    g = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) * 0.25;
-                }
-                b = (sample(x - 1, y - 1) + sample(x + 1, y - 1) + sample(x - 1, y + 1) + sample(x + 1, y + 1)) * 0.25;
-                break;
-            }
-            case CfaColor::Blue: {
-                b = center;
-                const double gradH = std::abs(sample(x - 1, y) - sample(x + 1, y));
-                const double gradV = std::abs(sample(x, y - 1) - sample(x, y + 1));
-                if (gradH < gradV) {
-                    g = (sample(x - 1, y) + sample(x + 1, y)) * 0.5;
-                } else if (gradV < gradH) {
-                    g = (sample(x, y - 1) + sample(x, y + 1)) * 0.5;
-                } else {
-                    g = (sample(x - 1, y) + sample(x + 1, y) + sample(x, y - 1) + sample(x, y + 1)) * 0.25;
-                }
-                r = (sample(x - 1, y - 1) + sample(x + 1, y - 1) + sample(x - 1, y + 1) + sample(x + 1, y + 1)) * 0.25;
-                break;
-            }
-            case CfaColor::Green: {
-                g = center;
-                const bool greenOnBlueRow = ((y & 1) == 0);
-                if (greenOnBlueRow) {
-                    b = (sample(x - 1, y) + sample(x + 1, y)) * 0.5;
-                    r = (sample(x, y - 1) + sample(x, y + 1)) * 0.5;
-                } else {
-                    r = (sample(x - 1, y) + sample(x + 1, y)) * 0.5;
-                    b = (sample(x, y - 1) + sample(x, y + 1)) * 0.5;
-                }
-                break;
-            }
-            }
-
-            const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
-            linearRgb[idx + 0] = r;
-            linearRgb[idx + 1] = g;
-            linearRgb[idx + 2] = b;
-
-            sumR += r;
-            sumG += g;
-            sumB += b;
-            maxR = std::max(maxR, static_cast<uint32_t>(std::clamp(r, 0.0, 65535.0)));
-            maxG = std::max(maxG, static_cast<uint32_t>(std::clamp(g, 0.0, 65535.0)));
-            maxB = std::max(maxB, static_cast<uint32_t>(std::clamp(b, 0.0, 65535.0)));
-        }
+    double maxR = 1.0;
+    double maxG = 1.0;
+    double maxB = 1.0;
+    for (size_t idx = 0; idx < rectPixelCount; ++idx) {
+        const double r = rectifiedRgb[idx * 3 + 0];
+        const double g = rectifiedRgb[idx * 3 + 1];
+        const double b = rectifiedRgb[idx * 3 + 2];
+        sumR += r;
+        sumG += g;
+        sumB += b;
+        maxR = std::max(maxR, r);
+        maxG = std::max(maxG, g);
+        maxB = std::max(maxB, b);
     }
 
-    const double pixelCount = static_cast<double>(width) * static_cast<double>(height);
+    const double pixelCount = static_cast<double>(rectPixelCount);
     const double avgR = sumR / pixelCount;
     const double avgG = sumG / pixelCount;
     const double avgB = sumB / pixelCount;
@@ -1033,115 +1321,43 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
         gainR = metadata.asShotNeutral[1] / metadata.asShotNeutral[0];
-        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);  // Apply tint via green adjustment
+        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);
         gainB = metadata.asShotNeutral[1] / metadata.asShotNeutral[2];
         logProcessing("WB from AsShotNeutral: R=%.4f G=%.4f B=%.4f tint=%.2f",
-                       gainR, gainG, gainB, metadata.asShotTint);
+                      gainR, gainG, gainB, metadata.asShotTint);
     } else {
         logProcessing("WB from average ratios: R=%.4f G=%.4f B=%.4f (no AsShotNeutral)",
-                       gainR, gainG, gainB);
+                      gainR, gainG, gainB);
     }
-    const double scaleR = 65535.0 / static_cast<double>(maxR);
-    const double scaleG = 65535.0 / static_cast<double>(maxG);
-    const double scaleB = 65535.0 / static_cast<double>(maxB);
 
-    for (int y = 0; y < height; ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(image.scanLine(y));
-        for (int x = 0; x < width; ++x) {
-            const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
-            // Apply tone curve: contrast first, then gamma
-            const double center = 0.5;
-            const double contrastFactor = std::pow(2.0, toneContrast);
-            double linearR = (linearRgb[idx + 0] * gainR * scaleR) / 65535.0;
-            double linearG = (linearRgb[idx + 1] * gainG * scaleG) / 65535.0;
-            double linearB = (linearRgb[idx + 2] * gainB * scaleB) / 65535.0;
-            
-            // Apply contrast (S-curve around midpoint)
-            linearR = center + (linearR - center) * contrastFactor;
-            linearG = center + (linearG - center) * contrastFactor;
-            linearB = center + (linearB - center) * contrastFactor;
-            
-            // Clamp after contrast
-            linearR = std::clamp(linearR, 0.0, 1.0);
-            linearG = std::clamp(linearG, 0.0, 1.0);
-            linearB = std::clamp(linearB, 0.0, 1.0);
+    QImage filled(rectWidth, rectHeight, QImage::Format_RGB32);
+    if (filled.isNull()) {
+        error = QStringLiteral("Failed to allocate preview image.");
+        return false;
+    }
+    const double scaleR = 65535.0 / maxR;
+    const double scaleG = 65535.0 / maxG;
+    const double scaleB = 65535.0 / maxB;
+    const double contrastFactor = std::pow(2.0, toneContrast);
+    const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
+    for (int y = 0; y < rectHeight; ++y) {
+        QRgb *scanLine = reinterpret_cast<QRgb *>(filled.scanLine(y));
+        for (int x = 0; x < rectWidth; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
+            double linearR = (rectifiedRgb[idx * 3 + 0] * gainR * scaleR) / 65535.0;
+            double linearG = (rectifiedRgb[idx * 3 + 1] * gainG * scaleG) / 65535.0;
+            double linearB = (rectifiedRgb[idx * 3 + 2] * gainB * scaleB) / 65535.0;
 
-            const int outR = static_cast<int>(std::pow(linearR, 1.0 / toneGamma) * 255.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, 1.0 / toneGamma) * 255.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, 1.0 / toneGamma) * 255.0 + 0.5);
+            linearR = std::clamp(0.5 + (linearR - 0.5) * contrastFactor, 0.0, 1.0);
+            linearG = std::clamp(0.5 + (linearG - 0.5) * contrastFactor, 0.0, 1.0);
+            linearB = std::clamp(0.5 + (linearB - 0.5) * contrastFactor, 0.0, 1.0);
+
+            const int outR = static_cast<int>(std::pow(linearR, inverseGamma) * 255.0 + 0.5);
+            const int outG = static_cast<int>(std::pow(linearG, inverseGamma) * 255.0 + 0.5);
+            const int outB = static_cast<int>(std::pow(linearB, inverseGamma) * 255.0 + 0.5);
             scanLine[x] = qRgb(std::clamp(outR, 0, 255),
                                std::clamp(outG, 0, 255),
                                std::clamp(outB, 0, 255));
-        }
-    }
-
-    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
-    const int rectWidth = fujiWidth * 2 + 1;
-    const int rectHeight = (height - fujiWidth) * 2 + 1;
-    if (rectWidth <= 0 || rectHeight <= 0) {
-        error = QStringLiteral("Invalid Fuji preview geometry.");
-        return false;
-    }
-    QImage rectified(rectWidth, rectHeight, QImage::Format_RGB32);
-    std::vector<uint8_t> rectifiedMask(static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight), 0);
-    if (rectified.isNull()) {
-        error = QStringLiteral("Failed to allocate rectified preview image.");
-        return false;
-    }
-    rectified.fill(Qt::black);
-
-    for (int row = 0; row < height; ++row) {
-        const QRgb *srcLine = reinterpret_cast<const QRgb *>(image.constScanLine(row));
-        const int start = std::abs(fujiWidth - row);
-        const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
-        for (int col = start; col < end; ++col) {
-            const int y = row + col - fujiWidth;
-            const int x = fujiWidth - row + col;
-            if (x >= 0 && x < rectWidth && y >= 0 && y < rectHeight) {
-                rectified.setPixel(x, y, srcLine[col]);
-                rectifiedMask[static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x)] = 1;
-            }
-        }
-    }
-
-    QImage filled = rectified.copy();
-    for (int y = 0; y < rectHeight; ++y) {
-        QRgb *dstLine = reinterpret_cast<QRgb *>(filled.scanLine(y));
-        for (int x = 0; x < rectWidth; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
-            if (rectifiedMask[idx]) {
-                continue;
-            }
-
-            int neighborSumR = 0;
-            int neighborSumG = 0;
-            int neighborSumB = 0;
-            int count = 0;
-            for (int dy = -1; dy <= 1; ++dy) {
-                const int yy = y + dy;
-                if (yy < 0 || yy >= rectHeight) {
-                    continue;
-                }
-                for (int dx = -1; dx <= 1; ++dx) {
-                    const int xx = x + dx;
-                    if (xx < 0 || xx >= rectWidth) {
-                        continue;
-                    }
-                    const size_t neighborIdx = static_cast<size_t>(yy) * static_cast<size_t>(rectWidth) + static_cast<size_t>(xx);
-                    if (!rectifiedMask[neighborIdx]) {
-                        continue;
-                    }
-                    const QRgb pixel = rectified.pixel(xx, yy);
-                    neighborSumR += qRed(pixel);
-                    neighborSumG += qGreen(pixel);
-                    neighborSumB += qBlue(pixel);
-                    ++count;
-                }
-            }
-
-            if (count > 0) {
-                dstLine[x] = qRgb(neighborSumR / count, neighborSumG / count, neighborSumB / count);
-            }
         }
     }
 
