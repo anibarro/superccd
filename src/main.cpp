@@ -10,6 +10,9 @@
 #include <cstdlib>
 #ifdef _WIN32
 #include <windows.h>
+#else
+#include <fcntl.h>
+#include <unistd.h>
 #endif
 #include <QCoreApplication>
 #include <QDateTime>
@@ -23,7 +26,7 @@
 
 static void write_log_message(const char *msg)
 {
-#ifdef _WIN32
+#if defined(_WIN32)
     // Use Win32 API to avoid C runtime buffering issues in signal handlers
     HANDLE h = CreateFileA("last_error.log", FILE_APPEND_DATA, FILE_SHARE_WRITE | FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) {
@@ -36,7 +39,34 @@ static void write_log_message(const char *msg)
         WriteFile(h, buf, (DWORD)strlen(buf), &written, NULL);
         CloseHandle(h);
     }
+#elif defined(__APPLE__) || defined(__unix__) || defined(__linux__)
+    // macOS and Linux: use POSIX file I/O with flock for safe concurrent writes
+    FILE *f = fopen("last_error.log", "a");
+    if (f) {
+        // Try to acquire exclusive lock (non-blocking)
+        struct flock fl;
+        fl.l_type = F_WRLCK;
+        fl.l_whence = SEEK_SET;
+        fl.l_start = 0;
+        fl.l_len = 0;
+        
+        if (fcntl(fileno(f), F_SETLK, &fl) == 0) {
+            time_t t = time(NULL);
+            struct tm tm;
+            localtime_r(&t, &tm);
+            char timestr[64];
+            strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", &tm);
+            fprintf(f, "%s - %s\n", timestr, msg);
+            fflush(f);
+            
+            // Release lock
+            fl.l_type = F_UNLCK;
+            fcntl(fileno(f), F_SETLK, &fl);
+        }
+        fclose(f);
+    }
 #else
+    // Fallback for other platforms
     FILE *f = fopen("last_error.log", "a");
     if (f) {
         time_t t = time(NULL);
@@ -91,7 +121,7 @@ static void print_version()
         return;
     }
 
-#ifdef _WIN32
+#if defined(_WIN32)
     HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
     bool attachedConsole = false;
     if (output == nullptr || output == INVALID_HANDLE_VALUE) {

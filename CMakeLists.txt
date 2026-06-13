@@ -88,7 +88,37 @@ if(WIN32)
   list(APPEND SOURCES resources/app_icon.rc)
 endif()
 
-add_executable(superccd2dng WIN32 ${SOURCES})
+# Determine executable type based on platform
+if(WIN32)
+  set(EXECUTABLE_TYPE WIN32)
+elseif(APPLE)
+  set(EXECUTABLE_TYPE MACOSX_BUNDLE)
+else()
+  set(EXECUTABLE_TYPE "")
+endif()
+
+add_executable(superccd2dng ${EXECUTABLE_TYPE} ${SOURCES})
+
+# macOS bundle configuration
+if(APPLE)
+  set_target_properties(superccd2dng PROPERTIES
+    MACOSX_BUNDLE TRUE
+    MACOSX_BUNDLE_GUI_IDENTIFIER "com.superccd.superccd2dng"
+    MACOSX_BUNDLE_SHORT_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_LONG_VERSION_STRING "${PROJECT_VERSION}"
+    MACOSX_BUNDLE_BUNDLE_NAME "SuperCCD RAF to DNG"
+    MACOSX_BUNDLE_DISPLAY_NAME "SuperCCD RAF to DNG"
+    MACOSX_BUNDLE_ICON_FILE ""
+    MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/macos/Info.plist"
+    XCODE_ATTRIBUTE_PRODUCT_NAME "SuperCCD2DNG"
+  )
+  
+  # Set the output directory for macOS bundle
+  set_target_properties(superccd2dng PROPERTIES
+    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/SuperCCD2DNG.app/Contents/MacOS"
+    LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/SuperCCD2DNG.app/Contents/Frameworks"
+  )
+endif()
 target_include_directories(superccd2dng PRIVATE src)
 target_link_libraries(superccd2dng PRIVATE Qt6::Widgets ${LIBRAW_LIBRARY})
 target_compile_definitions(superccd2dng PRIVATE APP_VERSION_STRING="${PROJECT_VERSION}")

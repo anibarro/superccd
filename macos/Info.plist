@@ -1,0 +1,65 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>
+    <string>superccd2dng</string>
+    <key>CFBundleIdentifier</key>
+    <string>com.superccd.superccd2dng</string>
+    <key>CFBundleName</key>
+    <string>SuperCCD RAF to DNG</string>
+    <key>CFBundleDisplayName</key>
+    <string>SuperCCD RAF to DNG</string>
+    <key>CFBundlePackageType</key>
+    <string>APPL</string>
+    <key>CFBundleShortVersionString</key>
+    <string>@PROJECT_VERSION@</string>
+    <key>CFBundleVersion</key>
+    <string>1</string>
+    <key>LSMinimumSystemVersion</key>
+    <string>11.0</string>
+    <key>NSHighResolutionCapable</key>
+    <true/>
+    <key>NSPrincipalClass</key>
+    <string>NSApplication</string>
+    <key>CFBundleDocumentTypes</key>
+    <array>
+        <dict>
+            <key>CFBundleTypeName</key>
+            <string>RAF Image</string>
+            <key>CFBundleTypeExtensions</key>
+            <array>
+                <string>raf</string>
+            </array>
+            <key>CFBundleTypeRole</key>
+            <string>Viewer</string>
+            <key>LSHandlerRank</key>
+            <string>Alternate</string>
+        </dict>
+    </array>
+    <key>UTExportedTypeDeclarations</key>
+    <array>
+        <dict>
+            <key>UTTypeIdentifier</key>
+            <string>com.fujifilm.raf-image</string>
+            <key>UTTypeDescription</key>
+            <string>Fujifilm RAF Image</string>
+            <key>UTTypeConformsTo</key>
+            <array>
+                <string>public.image</string>
+            </array>
+            <key>UTTypeTagSpecification</key>
+            <dict>
+                <key>public.filename-extension</key>
+                <array>
+                    <string>raf</string>
+                </array>
+            </dict>
+        </dict>
+    </array>
+    <key>NSHumanReadableCopyright</key>
+    <string>Copyright © 2024 Eduardo Anibarro. All rights reserved.</string>
+    <key>LSApplicationCategoryType</key>
+    <string>public.app-category.photography</string>
+</dict>
+</plist>
