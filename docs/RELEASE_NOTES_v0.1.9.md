@@ -32,6 +32,13 @@ This release improves preview image quality, adds true 16-bit TIFF preview expor
 - Sharpening changes luminance detail without increasing color separation at edges.
 - The sharpening setting is included in saved and restored defaults.
 
+### Preview window
+
+- Moved the image preview into a separate, independently resizable window.
+- The RAF list and processing settings remain together in the main window.
+- Added `Show Preview` to reopen or bring the preview window to the front.
+- The preview window remembers its size and position between sessions.
+
 ### White balance picker
 
 - Added a checkable white balance picker for the live preview.

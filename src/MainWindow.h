@@ -17,6 +17,8 @@ class QSlider;
 class QScrollArea;
 class QCheckBox;
 class QComboBox;
+class QCloseEvent;
+class QWidget;
 class PreviewCanvas;
 
 #include "SuperCCDProcessor.h"
@@ -30,6 +32,7 @@ public:
 
 protected:
     bool eventFilter(QObject *watched, QEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
 
@@ -54,6 +57,7 @@ private slots:
     void onSaveDefaults();
     void onResetDefaults();
     void onAutoPreviewTimer();
+    void showPreviewWindow();
 
 private:
     void updateControls(bool busy);
@@ -102,8 +106,10 @@ private:
     QComboBox *m_previewRotationCombo;
     QCheckBox *m_correctPreviewOutliersCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
+    QWidget *m_previewWindow;
     QScrollArea *m_previewScrollArea;
     PreviewCanvas *m_previewLabel;
+    QPushButton *m_showPreviewButton;
     QPushButton *m_previewButton;
     QPushButton *m_exportPreviewButton;
     QPushButton *m_convertCurrentButton;

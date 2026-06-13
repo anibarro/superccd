@@ -8,6 +8,7 @@
 #include <QBoxLayout>
 #include <QButtonGroup>
 #include <QCheckBox>
+#include <QCloseEvent>
 #include <QComboBox>
 #include <QDir>
 #include <QFileDialog>
@@ -272,8 +273,10 @@ MainWindow::MainWindow(QWidget *parent)
     , m_correctPreviewOutliersCheckBox(
           new QCheckBox(tr("Correct isolated light/dark pixels"), this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
-    , m_previewScrollArea(new QScrollArea(this))
-    , m_previewLabel(new PreviewCanvas(this))
+    , m_previewWindow(new QWidget(this, Qt::Window))
+    , m_previewScrollArea(new QScrollArea(m_previewWindow))
+    , m_previewLabel(new PreviewCanvas(m_previewScrollArea))
+    , m_showPreviewButton(new QPushButton(tr("Show Preview"), this))
     , m_previewButton(new QPushButton(tr("Update Preview"), this))
     , m_exportPreviewButton(new QPushButton(tr("Export Preview"), this))
     , m_convertCurrentButton(new QPushButton(tr("Convert"), this))
@@ -287,11 +290,18 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewSharpeningTimer(new QTimer(this))
 {
     setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
-    resize(1180, 760);
+    resize(900, 760);
     setAcceptDrops(true);
 
     QWidget *central = new QWidget(this);
     setCentralWidget(central);
+
+    m_previewWindow->setWindowTitle(tr("Preview"));
+    m_previewWindow->setMinimumSize(520, 360);
+    m_previewWindow->resize(1000, 760);
+    QVBoxLayout *previewWindowLayout = new QVBoxLayout(m_previewWindow);
+    previewWindowLayout->setContentsMargins(0, 0, 0, 0);
+    previewWindowLayout->addWidget(m_previewScrollArea);
 
     QPushButton *addFilesButton = new QPushButton(tr("Add RAF Files..."), this);
     QPushButton *removeFilesButton = new QPushButton(tr("Remove Selected"), this);
@@ -369,10 +379,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewScrollArea->setBackgroundRole(QPalette::Dark);
     m_previewScrollArea->setWidget(m_previewLabel);
     m_previewScrollArea->setWidgetResizable(false);
-    m_previewScrollArea->setMinimumWidth(960);
-    m_previewScrollArea->setMinimumHeight(320);
     m_previewScrollArea->viewport()->installEventFilter(this);
     m_previewLabel->installEventFilter(this);
+    m_previewWindow->installEventFilter(this);
     m_statusClearTimer->setSingleShot(true);
     m_autoPreviewTimer->setSingleShot(true);
     m_autoPreviewTimer->setInterval(250);
@@ -445,6 +454,7 @@ MainWindow::MainWindow(QWidget *parent)
     rightLayout->addLayout(optionsLayout);
     rightLayout->addLayout(defaultsButtonsLayout);
     QHBoxLayout *previewButtonsLayout = new QHBoxLayout;
+    previewButtonsLayout->addWidget(m_showPreviewButton);
     previewButtonsLayout->addWidget(m_previewButton);
     previewButtonsLayout->addWidget(m_exportPreviewButton);
     rightLayout->addLayout(previewButtonsLayout);
@@ -456,7 +466,6 @@ MainWindow::MainWindow(QWidget *parent)
 
     QVBoxLayout *mainLayout = new QVBoxLayout;
     mainLayout->addLayout(topRowLayout, 1);
-    mainLayout->addWidget(m_previewScrollArea, 2);
     mainLayout->addWidget(m_statusLabel);
     central->setLayout(mainLayout);
 
@@ -465,6 +474,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(selectFolderButton, &QPushButton::clicked, this, &MainWindow::onSelectOutputFolder);
     connect(m_convertCurrentButton, &QPushButton::clicked, this, &MainWindow::onConvertCurrent);
     connect(m_convertAllButton, &QPushButton::clicked, this, &MainWindow::onConvertAll);
+    connect(m_showPreviewButton, &QPushButton::clicked, this, &MainWindow::showPreviewWindow);
     connect(m_previewButton, &QPushButton::clicked, this, &MainWindow::onUpdatePreview);
     connect(m_exportPreviewButton, &QPushButton::clicked, this, &MainWindow::onExportPreview);
     connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
@@ -525,10 +535,22 @@ MainWindow::MainWindow(QWidget *parent)
 
     loadSavedDefaults();
     updateControls(false);
+
+    const QByteArray previewGeometry =
+        appSettings().value(QStringLiteral("windows/previewGeometry")).toByteArray();
+    if (!previewGeometry.isEmpty()) {
+        m_previewWindow->restoreGeometry(previewGeometry);
+    }
+    m_previewWindow->show();
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
+    if (watched == m_previewWindow && event->type() == QEvent::Close) {
+        appSettings().setValue(QStringLiteral("windows/previewGeometry"),
+                               m_previewWindow->saveGeometry());
+    }
+
     if ((watched == m_previewLabel || watched == m_previewScrollArea->viewport()) && !m_currentPreviewImage.isNull()) {
         const bool pickerActive =
             m_whiteBalancePickerButton->isChecked() && hasCurrentPreview();
@@ -620,6 +642,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     }
 
     return QMainWindow::eventFilter(watched, event);
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    appSettings().setValue(QStringLiteral("windows/previewGeometry"),
+                           m_previewWindow->saveGeometry());
+    m_previewWindow->close();
+    QMainWindow::closeEvent(event);
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)
@@ -745,6 +775,7 @@ void MainWindow::onRemoveSelectedFiles()
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
         m_previewLabel->unsetCursor();
+        m_previewWindow->setWindowTitle(tr("Preview"));
     }
 }
 
@@ -815,6 +846,8 @@ void MainWindow::onConvertCurrent()
         }
         m_previewLabel->setSourceImage(m_currentPreviewImage);
         m_lastPreviewedInputPath = inputPath;
+        m_previewWindow->setWindowTitle(
+            tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
         updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
@@ -940,6 +973,7 @@ void MainWindow::onUpdatePreview()
         m_whiteBalancePickerButton->setChecked(false);
         m_previewLabel->clearSourceImage();
         m_previewLabel->setText(tr("Preview failed."));
+        m_previewWindow->setWindowTitle(tr("Preview - Failed"));
         showStatus(tr("Preview failed: %1").arg(error));
         m_busy = false;
         updateControls(false);
@@ -958,6 +992,8 @@ void MainWindow::onUpdatePreview()
     }
     m_previewLabel->setSourceImage(m_currentPreviewImage);
     m_lastPreviewedInputPath = inputPath;
+    m_previewWindow->setWindowTitle(
+        tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
     if (shouldFitPreview) {
         const QSize viewportSize = m_previewScrollArea->viewport()->size();
         if (viewportSize.width() > 0 && viewportSize.height() > 0) {
@@ -1174,6 +1210,7 @@ void MainWindow::updateControls(bool busy)
     m_previewHighlightCompressionValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_correctPreviewOutliersCheckBox->setEnabled(!busy);
+    m_showPreviewButton->setEnabled(true);
     m_previewButton->setEnabled(!busy);
     const bool hasCurrentPreview = m_fileList->currentItem() != nullptr
         && !m_currentPreviewImage.isNull()
@@ -1187,6 +1224,17 @@ void MainWindow::updateControls(bool busy)
     if (busy) {
         m_statusLabel->setText(tr("Processing..."));
     }
+}
+
+void MainWindow::showPreviewWindow()
+{
+    if (m_previewWindow->isMinimized()) {
+        m_previewWindow->setWindowState(
+            m_previewWindow->windowState() & ~Qt::WindowMinimized);
+    }
+    m_previewWindow->show();
+    m_previewWindow->raise();
+    m_previewWindow->activateWindow();
 }
 
 void MainWindow::onPreviewZoomChanged(int value)

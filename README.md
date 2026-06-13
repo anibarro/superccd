@@ -113,7 +113,7 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 ## GUI Features
 
 - RAF file list with embedded thumbnails
-- preview of the currently selected RAF file
+- independently resizable preview window for the currently selected RAF file
 - draggable and zoomable preview
 - preview exposure, white-balance, and tint controls
 - preview rotation options

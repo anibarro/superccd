@@ -18,7 +18,7 @@ The `_s_pixels.dng` and `_r_pixels.dng` files are diagnostic companions and are 
 4. Select an output folder.
 5. Select a RAF file from the list.
 6. Click `Update Preview`.
-7. Adjust preview and merge settings if needed.
+7. Adjust preview and merge settings while viewing the separate preview window.
 8. Click `Export Preview` to save the current preview as a JPEG or 16-bit TIFF if needed.
 9. Click `Convert` to export the currently previewed file.
 10. Click `Convert All` to export every RAF in the list.
@@ -56,6 +56,11 @@ The main file is:
 - `*_sr_merged.dng`
 
 ## Preview Controls
+
+The image preview opens in a separate window from the RAF list and settings.
+Resize or move it independently as needed. Its size and position are restored
+the next time the application starts. Click `Show Preview` to reopen it after
+closing it or to bring it to the front.
 
 ### Update Preview
 
