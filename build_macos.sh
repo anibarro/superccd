@@ -5,7 +5,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
+PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build-macos"
 CMAKE_GENERATOR="Unix Makefiles"
 
@@ -68,6 +68,19 @@ check_dependencies() {
     if [ -z "$Qt6_DIR" ] || [ ! -d "$Qt6_DIR" ]; then
         error "Qt6 not found. Please install with: brew install qt@6"
         exit 1
+    fi
+    
+    # Set library paths for Homebrew packages
+    if [ -d "/opt/homebrew/opt/libraw" ]; then
+        export LIBRAW_ROOT="/opt/homebrew/opt/libraw"
+    elif [ -d "/usr/local/opt/libraw" ]; then
+        export LIBRAW_ROOT="/usr/local/opt/libraw"
+    fi
+    
+    if [ -d "/opt/homebrew/opt/libtiff" ]; then
+        export TIFF_ROOT="/opt/homebrew/opt/libtiff"
+    elif [ -d "/usr/local/opt/libtiff" ]; then
+        export TIFF_ROOT="/usr/local/opt/libtiff"
     fi
     
     info "Dependencies check complete."
@@ -144,14 +157,51 @@ configure() {
         info "Building for Intel Mac (x86_64)"
     fi
     
+    # Re-detect library paths in case they weren't set earlier
+    local libraw_root="${LIBRAW_ROOT}"
+    local tiff_root="${TIFF_ROOT}"
+    
+    if [ -z "$libraw_root" ] && [ -d "/opt/homebrew/opt/libraw" ]; then
+        libraw_root="/opt/homebrew/opt/libraw"
+    elif [ -z "$libraw_root" ] && [ -d "/usr/local/opt/libraw" ]; then
+        libraw_root="/usr/local/opt/libraw"
+    fi
+    
+    if [ -z "$tiff_root" ] && [ -d "/opt/homebrew/opt/libtiff" ]; then
+        tiff_root="/opt/homebrew/opt/libtiff"
+    elif [ -z "$tiff_root" ] && [ -d "/usr/local/opt/libtiff" ]; then
+        tiff_root="/usr/local/opt/libtiff"
+    fi
+    
+    # Calculate explicit paths for CMake
+    local libraw_include_dir=""
+    local libraw_library=""
+    if [ -n "$libraw_root" ]; then
+        libraw_include_dir="$libraw_root/include"
+        # Prefer shared library over static
+        if [ -f "$libraw_root/lib/libraw.dylib" ]; then
+            libraw_library="$libraw_root/lib/libraw.dylib"
+        elif [ -f "$libraw_root/lib/libraw.a" ]; then
+            libraw_library="$libraw_root/lib/libraw.a"
+        fi
+    fi
+    
+    info "Using LIBRAW_ROOT: $libraw_root"
+    info "Using LIBRAW_INCLUDE_DIR: $libraw_include_dir"
+    info "Using LIBRAW_LIBRARY: $libraw_library"
+    info "Using TIFF_ROOT: $tiff_root"
+    info "Using Qt6_DIR: $Qt6_DIR"
+    
     cmake "$PROJECT_DIR" \
         -G "$CMAKE_GENERATOR" \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         -DCMAKE_OSX_ARCHITECTURES="$arch" \
         -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
         -DQt6_DIR="$Qt6_DIR" \
-        -DLIBRAW_ROOT="${LIBRAW_ROOT:-}" \
-        -DTIFF_ROOT="${TIFF_ROOT:-}" \
+        -DLIBRAW_ROOT="$libraw_root" \
+        -DLIBRAW_INCLUDE_DIR="$libraw_include_dir" \
+        -DLIBRAW_LIBRARY="$libraw_library" \
+        -DTIFF_ROOT="$tiff_root" \
         -DCMAKE_INSTALL_PREFIX="$PROJECT_DIR/dist-macos"
     
     info "CMake configuration complete."
@@ -181,8 +231,15 @@ package() {
     mkdir -p "$app_bundle/Contents/MacOS"
     mkdir -p "$app_bundle/Contents/Resources"
     
-    # Copy executable
-    cp "$BUILD_DIR/superccd2dng" "$app_bundle/Contents/MacOS/"
+    # Copy executable from the .app bundle (for macOS bundle builds)
+    if [ -f "$BUILD_DIR/superccd2dng.app/Contents/MacOS/superccd2dng" ]; then
+        cp "$BUILD_DIR/superccd2dng.app/Contents/MacOS/superccd2dng" "$app_bundle/Contents/MacOS/"
+    elif [ -f "$BUILD_DIR/superccd2dng" ]; then
+        cp "$BUILD_DIR/superccd2dng" "$app_bundle/Contents/MacOS/"
+    else
+        error "Executable not found in build directory"
+        exit 1
+    fi
     
     # Create Info.plist
     cat > "$app_bundle/Contents/Info.plist" << EOF
@@ -204,6 +261,8 @@ package() {
     <string>${version:-1.0.0}</string>
     <key>CFBundleVersion</key>
     <string>1</string>
+    <key>CFBundleIconFile</key>
+    <string>app_icon</string>
     <key>LSMinimumSystemVersion</key>
     <string>11.0</string>
     <key>NSHighResolutionCapable</key>
@@ -227,9 +286,9 @@ package() {
 </plist>
 EOF
     
-    # Copy icon if exists
-    if [ -f "$PROJECT_DIR/resources/icons/app_icon_256.png" ]; then
-        cp "$PROJECT_DIR/resources/icons/app_icon_256.png" "$app_bundle/Contents/Resources/icon.png"
+    # Copy icon file (.icns) if exists
+    if [ -f "$PROJECT_DIR/resources/icons/app_icon.icns" ]; then
+        cp "$PROJECT_DIR/resources/icons/app_icon.icns" "$app_bundle/Contents/Resources/"
     fi
     
     # Deploy Qt frameworks

@@ -9,6 +9,8 @@
 #include <QFileInfo>
 #include <QImageReader>
 #include <QProcess>
+#include <QStandardPaths>
+#include <QDir>
 #include <QFile>
 #include <QTextStream>
 #include <fstream>
@@ -57,7 +59,16 @@ void logProcessing(const char *format, ...)
     time_t t = time(NULL);
     char timestr[32];
     strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", localtime(&t));
-    FILE *f = fopen("processing.log", "a");
+    QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (dir.isEmpty()) {
+        dir = QDir::homePath();
+    }
+    QDir d(dir);
+    if (!d.exists()) {
+        d.mkpath(dir);
+    }
+    const QString logPath = d.filePath(QStringLiteral("processing.log"));
+    FILE *f = fopen(logPath.toUtf8().constData(), "a");
     if (f) {
         fprintf(f, "%s - ", timestr);
         vfprintf(f, format, args);
@@ -129,9 +140,93 @@ QImage qImageFromLibRawProcessedThumb(const libraw_processed_image_t *thumb)
     return image;
 }
 
-QImage extractThumbnailWithExifTool(const QString &inputPath)
+// Direct JPEG thumbnail extraction from RAF files
+// RAF files contain an embedded JPEG thumbnail that can be extracted directly
+// without relying on external tools like exiftool
+QImage extractEmbeddedJpegFromRaf(const QString &inputPath, QString *error = nullptr)
 {
-    const QString exifTool = QStringLiteral("exiftool");
+    QFile file(inputPath);
+    if (!file.open(QIODevice::ReadOnly)) {
+        if (error) *error = QStringLiteral("Cannot open file for direct thumbnail extraction");
+        return QImage();
+    }
+
+    const QByteArray data = file.readAll();
+    file.close();
+
+    if (data.size() < 12) {
+        if (error) *error = QStringLiteral("File too small for RAF format");
+        return QImage();
+    }
+
+    // Search for JPEG SOI marker (0xFF 0xD8) in the file
+    // RAF files typically have the JPEG thumbnail embedded somewhere in the file
+    const uchar *buf = reinterpret_cast<const uchar *>(data.constData());
+    const size_t size = static_cast<size_t>(data.size());
+
+    // Search for JPEG start marker
+    const int soiMarker[2] = {0xFF, 0xD8};
+    size_t jpegStart = 0;
+    for (size_t i = 0; i < size - 1; ++i) {
+        if (buf[i] == soiMarker[0] && buf[i + 1] == soiMarker[1]) {
+            jpegStart = i;
+            break;
+        }
+    }
+
+    if (jpegStart == 0) {
+        if (error) *error = QStringLiteral("No JPEG thumbnail found in RAF file");
+        return QImage();
+    }
+
+    // Search for JPEG EOI marker (0xFF 0xD9)
+    const int eoiMarker[2] = {0xFF, 0xD9};
+    size_t jpegEnd = 0;
+    for (size_t i = size - 2; i > jpegStart; --i) {
+        if (buf[i] == eoiMarker[0] && buf[i + 1] == eoiMarker[1]) {
+            jpegEnd = i + 2;
+            break;
+        }
+    }
+
+    if (jpegEnd <= jpegStart) {
+        if (error) *error = QStringLiteral("JPEG thumbnail found but EOI marker missing");
+        return QImage();
+    }
+
+    // Extract the JPEG data
+    const QByteArray jpegData = data.mid(static_cast<int>(jpegStart), static_cast<int>(jpegEnd - jpegStart));
+    if (jpegData.size() < 4) {
+        if (error) *error = QStringLiteral("Extracted JPEG data too small");
+        return QImage();
+    }
+
+    QImage img = QImage::fromData(reinterpret_cast<const uchar *>(jpegData.constData()),
+                                  jpegData.size(), "JPEG");
+    if (img.isNull()) {
+        if (error) *error = QStringLiteral("Failed to decode extracted JPEG thumbnail");
+        return QImage();
+    }
+
+    return img;
+}
+
+QImage extractThumbnailWithExifTool(const QString &inputPath, QString *error = nullptr)
+{
+    QString exifTool = QStandardPaths::findExecutable(QStringLiteral("exiftool"));
+    if (exifTool.isEmpty()) {
+        const QString hb1 = QStringLiteral("/opt/homebrew/bin/exiftool");
+        const QString hb2 = QStringLiteral("/usr/local/bin/exiftool");
+        if (QFile::exists(hb1)) {
+            exifTool = hb1;
+        } else if (QFile::exists(hb2)) {
+            exifTool = hb2;
+        } else {
+            logProcessing("extractThumbnailWithExifTool: exiftool not found for %s", inputPath.toUtf8().constData());
+            if (error) *error = QStringLiteral("exiftool not found");
+            return QImage();
+        }
+    }
     const QStringList tags = {
         QStringLiteral("-b"),
         QStringLiteral("-PreviewImage"),
@@ -141,15 +236,47 @@ QImage extractThumbnailWithExifTool(const QString &inputPath)
     QProcess process;
     process.start(exifTool, tags);
     if (!process.waitForFinished(15000) || process.exitStatus() != QProcess::NormalExit || process.exitCode() != 0) {
+        const int exitCode = process.exitCode();
+        const QByteArray stdoutOut = process.readAllStandardOutput();
+        const QByteArray stderrOut = process.readAllStandardError();
         QProcess thumbProcess;
         thumbProcess.start(exifTool, {QStringLiteral("-b"), QStringLiteral("-ThumbnailImage"), inputPath});
         if (!thumbProcess.waitForFinished(15000) || thumbProcess.exitStatus() != QProcess::NormalExit || thumbProcess.exitCode() != 0) {
+            const int thumbExit = thumbProcess.exitCode();
+            const QByteArray thumbOut = thumbProcess.readAllStandardOutput();
+            const QByteArray thumbErr = thumbProcess.readAllStandardError();
+            logProcessing("extractThumbnailWithExifTool: exiftool '%s' failed (code=%d, stdout=%zu, stderr_snippet='%s'); fallback failed (code=%d, stdout=%zu, stderr_snippet='%s') for %s",
+                          exifTool.toUtf8().constData(),
+                          exitCode,
+                          static_cast<size_t>(stdoutOut.size()),
+                          QString::fromUtf8(stderrOut).left(200).toUtf8().constData(),
+                          thumbExit,
+                          static_cast<size_t>(thumbOut.size()),
+                          QString::fromUtf8(thumbErr).left(200).toUtf8().constData(),
+                          inputPath.toUtf8().constData());
+            if (error) {
+                *error = QStringLiteral("exiftool failed (code=%1); fallback failed (code=%2)").arg(exitCode).arg(thumbExit);
+            }
             return QImage();
         }
-        return QImage::fromData(thumbProcess.readAllStandardOutput());
+        const QByteArray out = thumbProcess.readAllStandardOutput();
+        QImage img = QImage::fromData(out);
+        if (img.isNull()) {
+            logProcessing("extractThumbnailWithExifTool: exiftool fallback produced data but QImage::fromData failed (bytes=%zu) for %s",
+                          static_cast<size_t>(out.size()), inputPath.toUtf8().constData());
+            if (error) *error = QStringLiteral("exiftool returned data but QImage::fromData failed (fallback)");
+        }
+        return img;
     }
 
-    return QImage::fromData(process.readAllStandardOutput());
+    const QByteArray out = process.readAllStandardOutput();
+    QImage img = QImage::fromData(out);
+    if (img.isNull()) {
+        logProcessing("extractThumbnailWithExifTool: exiftool produced data but QImage::fromData failed (bytes=%zu) for %s",
+                      static_cast<size_t>(out.size()), inputPath.toUtf8().constData());
+        if (error) *error = QStringLiteral("exiftool returned data but QImage::fromData failed");
+    }
+    return img;
 }
 
 bool saveDebugPGM(const QString &path, const std::vector<uint16_t> &data, int w, int h)
@@ -2403,12 +2530,31 @@ bool SuperCCDProcessor::extractEmbeddedThumbnail(const QString &inputPath,
     raw.recycle();
 
     if (thumbnail.isNull()) {
-        thumbnail = extractThumbnailWithExifTool(inputPath);
+        // Try direct JPEG extraction from RAF file first (doesn't require external tools)
+        QString directErr;
+        thumbnail = extractEmbeddedJpegFromRaf(inputPath, &directErr);
+        if (!thumbnail.isNull()) {
+            return true;
+        }
+        logProcessing("extractEmbeddedThumbnail: direct JPEG extraction failed ('%s') for %s, trying exiftool",
+                      directErr.toUtf8().constData(), inputPath.toUtf8().constData());
+        
+        // Fall back to exiftool if direct extraction failed
+        QString exifErr;
+        thumbnail = extractThumbnailWithExifTool(inputPath, &exifErr);
         if (!thumbnail.isNull()) {
             return true;
         }
         if (error) {
-            *error = QStringLiteral("RAF thumbnail extraction failed.");
+            if (!directErr.isEmpty()) {
+                *error = QStringLiteral("RAF thumbnail extraction failed: direct=%1, exiftool=%2")
+                             .arg(directErr)
+                             .arg(exifErr);
+            } else if (!exifErr.isEmpty()) {
+                *error = QStringLiteral("RAF thumbnail extraction failed: %1").arg(exifErr);
+            } else {
+                *error = QStringLiteral("RAF thumbnail extraction failed.");
+            }
         }
         return false;
     }

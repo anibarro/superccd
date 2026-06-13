@@ -1,6 +1,8 @@
 # Build artifacts
 /build/
 /dist/
+/build-macos/
+/dist-macos/
 /CMakeFiles/
 /CMakeCache.txt
 /*.user

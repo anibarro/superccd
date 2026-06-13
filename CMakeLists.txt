@@ -108,15 +108,21 @@ if(APPLE)
     MACOSX_BUNDLE_LONG_VERSION_STRING "${PROJECT_VERSION}"
     MACOSX_BUNDLE_BUNDLE_NAME "SuperCCD RAF to DNG"
     MACOSX_BUNDLE_DISPLAY_NAME "SuperCCD RAF to DNG"
-    MACOSX_BUNDLE_ICON_FILE ""
+    MACOSX_BUNDLE_ICON_FILE "app_icon"
     MACOSX_BUNDLE_INFO_PLIST "${CMAKE_SOURCE_DIR}/macos/Info.plist"
     XCODE_ATTRIBUTE_PRODUCT_NAME "SuperCCD2DNG"
   )
   
-  # Set the output directory for macOS bundle
+  # Let CMake handle the bundle structure - don't manually set output directory
   set_target_properties(superccd2dng PROPERTIES
-    RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/SuperCCD2DNG.app/Contents/MacOS"
     LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/SuperCCD2DNG.app/Contents/Frameworks"
+  )
+  
+  # Copy the icon file to the app bundle Resources folder
+  add_custom_command(TARGET superccd2dng POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy
+    "${CMAKE_SOURCE_DIR}/resources/icons/app_icon.icns"
+    "$<TARGET_FILE_DIR:superccd2dng>/../Resources/app_icon.icns"
   )
 endif()
 target_include_directories(superccd2dng PRIVATE src)

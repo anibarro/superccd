@@ -409,34 +409,69 @@ MainWindow::MainWindow(QWidget *parent)
     // Transition controls group box
     QGroupBox *transitionGroup = new QGroupBox(tr("Transition Settings"), this);
     QFormLayout *transitionLayout = new QFormLayout(transitionGroup);
-    transitionLayout->addRow(tr("Handoff delay:"), m_rTransitionDelaySlider);
-    transitionLayout->addRow(tr(""), m_rTransitionDelayValueLabel);
-    transitionLayout->addRow(tr("Smoothness:"), m_rTransitionSmoothnessSlider);
-    transitionLayout->addRow(tr(""), m_rTransitionSmoothnessValueLabel);
+    
+    QHBoxLayout *delayLayout = new QHBoxLayout;
+    delayLayout->addWidget(m_rTransitionDelaySlider, 1);
+    delayLayout->addWidget(m_rTransitionDelayValueLabel, 0);
+    transitionLayout->addRow(tr("Handoff delay:"), delayLayout);
+    
+    QHBoxLayout *smoothnessLayout = new QHBoxLayout;
+    smoothnessLayout->addWidget(m_rTransitionSmoothnessSlider, 1);
+    smoothnessLayout->addWidget(m_rTransitionSmoothnessValueLabel, 0);
+    transitionLayout->addRow(tr("Smoothness:"), smoothnessLayout);
 
     // Preview controls group box
     QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
     QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
-    previewControlsLayout->addRow(tr("Exposure:"), m_previewExposureSlider);
-    previewControlsLayout->addRow(tr(""), m_previewExposureValueLabel);
-    previewControlsLayout->addRow(tr("Gamma:"), m_previewGammaSlider);
-    previewControlsLayout->addRow(tr(""), m_previewGammaValueLabel);
-    previewControlsLayout->addRow(tr("Contrast:"), m_previewContrastSlider);
-    previewControlsLayout->addRow(tr(""), m_previewContrastValueLabel);
-    previewControlsLayout->addRow(tr("Saturation:"), m_previewSaturationSlider);
-    previewControlsLayout->addRow(tr(""), m_previewSaturationValueLabel);
-    previewControlsLayout->addRow(tr("Sharpening:"), m_previewSharpeningSlider);
-    previewControlsLayout->addRow(tr(""), m_previewSharpeningValueLabel);
-    previewControlsLayout->addRow(tr("Highlight compression:"), m_previewHighlightCompressionSlider);
-    previewControlsLayout->addRow(tr(""), m_previewHighlightCompressionValueLabel);
-    previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
-    previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
-    previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
-    previewControlsLayout->addRow(tr(""), m_previewTintValueLabel);
+    
+    QHBoxLayout *exposureLayout = new QHBoxLayout;
+    exposureLayout->addWidget(m_previewExposureSlider, 1);
+    exposureLayout->addWidget(m_previewExposureValueLabel, 0);
+    previewControlsLayout->addRow(tr("Exposure:"), exposureLayout);
+    
+    QHBoxLayout *gammaLayout = new QHBoxLayout;
+    gammaLayout->addWidget(m_previewGammaSlider, 1);
+    gammaLayout->addWidget(m_previewGammaValueLabel, 0);
+    previewControlsLayout->addRow(tr("Gamma:"), gammaLayout);
+    
+    QHBoxLayout *contrastLayout = new QHBoxLayout;
+    contrastLayout->addWidget(m_previewContrastSlider, 1);
+    contrastLayout->addWidget(m_previewContrastValueLabel, 0);
+    previewControlsLayout->addRow(tr("Contrast:"), contrastLayout);
+    
+    QHBoxLayout *saturationLayout = new QHBoxLayout;
+    saturationLayout->addWidget(m_previewSaturationSlider, 1);
+    saturationLayout->addWidget(m_previewSaturationValueLabel, 0);
+    previewControlsLayout->addRow(tr("Saturation:"), saturationLayout);
+    
+    QHBoxLayout *sharpeningLayout = new QHBoxLayout;
+    sharpeningLayout->addWidget(m_previewSharpeningSlider, 1);
+    sharpeningLayout->addWidget(m_previewSharpeningValueLabel, 0);
+    previewControlsLayout->addRow(tr("Sharpening:"), sharpeningLayout);
+    
+    QHBoxLayout *highlightCompressionLayout = new QHBoxLayout;
+    highlightCompressionLayout->addWidget(m_previewHighlightCompressionSlider, 1);
+    highlightCompressionLayout->addWidget(m_previewHighlightCompressionValueLabel, 0);
+    previewControlsLayout->addRow(tr("Highlight compression:"), highlightCompressionLayout);
+    
+    QHBoxLayout *whiteBalanceLayout = new QHBoxLayout;
+    whiteBalanceLayout->addWidget(m_previewWhiteBalanceSlider, 1);
+    whiteBalanceLayout->addWidget(m_previewWhiteBalanceValueLabel, 0);
+    previewControlsLayout->addRow(tr("White balance:"), whiteBalanceLayout);
+    
+    QHBoxLayout *tintLayout = new QHBoxLayout;
+    tintLayout->addWidget(m_previewTintSlider, 1);
+    tintLayout->addWidget(m_previewTintValueLabel, 0);
+    previewControlsLayout->addRow(tr("Tint:"), tintLayout);
+    
     previewControlsLayout->addRow(tr(""), m_whiteBalancePickerButton);
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
-    previewControlsLayout->addRow(tr("Zoom:"), m_previewZoomSlider);
-    previewControlsLayout->addRow(tr(""), m_previewZoomValueLabel);
+    
+    QHBoxLayout *zoomLayout = new QHBoxLayout;
+    zoomLayout->addWidget(m_previewZoomSlider, 1);
+    zoomLayout->addWidget(m_previewZoomValueLabel, 0);
+    previewControlsLayout->addRow(tr("Zoom:"), zoomLayout);
+    
     previewControlsLayout->addRow(tr(""), m_correctPreviewOutliersCheckBox);
     previewControlsLayout->addRow(tr(""), m_autoPreviewCheckBox);
 
@@ -705,7 +740,11 @@ void MainWindow::dropEvent(QDropEvent *event)
             item->setData(Qt::UserRole, file);
             item->setSizeHint(QSize(0, 104));
             QImage thumbnail;
-            SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, nullptr);
+            QString thumbErr;
+            SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
+            if (!thumbErr.isEmpty()) {
+                item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
+            }
             m_fileList->setItemWidget(item, createFileListRow(info.fileName(), file, thumbnail, m_fileList));
         }
 
@@ -742,7 +781,11 @@ void MainWindow::onAddFiles()
             item->setData(Qt::UserRole, file);
             item->setSizeHint(QSize(0, 104));
             QImage thumbnail;
-            SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, nullptr);
+            QString thumbErr;
+            SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
+            if (!thumbErr.isEmpty()) {
+                item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
+            }
             m_fileList->setItemWidget(item, createFileListRow(info.fileName(), file, thumbnail, m_fileList));
         }
     }
