@@ -1,6 +1,7 @@
 #ifndef DNGWRITER_H
 #define DNGWRITER_H
 
+#include <QImage>
 #include <QString>
 #include <vector>
 #include "SuperCCDProcessor.h"
@@ -22,6 +23,10 @@ public:
                                int height,
                                int bitDepth,
                                const SuperCCDMetadata &metadata,
+                               QString &error);
+
+    static bool writeRgbTiff16(const QString &outputPath,
+                               const QImage &image,
                                QString &error);
 };
 

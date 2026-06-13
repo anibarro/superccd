@@ -1330,7 +1330,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                       gainR, gainG, gainB);
     }
 
-    QImage filled(rectWidth, rectHeight, QImage::Format_RGB32);
+    QImage filled(rectWidth, rectHeight, QImage::Format_RGBX64);
     if (filled.isNull()) {
         error = QStringLiteral("Failed to allocate preview image.");
         return false;
@@ -1341,7 +1341,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
     const double contrastFactor = std::pow(2.0, toneContrast);
     const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
     for (int y = 0; y < rectHeight; ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(filled.scanLine(y));
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(filled.scanLine(y));
         for (int x = 0; x < rectWidth; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
             double linearR = (rectifiedRgb[idx * 3 + 0] * gainR * scaleR) / 65535.0;
@@ -1352,12 +1352,14 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
             linearG = std::clamp(0.5 + (linearG - 0.5) * contrastFactor, 0.0, 1.0);
             linearB = std::clamp(0.5 + (linearB - 0.5) * contrastFactor, 0.0, 1.0);
 
-            const int outR = static_cast<int>(std::pow(linearR, inverseGamma) * 255.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, inverseGamma) * 255.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, inverseGamma) * 255.0 + 0.5);
-            scanLine[x] = qRgb(std::clamp(outR, 0, 255),
-                               std::clamp(outG, 0, 255),
-                               std::clamp(outB, 0, 255));
+            const int outR = static_cast<int>(std::pow(linearR, inverseGamma) * 65535.0 + 0.5);
+            const int outG = static_cast<int>(std::pow(linearG, inverseGamma) * 65535.0 + 0.5);
+            const int outB = static_cast<int>(std::pow(linearB, inverseGamma) * 65535.0 + 0.5);
+            scanLine[x] = QRgba64::fromRgba64(
+                static_cast<quint16>(std::clamp(outR, 0, 65535)),
+                static_cast<quint16>(std::clamp(outG, 0, 65535)),
+                static_cast<quint16>(std::clamp(outB, 0, 65535)),
+                65535);
         }
     }
 
@@ -1526,7 +1528,7 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
         return false;
     }
 
-    QImage image(width, height, QImage::Format_RGB32);
+    QImage image(width, height, QImage::Format_RGBX64);
     if (image.isNull()) {
         error = QStringLiteral("Failed to allocate preview image.");
         return false;
@@ -1570,18 +1572,20 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
     const double scaleB = 65535.0 / static_cast<double>(maxB);
 
     for (int y = 0; y < height; ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(image.scanLine(y));
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
         for (int x = 0; x < width; ++x) {
             const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
             const double linearR = std::clamp((static_cast<double>(rgb[idx + 0]) * gainR * scaleR) / 65535.0, 0.0, 1.0);
             const double linearG = std::clamp((static_cast<double>(rgb[idx + 1]) * gainG * scaleG) / 65535.0, 0.0, 1.0);
             const double linearB = std::clamp((static_cast<double>(rgb[idx + 2]) * gainB * scaleB) / 65535.0, 0.0, 1.0);
-            const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 255.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, 1.0 / 2.2) * 255.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, 1.0 / 2.2) * 255.0 + 0.5);
-            scanLine[x] = qRgb(std::clamp(outR, 0, 255),
-                               std::clamp(outG, 0, 255),
-                               std::clamp(outB, 0, 255));
+            const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 65535.0 + 0.5);
+            const int outG = static_cast<int>(std::pow(linearG, 1.0 / 2.2) * 65535.0 + 0.5);
+            const int outB = static_cast<int>(std::pow(linearB, 1.0 / 2.2) * 65535.0 + 0.5);
+            scanLine[x] = QRgba64::fromRgba64(
+                static_cast<quint16>(std::clamp(outR, 0, 65535)),
+                static_cast<quint16>(std::clamp(outG, 0, 65535)),
+                static_cast<quint16>(std::clamp(outB, 0, 65535)),
+                65535);
         }
     }
 

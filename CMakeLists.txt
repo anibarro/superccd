@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(superccd2dng VERSION 0.1.8 LANGUAGES CXX)
+project(superccd2dng VERSION 0.1.9 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -61,17 +61,22 @@ if(DNG_SDK_INCLUDE_DIR AND DNG_SDK_LIBRARY)
   message(STATUS "Adobe DNG SDK found: ${DNG_SDK_INCLUDE_DIR}")
   add_compile_definitions(HAVE_DNG_SDK=1)
   include_directories(${DNG_SDK_INCLUDE_DIR})
-elseif(TIFF_FOUND)
+endif()
+
+if(TIFF_FOUND)
   message(STATUS "LibTIFF found: ${TIFF_INCLUDE_DIRS}")
   add_compile_definitions(HAVE_LIBTIFF=1)
   include_directories(${TIFF_INCLUDE_DIRS})
-else()
+endif()
+
+if(NOT (DNG_SDK_INCLUDE_DIR AND DNG_SDK_LIBRARY) AND NOT TIFF_FOUND)
   message(WARNING "Neither Adobe DNG SDK nor LibTIFF were found. DNG export will be disabled until one is configured.")
 endif()
 
 set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
+    src/PreviewImageProcessing.cpp
     src/SuperCCDProcessor.cpp
     src/DngWriter.cpp
     resources/app_resources.qrc
@@ -88,7 +93,8 @@ target_compile_definitions(superccd2dng PRIVATE APP_VERSION_STRING="${PROJECT_VE
 
 if(DNG_SDK_LIBRARY)
   target_link_libraries(superccd2dng PRIVATE ${DNG_SDK_LIBRARY})
-elseif(TIFF_FOUND)
+endif()
+if(TIFF_FOUND)
   target_link_libraries(superccd2dng PRIVATE ${TIFF_LIBRARIES})
 endif()
 

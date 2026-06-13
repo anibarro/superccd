@@ -19,7 +19,7 @@ The `_s_pixels.dng` and `_r_pixels.dng` files are diagnostic companions and are 
 5. Select a RAF file from the list.
 6. Click `Update Preview`.
 7. Adjust preview and merge settings if needed.
-8. Click `Export Preview` to save the current preview as a JPG if needed.
+8. Click `Export Preview` to save the current preview as a JPEG or 16-bit TIFF if needed.
 9. Click `Convert` to export the currently previewed file.
 10. Click `Convert All` to export every RAF in the list.
 
@@ -63,14 +63,18 @@ Generates a preview for the selected RAF file.
 
 ### Export Preview
 
-Saves the currently rendered preview as a `JPG`.
+Saves the currently rendered preview as a `JPEG` or lossless 16-bit RGB `TIFF`.
 
 - opens a popup to choose the destination folder
+- lets you choose between `JPEG` and `16-bit TIFF`
 - lets you set JPEG quality from `1` to `100`
 - can export at `12 MP` or resized as `6 MP`
-- writes files as `*_preview_12MP.jpg` or `*_preview_6MP.jpg`
-- exports the same preview adjustments currently shown in the app, including highlight compression
+- writes JPEG files as `*_preview_12MP.jpg` or `*_preview_6MP.jpg`
+- writes TIFF files as `*_preview_12MP.tif` or `*_preview_6MP.tif`
+- exports the same preview adjustments currently shown in the app, including highlight compression and sharpening
 - requires the selected RAF file to have an up-to-date preview first
+
+The preview source is rendered internally at 16-bit precision. Preview exports apply adjustments to that 16-bit source, and TIFF preserves the resulting 16-bit RGB values without JPEG compression. For responsive controls, the on-screen image is first scaled to the selected zoom and then adjusted with fast 8-bit lookup tables.
 
 Important behavior:
 
@@ -111,6 +115,16 @@ Preview-only saturation adjustment.
 - range: -100 to +100 (default 0)
 - negative values desaturate, positive values increase color intensity
 - does not affect export
+
+### Preview Sharpening
+
+Applies a mild luminance-only sharpening adjustment to the live preview and exported preview files.
+
+- range: 0% to 100% (default 0%)
+- sharpens the scaled on-screen image after a short idle delay so other sliders remain responsive
+- sharpens JPEG and 16-bit TIFF exports at their final 6 MP or 12 MP resolution
+- preserves RGB color differences to avoid introducing colored edge artifacts
+- does not affect DNG export
 
 ### Preview White Balance
 
@@ -331,6 +345,12 @@ When enabled, this exports the individual S and R sensor responses as separate D
 ### Can I convert files from the command line?
 
 Yes. Use: `superccd2dng.exe input.raf output.dng --6mp-cfa`
+
+To display the installed program version without opening the GUI, use:
+
+`superccd2dng.exe --version`
+
+The short form `superccd2dng.exe -v` is also supported.
 
 ### What does the R handoff delay do?
 

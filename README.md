@@ -129,6 +129,22 @@ Performance note:
 - the first preview or conversion of a RAF file is slower because the app must decode and cache the raw data
 - repeated previews on the same file are faster
 
+## Command Line
+
+Convert a RAF file:
+
+```powershell
+superccd2dng.exe input.raf output.dng --6mp-cfa
+```
+
+Display the installed version without opening the GUI:
+
+```powershell
+superccd2dng.exe --version
+```
+
+The short version option is `-v`.
+
 ## Build Requirements
 
 - Windows

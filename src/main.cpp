@@ -18,7 +18,7 @@
 // APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
 // If not defined (e.g., standalone compilation), use a default
 #ifndef APP_VERSION_STRING
-#define APP_VERSION_STRING "0.9.2"
+#define APP_VERSION_STRING "0.1.9"
 #endif
 
 static void write_log_message(const char *msg)
@@ -74,6 +74,51 @@ static void my_terminate_handler()
     std::_Exit(1);
 }
 
+static bool is_version_option(const char *argument)
+{
+    return std::strcmp(argument, "--version") == 0
+        || std::strcmp(argument, "-v") == 0;
+}
+
+static void print_version()
+{
+    char message[128];
+    const int length = std::snprintf(message,
+                                     sizeof(message),
+                                     "SuperCCD2DNG version %s\n",
+                                     APP_VERSION_STRING);
+    if (length <= 0) {
+        return;
+    }
+
+#ifdef _WIN32
+    HANDLE output = GetStdHandle(STD_OUTPUT_HANDLE);
+    bool attachedConsole = false;
+    if (output == nullptr || output == INVALID_HANDLE_VALUE) {
+        attachedConsole = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+        output = GetStdHandle(STD_OUTPUT_HANDLE);
+    }
+
+    if (output != nullptr && output != INVALID_HANDLE_VALUE) {
+        DWORD written = 0;
+        const int boundedLength = length < static_cast<int>(sizeof(message))
+            ? length
+            : static_cast<int>(sizeof(message) - 1);
+        WriteFile(output,
+                  message,
+                  static_cast<DWORD>(boundedLength),
+                  &written,
+                  nullptr);
+    }
+
+    if (attachedConsole) {
+        FreeConsole();
+    }
+#else
+    std::fputs(message, stdout);
+#endif
+}
+
 int main(int argc, char *argv[])
 {
     // Install handlers to catch crashes that don't throw C++ exceptions
@@ -85,6 +130,13 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setApplicationName(QStringLiteral("SuperCCD RAF to DNG Converter"));
     QCoreApplication::setApplicationVersion(QString::fromLatin1(APP_VERSION_STRING));
+
+    for (int i = 1; i < argc; ++i) {
+        if (is_version_option(argv[i])) {
+            print_version();
+            return 0;
+        }
+    }
 
     if (argc >= 3) {
         QCoreApplication app(argc, argv);
@@ -102,9 +154,6 @@ int main(int argc, char *argv[])
                 settings.rTransitionDelay = std::clamp(std::atof(argv[i] + 8), 0.0, 1.0);
             } else if (std::strncmp(argv[i], "--smoothness=", 12) == 0) {
                 settings.rTransitionSmoothness = std::clamp(std::atof(argv[i] + 12), 0.0, 1.0);
-            } else if (std::strcmp(argv[i], "--version") == 0 || std::strcmp(argv[i], "-v") == 0) {
-                printf("SuperCCD2DNG version %s\n", APP_VERSION_STRING);
-                return 0;
             }
         }
 

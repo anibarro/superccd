@@ -1,4 +1,6 @@
 #include "MainWindow.h"
+#include "DngWriter.h"
+#include "PreviewImageProcessing.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -36,7 +38,9 @@
 #include <algorithm>
 #include <QMessageBox>
 #include <QSpinBox>
-#include <array>
+#include <cmath>
+#include <cstdint>
+#include <vector>
 
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
@@ -47,10 +51,10 @@ constexpr int kDefaultPreviewTintSliderValue = 0;
 constexpr int kDefaultPreviewGammaSliderValue = 31;
 constexpr int kDefaultPreviewContrastSliderValue = 18;
 constexpr int kDefaultPreviewSaturationSliderValue = 64;
+constexpr int kDefaultPreviewSharpeningSliderValue = 0;
 constexpr int kDefaultPreviewHighlightCompressionSliderValue = 39;
 constexpr int kDefaultPreviewZoomSliderValue = 20;
 constexpr bool kDefaultAutoPreview = false;
-constexpr int kPreviewToneLutMaxInput = 8192;
 constexpr int kPreviewExportSixMpShortSide = 2016;
 
 enum class PreviewExportSize {
@@ -58,9 +62,108 @@ enum class PreviewExportSize {
     SixMp = 1
 };
 
+enum class PreviewExportFormat {
+    Jpeg = 0,
+    Tiff16 = 1
+};
+
 QSettings appSettings()
 {
     return QSettings(QStringLiteral("superccd"), QStringLiteral("superccd2dng"));
+}
+
+void suppressPreviewFalseColor(QImage &image)
+{
+    if (image.isNull() || image.width() < 2 || image.height() < 2) {
+        return;
+    }
+    if (image.format() != QImage::Format_RGBX64) {
+        image = image.convertToFormat(QImage::Format_RGBX64);
+    }
+
+    constexpr int radius = 3;
+    constexpr int diameter = radius * 2 + 1;
+    constexpr int filterArea = diameter * diameter;
+    const int width = image.width();
+    const int height = image.height();
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<std::int32_t> horizontalDr(pixelCount);
+    std::vector<std::int32_t> horizontalDb(pixelCount);
+
+    // Blur only color differences. The final reconstruction keeps the original
+    // luminance, so edge sharpness is not reduced.
+    for (int y = 0; y < height; ++y) {
+        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(image.constScanLine(y));
+        int sumDr = 0;
+        int sumDb = 0;
+        for (int dx = -radius; dx <= radius; ++dx) {
+            const QRgba64 pixel = scanLine[std::clamp(dx, 0, width - 1)];
+            sumDr += static_cast<int>(pixel.red()) - static_cast<int>(pixel.green());
+            sumDb += static_cast<int>(pixel.blue()) - static_cast<int>(pixel.green());
+        }
+
+        const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            horizontalDr[rowOffset + static_cast<size_t>(x)] = sumDr;
+            horizontalDb[rowOffset + static_cast<size_t>(x)] = sumDb;
+            if (x + 1 >= width) {
+                continue;
+            }
+
+            const QRgba64 leaving = scanLine[std::clamp(x - radius, 0, width - 1)];
+            const QRgba64 entering = scanLine[std::clamp(x + radius + 1, 0, width - 1)];
+            sumDr += (static_cast<int>(entering.red()) - static_cast<int>(entering.green())) -
+                (static_cast<int>(leaving.red()) - static_cast<int>(leaving.green()));
+            sumDb += (static_cast<int>(entering.blue()) - static_cast<int>(entering.green())) -
+                (static_cast<int>(leaving.blue()) - static_cast<int>(leaving.green()));
+        }
+    }
+
+    std::vector<int> columnDr(static_cast<size_t>(width), 0);
+    std::vector<int> columnDb(static_cast<size_t>(width), 0);
+    for (int dy = -radius; dy <= radius; ++dy) {
+        const int sourceY = std::clamp(dy, 0, height - 1);
+        const size_t rowOffset = static_cast<size_t>(sourceY) * static_cast<size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            columnDr[static_cast<size_t>(x)] += horizontalDr[rowOffset + static_cast<size_t>(x)];
+            columnDb[static_cast<size_t>(x)] += horizontalDb[rowOffset + static_cast<size_t>(x)];
+        }
+    }
+
+    for (int y = 0; y < height; ++y) {
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
+        for (int x = 0; x < width; ++x) {
+            const QRgba64 source = scanLine[x];
+            const double luma = (source.red() + 2.0 * source.green() + source.blue()) * 0.25;
+            const double filteredDr = static_cast<double>(columnDr[static_cast<size_t>(x)]) / filterArea;
+            const double filteredDb = static_cast<double>(columnDb[static_cast<size_t>(x)]) / filterArea;
+            const double filteredG = luma - (filteredDr + filteredDb) * 0.25;
+            scanLine[x] = QRgba64::fromRgba64(
+                static_cast<quint16>(std::clamp(
+                    static_cast<int>(std::lround(filteredG + filteredDr)), 0, 65535)),
+                static_cast<quint16>(std::clamp(
+                    static_cast<int>(std::lround(filteredG)), 0, 65535)),
+                static_cast<quint16>(std::clamp(
+                    static_cast<int>(std::lround(filteredG + filteredDb)), 0, 65535)),
+                65535);
+        }
+
+        if (y + 1 >= height) {
+            continue;
+        }
+        const int leavingY = std::clamp(y - radius, 0, height - 1);
+        const int enteringY = std::clamp(y + radius + 1, 0, height - 1);
+        const size_t leavingOffset = static_cast<size_t>(leavingY) * static_cast<size_t>(width);
+        const size_t enteringOffset = static_cast<size_t>(enteringY) * static_cast<size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            columnDr[static_cast<size_t>(x)] +=
+                horizontalDr[enteringOffset + static_cast<size_t>(x)] -
+                horizontalDr[leavingOffset + static_cast<size_t>(x)];
+            columnDb[static_cast<size_t>(x)] +=
+                horizontalDb[enteringOffset + static_cast<size_t>(x)] -
+                horizontalDb[leavingOffset + static_cast<size_t>(x)];
+        }
+    }
 }
 
 QString listItemPath(const QListWidgetItem *item)
@@ -158,6 +261,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewContrastValueLabel(new QLabel(this))
     , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
     , m_previewSaturationValueLabel(new QLabel(this))
+    , m_previewSharpeningSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewSharpeningValueLabel(new QLabel(this))
     , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
     , m_previewHighlightCompressionValueLabel(new QLabel(this))
     , m_previewRotationCombo(new QComboBox(this))
@@ -174,6 +279,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusLabel(new QLabel(tr("Ready."), this))
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
+    , m_previewSharpeningTimer(new QTimer(this))
 {
     setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
     resize(1180, 760);
@@ -221,6 +327,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewSaturationSlider->setRange(-100, 100);
     m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
     m_previewSaturationValueLabel->setText(QStringLiteral("0"));
+    // Sharpening is deliberately limited to a luma-only unsharp pass.
+    m_previewSharpeningSlider->setRange(0, 100);
+    m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
+    m_previewSharpeningValueLabel->setText(QStringLiteral("0%"));
     // Highlight compression slider: range 0 to 100, default 0
     m_previewHighlightCompressionSlider->setRange(0, 100);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
@@ -252,6 +362,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusClearTimer->setSingleShot(true);
     m_autoPreviewTimer->setSingleShot(true);
     m_autoPreviewTimer->setInterval(250);
+    m_previewSharpeningTimer->setSingleShot(true);
+    m_previewSharpeningTimer->setInterval(100);
     warmupNoteLabel->setWordWrap(true);
     warmupNoteLabel->setStyleSheet(QStringLiteral("color:#808080;"));
 
@@ -290,6 +402,8 @@ MainWindow::MainWindow(QWidget *parent)
     previewControlsLayout->addRow(tr(""), m_previewContrastValueLabel);
     previewControlsLayout->addRow(tr("Saturation:"), m_previewSaturationSlider);
     previewControlsLayout->addRow(tr(""), m_previewSaturationValueLabel);
+    previewControlsLayout->addRow(tr("Sharpening:"), m_previewSharpeningSlider);
+    previewControlsLayout->addRow(tr(""), m_previewSharpeningValueLabel);
     previewControlsLayout->addRow(tr("Highlight compression:"), m_previewHighlightCompressionSlider);
     previewControlsLayout->addRow(tr(""), m_previewHighlightCompressionValueLabel);
     previewControlsLayout->addRow(tr("White balance:"), m_previewWhiteBalanceSlider);
@@ -347,6 +461,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_saveDefaultsButton, &QPushButton::clicked, this, &MainWindow::onSaveDefaults);
     connect(m_statusClearTimer, &QTimer::timeout, m_statusLabel, &QLabel::clear);
     connect(m_autoPreviewTimer, &QTimer::timeout, this, &MainWindow::onAutoPreviewTimer);
+    connect(m_previewSharpeningTimer,
+            &QTimer::timeout,
+            this,
+            &MainWindow::updateSharpenedPreviewDisplay);
     connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int value) {
         m_rTransitionDelayValueLabel->setText(QString::number(static_cast<double>(value) / 100.0, 'f', 2));
         queueAutoPreview();
@@ -362,6 +480,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
+    connect(m_previewSharpeningSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSharpeningChanged);
     connect(m_previewHighlightCompressionSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewHighlightCompressionChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
@@ -556,6 +675,10 @@ void MainWindow::onRemoveSelectedFiles()
 
     if (m_fileList->count() == 0) {
         m_currentPreviewImage = QImage();
+        m_scaledPreviewImage = QImage();
+        m_adjustedPreviewImage = QImage();
+        m_scaledPreviewTargetSize = QSize();
+        m_previewSharpeningTimer->stop();
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
         m_previewLabel->unsetCursor();
@@ -622,8 +745,12 @@ void MainWindow::onConvertCurrent()
         }
 
         m_currentPreviewImage = preview;
+        suppressPreviewFalseColor(m_currentPreviewImage);
+        m_scaledPreviewImage = QImage();
+        m_adjustedPreviewImage = QImage();
+        m_scaledPreviewTargetSize = QSize();
         m_lastPreviewedInputPath = inputPath;
-        m_previewLabel->setPixmap(QPixmap::fromImage(preview.scaled(m_previewLabel->size(), Qt::KeepAspectRatio, Qt::SmoothTransformation)));
+        updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
 
@@ -757,6 +884,10 @@ void MainWindow::onUpdatePreview()
         || m_lastPreviewedInputPath != inputPath;
 
     m_currentPreviewImage = preview;
+    suppressPreviewFalseColor(m_currentPreviewImage);
+    m_scaledPreviewImage = QImage();
+    m_adjustedPreviewImage = QImage();
+    m_scaledPreviewTargetSize = QSize();
     m_lastPreviewedInputPath = inputPath;
     if (shouldFitPreview) {
         const QSize viewportSize = m_previewScrollArea->viewport()->size();
@@ -813,11 +944,35 @@ void MainWindow::onExportPreview()
     folderLayout->addWidget(browseButton);
     layout->addRow(tr("Folder:"), folderLayout);
 
+    QComboBox *formatComboBox = new QComboBox(&dialog);
+    formatComboBox->addItem(tr("JPEG"), static_cast<int>(PreviewExportFormat::Jpeg));
+    formatComboBox->addItem(tr("16-bit TIFF"), static_cast<int>(PreviewExportFormat::Tiff16));
+    const int exportFormatSetting = settingsStore.value(
+        QStringLiteral("previewExport/format"),
+        static_cast<int>(PreviewExportFormat::Jpeg)).toInt();
+    const int exportFormatIndex = formatComboBox->findData(exportFormatSetting);
+    formatComboBox->setCurrentIndex(exportFormatIndex >= 0 ? exportFormatIndex : 0);
+    layout->addRow(tr("Format:"), formatComboBox);
+
     QSpinBox *qualitySpinBox = new QSpinBox(&dialog);
     qualitySpinBox->setRange(1, 100);
     qualitySpinBox->setValue(std::clamp(settingsStore.value(QStringLiteral("previewExport/quality"), 90).toInt(), 1, 100));
     qualitySpinBox->setSuffix(tr("%"));
     layout->addRow(tr("JPEG quality:"), qualitySpinBox);
+    QWidget *qualityLabel = layout->labelForField(qualitySpinBox);
+    const auto updateQualityAvailability = [formatComboBox, qualitySpinBox, qualityLabel]() {
+        const bool jpegSelected =
+            formatComboBox->currentData().toInt() == static_cast<int>(PreviewExportFormat::Jpeg);
+        qualitySpinBox->setEnabled(jpegSelected);
+        if (qualityLabel) {
+            qualityLabel->setEnabled(jpegSelected);
+        }
+    };
+    connect(formatComboBox,
+            &QComboBox::currentIndexChanged,
+            &dialog,
+            [updateQualityAvailability](int) { updateQualityAvailability(); });
+    updateQualityAvailability();
 
     QComboBox *sizeComboBox = new QComboBox(&dialog);
     sizeComboBox->addItem(tr("12 MP"), static_cast<int>(PreviewExportSize::FullSize12Mp));
@@ -862,13 +1017,18 @@ void MainWindow::onExportPreview()
     }
 
     const PreviewExportSize exportSize = static_cast<PreviewExportSize>(sizeComboBox->currentData().toInt());
+    const PreviewExportFormat exportFormat =
+        static_cast<PreviewExportFormat>(formatComboBox->currentData().toInt());
     const QString exportSizeSuffix = exportSize == PreviewExportSize::SixMp
         ? QStringLiteral("_6MP")
         : QStringLiteral("_12MP");
+    const QString extension = exportFormat == PreviewExportFormat::Tiff16
+        ? QStringLiteral(".tif")
+        : QStringLiteral(".jpg");
     const QString outputPath = QDir(targetFolder).filePath(QFileInfo(inputPath).completeBaseName()
                                                            + QStringLiteral("_preview")
                                                            + exportSizeSuffix
-                                                           + QStringLiteral(".jpg"));
+                                                           + extension);
     if (QFile::exists(outputPath)) {
         const auto overwrite = QMessageBox::question(this,
                                                      tr("Overwrite Preview"),
@@ -878,7 +1038,7 @@ void MainWindow::onExportPreview()
         }
     }
 
-    QImage exportImage = buildAdjustedPreviewImage();
+    QImage exportImage = buildAdjustedPreviewImage16();
     if (exportImage.isNull()) {
         showStatus(tr("Preview export failed."));
         return;
@@ -889,16 +1049,30 @@ void MainWindow::onExportPreview()
         showStatus(tr("Preview export resize failed."));
         return;
     }
+    PreviewImageProcessing::applyLumaSharpening16(
+        exportImage,
+        m_previewSharpeningSlider->value());
 
     const int quality = qualitySpinBox->value();
-    if (!exportImage.save(outputPath, "JPG", quality)) {
-        showStatus(tr("Could not save preview JPG."));
-        return;
+    if (exportFormat == PreviewExportFormat::Tiff16) {
+        QString tiffError;
+        if (!DngWriter::writeRgbTiff16(outputPath, exportImage, tiffError)) {
+            QFile::remove(outputPath);
+            showStatus(tr("Could not save 16-bit preview TIFF: %1").arg(tiffError));
+            return;
+        }
+    } else {
+        const QImage jpegImage = exportImage.convertToFormat(QImage::Format_RGB32);
+        if (!jpegImage.save(outputPath, "JPG", quality)) {
+            showStatus(tr("Could not save preview JPG."));
+            return;
+        }
     }
 
     settingsStore.setValue(QStringLiteral("previewExport/folder"), targetFolder);
     settingsStore.setValue(QStringLiteral("previewExport/quality"), quality);
     settingsStore.setValue(QStringLiteral("previewExport/size"), sizeComboBox->currentData().toInt());
+    settingsStore.setValue(QStringLiteral("previewExport/format"), formatComboBox->currentData().toInt());
     showStatus(tr("Preview exported to %1").arg(outputPath));
 }
 
@@ -924,6 +1098,8 @@ void MainWindow::updateControls(bool busy)
     m_previewContrastValueLabel->setEnabled(!busy);
     m_previewSaturationSlider->setEnabled(!busy);
     m_previewSaturationValueLabel->setEnabled(!busy);
+    m_previewSharpeningSlider->setEnabled(!busy);
+    m_previewSharpeningValueLabel->setEnabled(!busy);
     m_previewHighlightCompressionSlider->setEnabled(!busy);
     m_previewHighlightCompressionValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
@@ -988,19 +1164,25 @@ void MainWindow::onPreviewSaturationChanged(int value)
     updatePreviewDisplay();
 }
 
+void MainWindow::onPreviewSharpeningChanged(int value)
+{
+    m_previewSharpeningValueLabel->setText(QStringLiteral("%1%").arg(value));
+    updatePreviewDisplay();
+}
+
 void MainWindow::onPreviewHighlightCompressionChanged(int value)
 {
     m_previewHighlightCompressionValueLabel->setText(QString::number(value));
     updatePreviewDisplay();
 }
 
-QImage MainWindow::buildAdjustedPreviewImage() const
+QImage MainWindow::buildAdjustedPreviewImage16() const
 {
     if (m_currentPreviewImage.isNull()) {
         return QImage();
     }
 
-    QImage displayImage = m_currentPreviewImage.convertToFormat(QImage::Format_RGB32);
+    QImage adjustedImage = m_currentPreviewImage.convertToFormat(QImage::Format_RGBX64);
 
     const double exposureEv = static_cast<double>(m_previewExposureSlider->value()) / 10.0;
     const double exposureScale = std::pow(2.0, exposureEv);
@@ -1010,69 +1192,71 @@ QImage MainWindow::buildAdjustedPreviewImage() const
     const double tintBias = static_cast<double>(m_previewTintSlider->value()) / 100.0;
     const double greenScale = std::pow(2.0, -tintBias);
     constexpr double kOriginalGamma = 2.2;
-    const double newGamma = static_cast<double>(m_previewGammaSlider->value()) / 100.0;
+    const double newGamma =
+        std::max(static_cast<double>(m_previewGammaSlider->value()) / 100.0, 0.01);
     const double contrastBias = static_cast<double>(m_previewContrastSlider->value()) / 100.0;
     const double contrastScale = 1.0 + contrastBias;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
     const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = static_cast<double>(m_previewHighlightCompressionSlider->value()) / 100.0;
-
-    uint8_t gammaLut[256];
-    for (int i = 0; i < 256; ++i) {
-        double v = static_cast<double>(i);
-
-        double vLinear = std::pow(std::clamp(v / 255.0, 0.0, 1.0), invOriginalGamma);
-
-        if (contrastScale != 1.0) {
-            vLinear = (vLinear - 0.5) * contrastScale + 0.5;
-        }
-
-        v = std::clamp(std::pow(std::clamp(vLinear, 0.0, 1.0), invNewGamma) * 255.0, 0.0, 255.0);
-        gammaLut[i] = static_cast<uint8_t>(v + 0.5);
-    }
-
-    std::array<uint8_t, kPreviewToneLutMaxInput + 1> toneLut{};
     const double compressionStart = 200.0 - highlightCompression * 152.0;
     const double compressionStrength = highlightCompression * 2.0
         + highlightCompression * highlightCompression * 14.0;
-    for (int i = 0; i <= kPreviewToneLutMaxInput; ++i) {
-        double compressed = static_cast<double>(i);
-        if (highlightCompression > 0.0 && compressed > compressionStart) {
-            const double excess = compressed - compressionStart;
-            compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
+    const auto buildToneLut = [&](double channelScale) {
+        std::vector<quint16> lut(65536);
+        for (int i = 0; i <= 65535; ++i) {
+            double compressed = (static_cast<double>(i) / 257.0) * exposureScale * channelScale;
+            if (highlightCompression > 0.0 && compressed > compressionStart) {
+                const double excess = compressed - compressionStart;
+                compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
+            }
+
+            double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invOriginalGamma);
+            if (contrastScale != 1.0) {
+                linear = (linear - 0.5) * contrastScale + 0.5;
+            }
+            const double output =
+                std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
+            lut[static_cast<size_t>(i)] = static_cast<quint16>(
+                std::clamp(static_cast<int>(std::lround(output)), 0, 65535));
         }
-        const int lutIndex = std::clamp(static_cast<int>(compressed + 0.5), 0, 255);
-        toneLut[static_cast<std::size_t>(i)] = gammaLut[lutIndex];
-    }
+        return lut;
+    };
+
+    const std::vector<quint16> redLut = buildToneLut(redScale);
+    const std::vector<quint16> greenLut = buildToneLut(greenScale);
+    const std::vector<quint16> blueLut = buildToneLut(blueScale);
 
     const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
     const double saturationScale = 1.0 + saturationBias;
 
-    for (int y = 0; y < displayImage.height(); ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
-        for (int x = 0; x < displayImage.width(); ++x) {
-            const QRgb src = scanLine[x];
-
-            int r = static_cast<int>(qRed(src) * exposureScale * redScale + 0.5);
-            int g = static_cast<int>(qGreen(src) * exposureScale * greenScale + 0.5);
-            int b = static_cast<int>(qBlue(src) * exposureScale * blueScale + 0.5);
-
-            r = toneLut[static_cast<std::size_t>(std::clamp(r, 0, kPreviewToneLutMaxInput))];
-            g = toneLut[static_cast<std::size_t>(std::clamp(g, 0, kPreviewToneLutMaxInput))];
-            b = toneLut[static_cast<std::size_t>(std::clamp(b, 0, kPreviewToneLutMaxInput))];
+    for (int y = 0; y < adjustedImage.height(); ++y) {
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(adjustedImage.scanLine(y));
+        for (int x = 0; x < adjustedImage.width(); ++x) {
+            const QRgba64 source = scanLine[x];
+            int r = redLut[static_cast<size_t>(source.red())];
+            int g = greenLut[static_cast<size_t>(source.green())];
+            int b = blueLut[static_cast<size_t>(source.blue())];
 
             if (saturationScale != 1.0) {
                 const double gray = (r + g + b) / 3.0;
-                r = static_cast<int>(std::clamp(gray + (r - gray) * saturationScale, 0.0, 255.0) + 0.5);
-                g = static_cast<int>(std::clamp(gray + (g - gray) * saturationScale, 0.0, 255.0) + 0.5);
-                b = static_cast<int>(std::clamp(gray + (b - gray) * saturationScale, 0.0, 255.0) + 0.5);
+                r = std::clamp(static_cast<int>(
+                    std::lround(gray + (r - gray) * saturationScale)), 0, 65535);
+                g = std::clamp(static_cast<int>(
+                    std::lround(gray + (g - gray) * saturationScale)), 0, 65535);
+                b = std::clamp(static_cast<int>(
+                    std::lround(gray + (b - gray) * saturationScale)), 0, 65535);
             }
 
-            scanLine[x] = qRgb(r, g, b);
+            scanLine[x] = QRgba64::fromRgba64(
+                static_cast<quint16>(r),
+                static_cast<quint16>(g),
+                static_cast<quint16>(b),
+                65535);
         }
     }
 
-    return displayImage;
+    return adjustedImage;
 }
 
 void MainWindow::updatePreviewDisplay()
@@ -1095,14 +1279,30 @@ void MainWindow::updatePreviewDisplay()
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
     const QSize scaledSize(std::max(1, static_cast<int>(m_currentPreviewImage.width() * zoom)),
                            std::max(1, static_cast<int>(m_currentPreviewImage.height() * zoom)));
-    const QImage displayImage = buildAdjustedPreviewImage();
-    if (displayImage.isNull()) {
+    if (m_scaledPreviewImage.isNull() || m_scaledPreviewTargetSize != scaledSize) {
+        m_scaledPreviewImage = m_currentPreviewImage.scaled(scaledSize,
+                                                            Qt::KeepAspectRatio,
+                                                            Qt::SmoothTransformation)
+                                   .convertToFormat(QImage::Format_RGB32);
+        m_scaledPreviewTargetSize = scaledSize;
+    }
+
+    PreviewAdjustmentValues adjustments;
+    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
+    adjustments.tint = m_previewTintSlider->value();
+    adjustments.gammaHundredths = m_previewGammaSlider->value();
+    adjustments.contrast = m_previewContrastSlider->value();
+    adjustments.saturation = m_previewSaturationSlider->value();
+    adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+    m_adjustedPreviewImage = PreviewImageProcessing::applyDisplayAdjustments(
+        m_scaledPreviewImage,
+        adjustments);
+    if (m_adjustedPreviewImage.isNull()) {
         return;
     }
 
-    const QPixmap pixmap = QPixmap::fromImage(displayImage.scaled(scaledSize,
-                                                                  Qt::KeepAspectRatio,
-                                                                  Qt::SmoothTransformation));
+    const QPixmap pixmap = QPixmap::fromImage(m_adjustedPreviewImage);
     m_previewLabel->setPixmap(pixmap);
     m_previewLabel->resize(pixmap.size());
     m_previewLabel->setCursor(Qt::OpenHandCursor);
@@ -1111,6 +1311,25 @@ void MainWindow::updatePreviewDisplay()
     const int newVValue = static_cast<int>(oldCenterY * pixmap.height() - viewportSize.height() * 0.5 + 0.5);
     m_previewScrollArea->horizontalScrollBar()->setValue(std::max(0, newHValue));
     m_previewScrollArea->verticalScrollBar()->setValue(std::max(0, newVValue));
+
+    if (m_previewSharpeningSlider->value() > 0) {
+        m_previewSharpeningTimer->start();
+    } else {
+        m_previewSharpeningTimer->stop();
+    }
+}
+
+void MainWindow::updateSharpenedPreviewDisplay()
+{
+    if (m_adjustedPreviewImage.isNull() || m_previewSharpeningSlider->value() <= 0) {
+        return;
+    }
+
+    QImage sharpenedImage = m_adjustedPreviewImage.copy();
+    PreviewImageProcessing::applyLumaSharpening8(
+        sharpenedImage,
+        m_previewSharpeningSlider->value());
+    m_previewLabel->setPixmap(QPixmap::fromImage(sharpenedImage));
 }
 
 void MainWindow::showStatus(const QString &message)
@@ -1171,6 +1390,11 @@ void MainWindow::loadSavedDefaults()
     m_previewSaturationSlider->setValue(std::clamp(previewSaturation,
                                                    m_previewSaturationSlider->minimum(),
                                                    m_previewSaturationSlider->maximum()));
+    const int previewSharpening = settingsStore.value(QStringLiteral("defaults/previewSharpeningSlider"),
+                                                      kDefaultPreviewSharpeningSliderValue).toInt();
+    m_previewSharpeningSlider->setValue(std::clamp(previewSharpening,
+                                                   m_previewSharpeningSlider->minimum(),
+                                                   m_previewSharpeningSlider->maximum()));
     const int previewHighlightCompression = settingsStore.value(QStringLiteral("defaults/previewHighlightCompressionSlider"),
                                                                 kDefaultPreviewHighlightCompressionSliderValue).toInt();
     m_previewHighlightCompressionSlider->setValue(std::clamp(previewHighlightCompression,
@@ -1201,6 +1425,7 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/previewGammaSlider"), m_previewGammaSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewContrastSlider"), m_previewContrastSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewSaturationSlider"), m_previewSaturationSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewSharpeningSlider"), m_previewSharpeningSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewHighlightCompressionSlider"), m_previewHighlightCompressionSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewZoomSlider"), m_previewZoomSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
@@ -1227,6 +1452,7 @@ void MainWindow::onResetDefaults()
     m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
     m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
     m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
+    m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
     m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);

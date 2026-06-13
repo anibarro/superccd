@@ -46,6 +46,7 @@ private slots:
     void onPreviewGammaChanged(int value);
     void onPreviewContrastChanged(int value);
     void onPreviewSaturationChanged(int value);
+    void onPreviewSharpeningChanged(int value);
     void onPreviewHighlightCompressionChanged(int value);
     void onSaveDefaults();
     void onResetDefaults();
@@ -53,8 +54,9 @@ private slots:
 
 private:
     void updateControls(bool busy);
-    QImage buildAdjustedPreviewImage() const;
+    QImage buildAdjustedPreviewImage16() const;
     void updatePreviewDisplay();
+    void updateSharpenedPreviewDisplay();
     void showStatus(const QString &message);
     ConversionSettings currentSettings() const;
     void applyParameterSettings(const ConversionSettings &settings);
@@ -86,6 +88,8 @@ private:
     QLabel *m_previewContrastValueLabel;
     QSlider *m_previewSaturationSlider;
     QLabel *m_previewSaturationValueLabel;
+    QSlider *m_previewSharpeningSlider;
+    QLabel *m_previewSharpeningValueLabel;
     QSlider *m_previewHighlightCompressionSlider;
     QLabel *m_previewHighlightCompressionValueLabel;
     QComboBox *m_previewRotationCombo;
@@ -102,7 +106,11 @@ private:
     QLabel *m_statusLabel;
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;
+    QTimer *m_previewSharpeningTimer;
     QImage m_currentPreviewImage;
+    QImage m_scaledPreviewImage;
+    QImage m_adjustedPreviewImage;
+    QSize m_scaledPreviewTargetSize;
     bool m_previewDragging = false;
     QPoint m_lastPreviewDragPos;
     QString m_lastPreviewedInputPath;

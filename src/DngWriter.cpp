@@ -542,6 +542,50 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
     logProcessing("Linear DNG write completed: %s (%dx%d)", outputPath.toUtf8().constData(), width, height);
     return true;
 }
+
+bool writeRgbTiff16WithLibTiff(const QString &outputPath,
+                               const QImage &image,
+                               QString &error)
+{
+    const QImage rgbImage = image.convertToFormat(QImage::Format_RGBX64);
+    TIFFSetErrorHandler(libtiffErrorHandler);
+    TIFF *tif = TIFFOpen(outputPath.toUtf8().constData(), "w");
+    if (!tif) {
+        error = QStringLiteral("Unable to open output TIFF file.");
+        return false;
+    }
+
+    TIFFSetField(tif, TIFFTAG_IMAGEWIDTH, static_cast<uint32_t>(rgbImage.width()));
+    TIFFSetField(tif, TIFFTAG_IMAGELENGTH, static_cast<uint32_t>(rgbImage.height()));
+    TIFFSetField(tif, TIFFTAG_BITSPERSAMPLE, static_cast<uint16_t>(16));
+    TIFFSetField(tif, TIFFTAG_SAMPLESPERPIXEL, static_cast<uint16_t>(3));
+    TIFFSetField(tif, TIFFTAG_PHOTOMETRIC, static_cast<uint16_t>(PHOTOMETRIC_RGB));
+    TIFFSetField(tif, TIFFTAG_PLANARCONFIG, static_cast<uint16_t>(PLANARCONFIG_CONTIG));
+    TIFFSetField(tif, TIFFTAG_COMPRESSION, static_cast<uint16_t>(COMPRESSION_NONE));
+    TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, static_cast<uint16_t>(SAMPLEFORMAT_UINT));
+    TIFFSetField(tif, TIFFTAG_ORIENTATION, static_cast<uint16_t>(ORIENTATION_TOPLEFT));
+    TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+    TIFFSetField(tif, TIFFTAG_SOFTWARE, "superccd2dng");
+
+    std::vector<uint16_t> rowBuffer(static_cast<size_t>(rgbImage.width()) * 3);
+    for (int y = 0; y < rgbImage.height(); ++y) {
+        const QRgba64 *source = reinterpret_cast<const QRgba64 *>(rgbImage.constScanLine(y));
+        for (int x = 0; x < rgbImage.width(); ++x) {
+            const size_t offset = static_cast<size_t>(x) * 3;
+            rowBuffer[offset + 0] = source[x].red();
+            rowBuffer[offset + 1] = source[x].green();
+            rowBuffer[offset + 2] = source[x].blue();
+        }
+        if (TIFFWriteScanline(tif, rowBuffer.data(), y, 0) < 0) {
+            TIFFClose(tif);
+            error = QStringLiteral("Failed to write 16-bit TIFF scanline.");
+            return false;
+        }
+    }
+
+    TIFFClose(tif);
+    return true;
+}
 #endif
 }
 
@@ -615,6 +659,24 @@ bool DngWriter::writeLinearDng(const QString &outputPath,
     Q_UNUSED(bitDepth)
     Q_UNUSED(metadata)
     error = QStringLiteral("No DNG writer available. Install LibTIFF or Adobe DNG SDK and rebuild the project.");
+    return false;
+#endif
+}
+
+bool DngWriter::writeRgbTiff16(const QString &outputPath,
+                               const QImage &image,
+                               QString &error)
+{
+    if (image.isNull()) {
+        error = QStringLiteral("Invalid image data for TIFF export.");
+        return false;
+    }
+
+#ifdef HAVE_LIBTIFF
+    return writeRgbTiff16WithLibTiff(outputPath, image, error);
+#else
+    Q_UNUSED(outputPath)
+    error = QStringLiteral("16-bit TIFF export requires LibTIFF support.");
     return false;
 #endif
 }
