@@ -1,0 +1,8 @@
+superccd2dng (1.1.0) stable; urgency=low
+
+  * Initial release for Raspberry Pi OS (ARM64)
+  * Support for Raspberry Pi 500+ and other ARM64 devices
+  * Qt6 with Wayland support
+  * .deb package for easy installation
+
+ -- Eduardo Anibarro <anibarro@example.com>  Sat, 13 Jun 2026 21:00:00 +0200

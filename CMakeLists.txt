@@ -14,8 +14,8 @@ find_path(LIBRAW_INCLUDE_DIR NAMES libraw/libraw.h raw/libraw.h
           PATHS ${LIBRAW_ROOT}
           PATH_SUFFIXES include include/lib)
 find_library(LIBRAW_LIBRARY NAMES libraw_static rawlibraw libraw libraw-19 libraw19
-             PATHS ${LIBRAW_ROOT}
-             PATH_SUFFIXES lib lib64 lib/x64 lib64/x64 lib/Win32)
+              PATHS ${LIBRAW_ROOT}
+              PATH_SUFFIXES lib lib64 lib/x64 lib64/x64 lib/Win32 lib/aarch64-linux-gnu)
 
 set(DNG_SDK_ROOT "" CACHE PATH "Root directory for Adobe DNG SDK installation")
 find_path(DNG_SDK_INCLUDE_DIR NAMES dng_sdk.h
@@ -153,4 +153,10 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.9" OR CMAKE_GENERATOR MATCHES "Visual 
   if(IPO_SUPPORTED)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
   endif()
+endif()
+
+# Linux installation support
+if(LINUX)
+  install(TARGETS superccd2dng RUNTIME DESTINATION bin)
+  install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION share/doc/superccd2dng RENAME copyright)
 endif()

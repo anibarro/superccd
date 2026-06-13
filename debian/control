@@ -1,0 +1,19 @@
+Source: superccd2dng
+Section: graphics
+Priority: optional
+Maintainer: Eduardo Anibarro <anibarro@example.com>
+Build-Depends: cmake, qt6-base-dev, qt6-wayland, libraw-dev, libtiff-dev, build-essential, debhelper-compat (= 13)
+Standards-Version: 4.6.0
+
+Package: superccd2dng
+Architecture: arm64
+Depends: qt6-base (>= 6.4), qt6-wayland, libraw19 (>= 0.20), libtiff6 (>= 4.3), ${misc:Depends}
+Description: Fujifilm S3 Pro RAF to DNG converter
+ A desktop application for converting Fujifilm FinePix S3 Pro .RAF files
+ into editable DNG files, with a focus on the Super CCD SR II sensor's
+ separate S and R responses.
+ .
+ The application loads Fujifilm S3 Pro RAF files, extracts separate S and R
+ shot data, merges both responses into a highlight-safe 6MP CFA DNG, and
+ preserves the original embedded RAF preview for the GUI file list and DNG
+ preview embedding.
