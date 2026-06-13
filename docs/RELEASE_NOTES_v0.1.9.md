@@ -32,22 +32,6 @@ This release improves preview image quality, adds true 16-bit TIFF preview expor
 - Sharpening changes luminance detail without increasing color separation at edges.
 - The sharpening setting is included in saved and restored defaults.
 
-### Preview window
-
-- Moved the image preview into a separate, independently resizable window.
-- The RAF list and processing settings remain together in the main window.
-- Added `Show Preview` to reopen or bring the preview window to the front.
-- The preview window remembers its size and position between sessions.
-
-### White balance picker
-
-- Added a checkable white balance picker for the live preview.
-- The resizable sample box assumes the selected pixels are neutral gray and
-  calculates matching white-balance and tint slider values.
-- The mouse wheel resizes the picker while it is active, and left-click applies
-  the sample.
-- Picker calculations use the full-resolution 16-bit preview data.
-
 ### Command line
 
 - Added standalone `--version` and `-v` options that print the current program version without opening the GUI.
