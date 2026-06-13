@@ -146,7 +146,7 @@ Preview-only white-balance bias.
 
 - negative values cool the preview
 - positive values warm the preview
-- does not affect export
+- affects preview display and JPEG/TIFF preview exports, not DNG output
 
 ### Preview Tint
 
@@ -154,7 +154,19 @@ Preview-only tint adjustment for green channel balance.
 
 - negative values shift toward magenta
 - positive values shift toward green
-- does not affect export
+- affects preview display and JPEG/TIFF preview exports, not DNG output
+
+### White Balance Picker
+
+The checkable white balance picker sets the preview white balance and tint from
+an area that should be neutral gray.
+
+- turn the picker on and move the box over the preview
+- use the mouse wheel to resize the sample box
+- left-click to calculate and apply white balance and tint
+- turn the picker off to restore normal wheel zoom and drag-to-pan controls
+- the calculation uses the full-resolution 16-bit preview pixels inside the box
+- affects the live preview and JPEG/TIFF preview exports, not DNG output
 
 ### Preview Rotation
 

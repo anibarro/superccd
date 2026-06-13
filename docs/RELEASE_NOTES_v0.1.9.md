@@ -32,6 +32,15 @@ This release improves preview image quality, adds true 16-bit TIFF preview expor
 - Sharpening changes luminance detail without increasing color separation at edges.
 - The sharpening setting is included in saved and restored defaults.
 
+### White balance picker
+
+- Added a checkable white balance picker for the live preview.
+- The resizable sample box assumes the selected pixels are neutral gray and
+  calculates matching white-balance and tint slider values.
+- The mouse wheel resizes the picker while it is active, and left-click applies
+  the sample.
+- Picker calculations use the full-resolution 16-bit preview data.
+
 ### Command line
 
 - Added standalone `--version` and `-v` options that print the current program version without opening the GUI.

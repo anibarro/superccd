@@ -257,6 +257,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewWhiteBalanceValueLabel(new QLabel(this))
     , m_previewTintSlider(new QSlider(Qt::Horizontal, this))
     , m_previewTintValueLabel(new QLabel(this))
+    , m_whiteBalancePickerButton(new QPushButton(tr("White Balance Picker: Off"), this))
     , m_previewGammaSlider(new QSlider(Qt::Horizontal, this))
     , m_previewGammaValueLabel(new QLabel(this))
     , m_previewContrastSlider(new QSlider(Qt::Horizontal, this))
@@ -319,6 +320,10 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewTintSlider->setRange(-100, 100);
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_previewTintValueLabel->setText(QString::number(kDefaultPreviewTintSliderValue));
+    m_whiteBalancePickerButton->setCheckable(true);
+    m_whiteBalancePickerButton->setToolTip(
+        tr("Turn on the picker, move the box over a neutral gray area, use the "
+           "mouse wheel to resize it, and left-click to set white balance and tint."));
     // Gamma slider: range 0-300 (0 to 3.0), default 220 (gamma 2.2)
     m_previewGammaSlider->setRange(0, 300);
     m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
@@ -419,6 +424,7 @@ MainWindow::MainWindow(QWidget *parent)
     previewControlsLayout->addRow(tr(""), m_previewWhiteBalanceValueLabel);
     previewControlsLayout->addRow(tr("Tint:"), m_previewTintSlider);
     previewControlsLayout->addRow(tr(""), m_previewTintValueLabel);
+    previewControlsLayout->addRow(tr(""), m_whiteBalancePickerButton);
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
     previewControlsLayout->addRow(tr("Zoom:"), m_previewZoomSlider);
     previewControlsLayout->addRow(tr(""), m_previewZoomValueLabel);
@@ -462,6 +468,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewButton, &QPushButton::clicked, this, &MainWindow::onUpdatePreview);
     connect(m_exportPreviewButton, &QPushButton::clicked, this, &MainWindow::onExportPreview);
     connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
+        m_whiteBalancePickerButton->setChecked(false);
         if (row >= 0) {
             queueAutoPreview();
             updateControls(false);
@@ -487,6 +494,10 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
     connect(m_previewTintSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewTintChanged);
+    connect(m_whiteBalancePickerButton,
+            &QPushButton::toggled,
+            this,
+            &MainWindow::onWhiteBalancePickerToggled);
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
@@ -499,6 +510,7 @@ MainWindow::MainWindow(QWidget *parent)
             &QCheckBox::toggled,
             this,
             [this](bool) {
+                m_whiteBalancePickerButton->setChecked(false);
                 m_lastPreviewedInputPath.clear();
                 updateControls(false);
                 queueAutoPreview();
@@ -518,9 +530,20 @@ MainWindow::MainWindow(QWidget *parent)
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
 {
     if ((watched == m_previewLabel || watched == m_previewScrollArea->viewport()) && !m_currentPreviewImage.isNull()) {
+        const bool pickerActive =
+            m_whiteBalancePickerButton->isChecked() && hasCurrentPreview();
         switch (event->type()) {
         case QEvent::MouseButtonPress: {
             QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+            if (pickerActive && mouseEvent->button() == Qt::LeftButton) {
+                const QPointF canvasPosition =
+                    previewCanvasPosition(watched, mouseEvent->position());
+                if (m_previewLabel->rect().contains(canvasPosition.toPoint())) {
+                    m_previewLabel->setWhiteBalancePickerPosition(canvasPosition);
+                    applyWhiteBalancePickerSample();
+                }
+                return true;
+            }
             if (mouseEvent->button() == Qt::LeftButton) {
                 m_previewDragging = true;
                 m_lastPreviewDragPos = mouseEvent->globalPosition().toPoint();
@@ -532,6 +555,15 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         case QEvent::Wheel: {
             QWheelEvent *wheelEvent = static_cast<QWheelEvent *>(event);
             const int delta = wheelEvent->angleDelta().y();
+            if (pickerActive) {
+                const QPointF canvasPosition =
+                    previewCanvasPosition(watched, wheelEvent->position());
+                if (m_previewLabel->rect().contains(canvasPosition.toPoint())) {
+                    m_previewLabel->setWhiteBalancePickerPosition(canvasPosition);
+                    m_previewLabel->resizeWhiteBalancePicker(delta);
+                }
+                return true;
+            }
             if (delta != 0) {
                 const int step = delta > 0 ? 10 : -10;
                 m_previewZoomSlider->setValue(std::clamp(m_previewZoomSlider->value() + step,
@@ -542,6 +574,17 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             break;
         }
         case QEvent::MouseMove: {
+            if (pickerActive) {
+                QMouseEvent *mouseEvent = static_cast<QMouseEvent *>(event);
+                const QPointF canvasPosition =
+                    previewCanvasPosition(watched, mouseEvent->position());
+                if (m_previewLabel->rect().contains(canvasPosition.toPoint())) {
+                    m_previewLabel->setWhiteBalancePickerPosition(canvasPosition);
+                } else {
+                    m_previewLabel->hideWhiteBalancePicker();
+                }
+                return true;
+            }
             if (!m_previewDragging) {
                 break;
             }
@@ -563,6 +606,10 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
             break;
         }
         case QEvent::Leave:
+            if (pickerActive) {
+                m_previewLabel->hideWhiteBalancePicker();
+                break;
+            }
             if (!m_previewDragging) {
                 m_previewLabel->unsetCursor();
             }
@@ -890,6 +937,7 @@ void MainWindow::onUpdatePreview()
     QImage preview;
     QString error;
     if (!m_processor.renderPreview(inputPath, currentSettings(), preview, error)) {
+        m_whiteBalancePickerButton->setChecked(false);
         m_previewLabel->clearSourceImage();
         m_previewLabel->setText(tr("Preview failed."));
         showStatus(tr("Preview failed: %1").arg(error));
@@ -1113,6 +1161,7 @@ void MainWindow::updateControls(bool busy)
     m_previewWhiteBalanceValueLabel->setEnabled(!busy);
     m_previewTintSlider->setEnabled(!busy);
     m_previewTintValueLabel->setEnabled(!busy);
+    m_whiteBalancePickerButton->setEnabled(!busy && hasCurrentPreview());
     m_previewGammaSlider->setEnabled(!busy);
     m_previewGammaValueLabel->setEnabled(!busy);
     m_previewContrastSlider->setEnabled(!busy);
@@ -1165,6 +1214,26 @@ void MainWindow::onPreviewTintChanged(int value)
 {
     m_previewTintValueLabel->setText(QString::number(value));
     updatePreviewDisplay();
+}
+
+void MainWindow::onWhiteBalancePickerToggled(bool enabled)
+{
+    m_previewDragging = false;
+    m_whiteBalancePickerButton->setText(
+        enabled ? tr("White Balance Picker: On") : tr("White Balance Picker: Off"));
+    m_previewLabel->setWhiteBalancePickerEnabled(enabled);
+
+    if (enabled) {
+        const QPoint viewportCenter = m_previewScrollArea->viewport()->rect().center();
+        const QPoint canvasCenter =
+            m_previewLabel->mapFrom(m_previewScrollArea->viewport(), viewportCenter);
+        m_previewLabel->setWhiteBalancePickerPosition(canvasCenter);
+        m_previewLabel->setCursor(Qt::CrossCursor);
+        showStatus(tr("White balance picker active. Wheel resizes the box; left-click samples neutral gray."));
+    } else {
+        m_previewLabel->setCursor(
+            m_currentPreviewImage.isNull() ? Qt::ArrowCursor : Qt::OpenHandCursor);
+    }
 }
 
 void MainWindow::onPreviewGammaChanged(int value)
@@ -1309,7 +1378,8 @@ void MainWindow::updatePreviewDisplay()
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
     m_previewLabel->setDisplayState(zoom, adjustments, 0);
-    m_previewLabel->setCursor(Qt::OpenHandCursor);
+    m_previewLabel->setCursor(
+        m_whiteBalancePickerButton->isChecked() ? Qt::CrossCursor : Qt::OpenHandCursor);
 
     const int newHValue = static_cast<int>(
         oldCenterX * m_previewLabel->width() - viewportSize.width() * 0.5 + 0.5);
@@ -1339,6 +1409,62 @@ void MainWindow::showStatus(const QString &message)
 {
     m_statusLabel->setText(message);
     m_statusClearTimer->start(5000);
+}
+
+void MainWindow::applyWhiteBalancePickerSample()
+{
+    const QRect sampleRect = m_previewLabel->whiteBalancePickerSourceRect();
+    const std::optional<PreviewWhiteBalanceEstimate> estimate =
+        PreviewImageProcessing::estimateNeutralWhiteBalance(
+            m_currentPreviewImage,
+            sampleRect);
+    if (!estimate) {
+        showStatus(tr("The selected area could not be used for white balance."));
+        return;
+    }
+
+    const int whiteBalance = std::clamp(
+        static_cast<int>(std::lround(estimate->whiteBalance)),
+        m_previewWhiteBalanceSlider->minimum(),
+        m_previewWhiteBalanceSlider->maximum());
+    const int tint = std::clamp(
+        static_cast<int>(std::lround(estimate->tint)),
+        m_previewTintSlider->minimum(),
+        m_previewTintSlider->maximum());
+
+    const bool oldWhiteBalanceSignals =
+        m_previewWhiteBalanceSlider->blockSignals(true);
+    const bool oldTintSignals = m_previewTintSlider->blockSignals(true);
+    m_previewWhiteBalanceSlider->setValue(whiteBalance);
+    m_previewTintSlider->setValue(tint);
+    m_previewWhiteBalanceSlider->blockSignals(oldWhiteBalanceSignals);
+    m_previewTintSlider->blockSignals(oldTintSignals);
+    m_previewWhiteBalanceValueLabel->setText(QString::number(whiteBalance));
+    m_previewTintValueLabel->setText(QString::number(tint));
+    updatePreviewDisplay();
+
+    showStatus(tr("White balance sampled: %1, tint: %2.")
+                   .arg(whiteBalance)
+                   .arg(tint));
+}
+
+QPointF MainWindow::previewCanvasPosition(
+    QObject *watched,
+    const QPointF &position) const
+{
+    if (watched == m_previewLabel) {
+        return position;
+    }
+    return m_previewLabel->mapFrom(
+        m_previewScrollArea->viewport(),
+        position.toPoint());
+}
+
+bool MainWindow::hasCurrentPreview() const
+{
+    return m_fileList->currentItem() != nullptr
+        && !m_currentPreviewImage.isNull()
+        && listItemPath(m_fileList->currentItem()) == m_lastPreviewedInputPath;
 }
 
 void MainWindow::applyParameterSettings(const ConversionSettings &settings)

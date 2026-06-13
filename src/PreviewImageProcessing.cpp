@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <cstdint>
 #include <vector>
 
 namespace {
@@ -134,6 +135,62 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     }
 
     return displayImage;
+}
+
+std::optional<PreviewWhiteBalanceEstimate>
+PreviewImageProcessing::estimateNeutralWhiteBalance(
+    const QImage &source,
+    const QRect &sampleRect)
+{
+    const QRect clippedRect = sampleRect.intersected(source.rect());
+    if (source.isNull() || clippedRect.isEmpty()) {
+        return std::nullopt;
+    }
+
+    QImage converted;
+    const QImage *sampleImage = &source;
+    QRect iterationRect = clippedRect;
+    if (source.format() != QImage::Format_RGBX64) {
+        converted = source.copy(clippedRect).convertToFormat(QImage::Format_RGBX64);
+        if (converted.isNull()) {
+            return std::nullopt;
+        }
+        sampleImage = &converted;
+        iterationRect = converted.rect();
+    }
+
+    std::uint64_t redSum = 0;
+    std::uint64_t greenSum = 0;
+    std::uint64_t blueSum = 0;
+    std::uint64_t pixelCount = 0;
+    for (int y = iterationRect.top(); y <= iterationRect.bottom(); ++y) {
+        const QRgba64 *scanLine =
+            reinterpret_cast<const QRgba64 *>(sampleImage->constScanLine(y));
+        for (int x = iterationRect.left(); x <= iterationRect.right(); ++x) {
+            const QRgba64 pixel = scanLine[x];
+            redSum += pixel.red();
+            greenSum += pixel.green();
+            blueSum += pixel.blue();
+            ++pixelCount;
+        }
+    }
+
+    if (pixelCount == 0 || redSum == 0 || greenSum == 0 || blueSum == 0) {
+        return std::nullopt;
+    }
+
+    const double redMean = static_cast<double>(redSum)
+        / static_cast<double>(pixelCount);
+    const double greenMean = static_cast<double>(greenSum)
+        / static_cast<double>(pixelCount);
+    const double blueMean = static_cast<double>(blueSum)
+        / static_cast<double>(pixelCount);
+    const double balancedRedBlue = std::sqrt(redMean * blueMean);
+
+    PreviewWhiteBalanceEstimate estimate;
+    estimate.whiteBalance = 50.0 * std::log2(blueMean / redMean);
+    estimate.tint = 100.0 * std::log2(greenMean / balancedRedBlue);
+    return estimate;
 }
 
 void PreviewImageProcessing::applyLumaSharpening8(QImage &image, int amount)

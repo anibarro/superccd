@@ -4,6 +4,7 @@
 #include <QMainWindow>
 #include <QImage>
 #include <QPoint>
+#include <QPointF>
 #include <QString>
 
 class QListWidget;
@@ -44,6 +45,7 @@ private slots:
     void onPreviewExposureChanged(int value);
     void onPreviewWhiteBalanceChanged(int value);
     void onPreviewTintChanged(int value);
+    void onWhiteBalancePickerToggled(bool enabled);
     void onPreviewGammaChanged(int value);
     void onPreviewContrastChanged(int value);
     void onPreviewSaturationChanged(int value);
@@ -64,6 +66,9 @@ private:
     void loadSavedDefaults();
     void saveCurrentDefaults() const;
     void queueAutoPreview();
+    void applyWhiteBalancePickerSample();
+    QPointF previewCanvasPosition(QObject *watched, const QPointF &position) const;
+    bool hasCurrentPreview() const;
     bool convertOneFile(const QString &inputPath,
                         const QString &outputFolder,
                         const ConversionSettings &settings,
@@ -83,6 +88,7 @@ private:
     QLabel *m_previewWhiteBalanceValueLabel;
     QSlider *m_previewTintSlider;
     QLabel *m_previewTintValueLabel;
+    QPushButton *m_whiteBalancePickerButton;
     QSlider *m_previewGammaSlider;
     QLabel *m_previewGammaValueLabel;
     QSlider *m_previewContrastSlider;

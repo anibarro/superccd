@@ -3,6 +3,8 @@
 
 #include <QImage>
 
+#include <optional>
+
 struct PreviewAdjustmentValues {
     int exposureTenthsEv = 0;
     int whiteBalance = 0;
@@ -13,10 +15,18 @@ struct PreviewAdjustmentValues {
     int highlightCompression = 0;
 };
 
+struct PreviewWhiteBalanceEstimate {
+    double whiteBalance = 0.0;
+    double tint = 0.0;
+};
+
 namespace PreviewImageProcessing {
 
 QImage applyDisplayAdjustments(const QImage &scaledSource,
                                const PreviewAdjustmentValues &adjustments);
+std::optional<PreviewWhiteBalanceEstimate> estimateNeutralWhiteBalance(
+    const QImage &source,
+    const QRect &sampleRect);
 void applyLumaSharpening8(QImage &image, int amount);
 void applyLumaSharpening16(QImage &image, int amount);
 
