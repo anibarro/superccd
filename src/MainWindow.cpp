@@ -1,6 +1,8 @@
 #include "MainWindow.h"
 #include "DngWriter.h"
+#include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
+#include "PreviewPixelCorrection.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -266,9 +268,11 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
     , m_previewHighlightCompressionValueLabel(new QLabel(this))
     , m_previewRotationCombo(new QComboBox(this))
+    , m_correctPreviewOutliersCheckBox(
+          new QCheckBox(tr("Correct isolated light/dark pixels"), this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
     , m_previewScrollArea(new QScrollArea(this))
-    , m_previewLabel(new QLabel(this))
+    , m_previewLabel(new PreviewCanvas(this))
     , m_previewButton(new QPushButton(tr("Update Preview"), this))
     , m_exportPreviewButton(new QPushButton(tr("Export Preview"), this))
     , m_convertCurrentButton(new QPushButton(tr("Convert"), this))
@@ -339,6 +343,11 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
     m_previewRotationCombo->addItem(tr("Rotate 90 CCW"), 270);
+    m_correctPreviewOutliersCheckBox->setChecked(false);
+    m_correctPreviewOutliersCheckBox->setToolTip(
+        tr("Correct only strongly isolated light or dark pixels in the finished "
+           "16-bit preview. Other pixels remain unchanged. Affects the live "
+           "preview and JPEG/TIFF preview exports, not DNG."));
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     m_exportPlaneImagesCheckBox->setChecked(false);
     m_fileList->setSelectionMode(QAbstractItemView::SingleSelection);
@@ -413,6 +422,7 @@ MainWindow::MainWindow(QWidget *parent)
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
     previewControlsLayout->addRow(tr("Zoom:"), m_previewZoomSlider);
     previewControlsLayout->addRow(tr(""), m_previewZoomValueLabel);
+    previewControlsLayout->addRow(tr(""), m_correctPreviewOutliersCheckBox);
     previewControlsLayout->addRow(tr(""), m_autoPreviewCheckBox);
 
     QFormLayout *optionsLayout = new QFormLayout;
@@ -485,6 +495,14 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
     });
+    connect(m_correctPreviewOutliersCheckBox,
+            &QCheckBox::toggled,
+            this,
+            [this](bool) {
+                m_lastPreviewedInputPath.clear();
+                updateControls(false);
+                queueAutoPreview();
+            });
     connect(m_autoPreviewCheckBox, &QCheckBox::toggled, this, [this](bool enabled) {
         if (enabled) {
             queueAutoPreview();
@@ -675,10 +693,8 @@ void MainWindow::onRemoveSelectedFiles()
 
     if (m_fileList->count() == 0) {
         m_currentPreviewImage = QImage();
-        m_scaledPreviewImage = QImage();
-        m_adjustedPreviewImage = QImage();
-        m_scaledPreviewTargetSize = QSize();
         m_previewSharpeningTimer->stop();
+        m_previewLabel->clearSourceImage();
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
         m_previewLabel->unsetCursor();
@@ -746,9 +762,11 @@ void MainWindow::onConvertCurrent()
 
         m_currentPreviewImage = preview;
         suppressPreviewFalseColor(m_currentPreviewImage);
-        m_scaledPreviewImage = QImage();
-        m_adjustedPreviewImage = QImage();
-        m_scaledPreviewTargetSize = QSize();
+        if (m_correctPreviewOutliersCheckBox->isChecked()) {
+            PreviewPixelCorrection::suppressIsolatedLumaOutliers(
+                m_currentPreviewImage);
+        }
+        m_previewLabel->setSourceImage(m_currentPreviewImage);
         m_lastPreviewedInputPath = inputPath;
         updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
@@ -872,6 +890,7 @@ void MainWindow::onUpdatePreview()
     QImage preview;
     QString error;
     if (!m_processor.renderPreview(inputPath, currentSettings(), preview, error)) {
+        m_previewLabel->clearSourceImage();
         m_previewLabel->setText(tr("Preview failed."));
         showStatus(tr("Preview failed: %1").arg(error));
         m_busy = false;
@@ -885,9 +904,11 @@ void MainWindow::onUpdatePreview()
 
     m_currentPreviewImage = preview;
     suppressPreviewFalseColor(m_currentPreviewImage);
-    m_scaledPreviewImage = QImage();
-    m_adjustedPreviewImage = QImage();
-    m_scaledPreviewTargetSize = QSize();
+    if (m_correctPreviewOutliersCheckBox->isChecked()) {
+        PreviewPixelCorrection::suppressIsolatedLumaOutliers(
+            m_currentPreviewImage);
+    }
+    m_previewLabel->setSourceImage(m_currentPreviewImage);
     m_lastPreviewedInputPath = inputPath;
     if (shouldFitPreview) {
         const QSize viewportSize = m_previewScrollArea->viewport()->size();
@@ -1103,6 +1124,7 @@ void MainWindow::updateControls(bool busy)
     m_previewHighlightCompressionSlider->setEnabled(!busy);
     m_previewHighlightCompressionValueLabel->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
+    m_correctPreviewOutliersCheckBox->setEnabled(!busy);
     m_previewButton->setEnabled(!busy);
     const bool hasCurrentPreview = m_fileList->currentItem() != nullptr
         && !m_currentPreviewImage.isNull()
@@ -1277,15 +1299,6 @@ void MainWindow::updatePreviewDisplay()
         : 0.5;
 
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
-    const QSize scaledSize(std::max(1, static_cast<int>(m_currentPreviewImage.width() * zoom)),
-                           std::max(1, static_cast<int>(m_currentPreviewImage.height() * zoom)));
-    if (m_scaledPreviewImage.isNull() || m_scaledPreviewTargetSize != scaledSize) {
-        m_scaledPreviewImage = m_currentPreviewImage.scaled(scaledSize,
-                                                            Qt::KeepAspectRatio,
-                                                            Qt::SmoothTransformation)
-                                   .convertToFormat(QImage::Format_RGB32);
-        m_scaledPreviewTargetSize = scaledSize;
-    }
 
     PreviewAdjustmentValues adjustments;
     adjustments.exposureTenthsEv = m_previewExposureSlider->value();
@@ -1295,20 +1308,13 @@ void MainWindow::updatePreviewDisplay()
     adjustments.contrast = m_previewContrastSlider->value();
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
-    m_adjustedPreviewImage = PreviewImageProcessing::applyDisplayAdjustments(
-        m_scaledPreviewImage,
-        adjustments);
-    if (m_adjustedPreviewImage.isNull()) {
-        return;
-    }
-
-    const QPixmap pixmap = QPixmap::fromImage(m_adjustedPreviewImage);
-    m_previewLabel->setPixmap(pixmap);
-    m_previewLabel->resize(pixmap.size());
+    m_previewLabel->setDisplayState(zoom, adjustments, 0);
     m_previewLabel->setCursor(Qt::OpenHandCursor);
 
-    const int newHValue = static_cast<int>(oldCenterX * pixmap.width() - viewportSize.width() * 0.5 + 0.5);
-    const int newVValue = static_cast<int>(oldCenterY * pixmap.height() - viewportSize.height() * 0.5 + 0.5);
+    const int newHValue = static_cast<int>(
+        oldCenterX * m_previewLabel->width() - viewportSize.width() * 0.5 + 0.5);
+    const int newVValue = static_cast<int>(
+        oldCenterY * m_previewLabel->height() - viewportSize.height() * 0.5 + 0.5);
     m_previewScrollArea->horizontalScrollBar()->setValue(std::max(0, newHValue));
     m_previewScrollArea->verticalScrollBar()->setValue(std::max(0, newVValue));
 
@@ -1321,15 +1327,12 @@ void MainWindow::updatePreviewDisplay()
 
 void MainWindow::updateSharpenedPreviewDisplay()
 {
-    if (m_adjustedPreviewImage.isNull() || m_previewSharpeningSlider->value() <= 0) {
+    if (m_currentPreviewImage.isNull()
+        || m_previewSharpeningSlider->value() <= 0) {
         return;
     }
 
-    QImage sharpenedImage = m_adjustedPreviewImage.copy();
-    PreviewImageProcessing::applyLumaSharpening8(
-        sharpenedImage,
-        m_previewSharpeningSlider->value());
-    m_previewLabel->setPixmap(QPixmap::fromImage(sharpenedImage));
+    m_previewLabel->setSharpening(m_previewSharpeningSlider->value());
 }
 
 void MainWindow::showStatus(const QString &message)
@@ -1342,10 +1345,15 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
 {
     const bool oldDelaySignals = m_rTransitionDelaySlider->blockSignals(true);
     const bool oldSmoothnessSignals = m_rTransitionSmoothnessSlider->blockSignals(true);
+    const bool oldCorrectionSignals =
+        m_correctPreviewOutliersCheckBox->blockSignals(true);
     m_rTransitionDelaySlider->setValue(std::clamp(static_cast<int>(settings.rTransitionDelay * 100.0 + 0.5), 0, 100));
     m_rTransitionSmoothnessSlider->setValue(std::clamp(static_cast<int>(settings.rTransitionSmoothness * 100.0 + 0.5), 0, 100));
+    m_correctPreviewOutliersCheckBox->setChecked(
+        settings.correctPreviewOutliers);
     m_rTransitionDelaySlider->blockSignals(oldDelaySignals);
     m_rTransitionSmoothnessSlider->blockSignals(oldSmoothnessSignals);
+    m_correctPreviewOutliersCheckBox->blockSignals(oldCorrectionSignals);
     m_rTransitionDelayValueLabel->setText(QString::number(settings.rTransitionDelay, 'f', 2));
     m_rTransitionSmoothnessValueLabel->setText(QString::number(settings.rTransitionSmoothness, 'f', 2));
 }
@@ -1357,6 +1365,12 @@ void MainWindow::loadSavedDefaults()
     defaults.exportMode = ExportMode::RawCfa6MP;
     defaults.rTransitionDelay = settingsStore.value(QStringLiteral("defaults/rTransitionDelay"), 0.5).toDouble();
     defaults.rTransitionSmoothness = settingsStore.value(QStringLiteral("defaults/rTransitionSmoothness"), 0.5).toDouble();
+    defaults.correctPreviewOutliers =
+        settingsStore.value(
+            QStringLiteral("defaults/correctPreviewOutliers"),
+            settingsStore.value(
+                QStringLiteral("defaults/correctPreviewCfaOutliers"),
+                false)).toBool();
 
     applyParameterSettings(defaults);
 
@@ -1419,6 +1433,9 @@ void MainWindow::saveCurrentDefaults() const
     const ConversionSettings settings = currentSettings();
     settingsStore.setValue(QStringLiteral("defaults/rTransitionDelay"), settings.rTransitionDelay);
     settingsStore.setValue(QStringLiteral("defaults/rTransitionSmoothness"), settings.rTransitionSmoothness);
+    settingsStore.setValue(
+        QStringLiteral("defaults/correctPreviewOutliers"),
+        settings.correctPreviewOutliers);
     settingsStore.setValue(QStringLiteral("defaults/previewExposureSlider"), m_previewExposureSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewWhiteBalanceSlider"), m_previewWhiteBalanceSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewTintSlider"), m_previewTintSlider->value());
@@ -1444,6 +1461,7 @@ void MainWindow::onResetDefaults()
     defaults.exportMode = ExportMode::RawCfa6MP;
     defaults.rTransitionDelay = 0.5;
     defaults.rTransitionSmoothness = 0.5;
+    defaults.correctPreviewOutliers = false;
     applyParameterSettings(defaults);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
@@ -1488,6 +1506,8 @@ ConversionSettings MainWindow::currentSettings() const
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
     settings.previewRotation = m_previewRotationCombo->currentData().toInt();
     settings.linearChromaSuppression = 1.0;
+    settings.correctPreviewOutliers =
+        m_correctPreviewOutliersCheckBox->isChecked();
     settings.exportPlaneImages = m_exportPlaneImagesCheckBox->isChecked();
     return settings;
 }

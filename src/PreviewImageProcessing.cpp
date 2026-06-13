@@ -19,7 +19,11 @@ void applyLumaSharpening(int width,
         return;
     }
 
-    const double strength = static_cast<double>(amount) / 100.0;
+    const double normalizedAmount = static_cast<double>(amount) / 100.0;
+    // Preserve the feel of lower settings while giving the top of the slider
+    // more headroom: 100% now reaches roughly 2x the previous effect.
+    const double strength =
+        normalizedAmount * (1.0 + normalizedAmount * normalizedAmount);
     std::vector<int> previous(static_cast<size_t>(width));
     std::vector<int> current(static_cast<size_t>(width));
     std::vector<int> next(static_cast<size_t>(width));

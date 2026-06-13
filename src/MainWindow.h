@@ -16,6 +16,7 @@ class QSlider;
 class QScrollArea;
 class QCheckBox;
 class QComboBox;
+class PreviewCanvas;
 
 #include "SuperCCDProcessor.h"
 
@@ -93,9 +94,10 @@ private:
     QSlider *m_previewHighlightCompressionSlider;
     QLabel *m_previewHighlightCompressionValueLabel;
     QComboBox *m_previewRotationCombo;
+    QCheckBox *m_correctPreviewOutliersCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
     QScrollArea *m_previewScrollArea;
-    QLabel *m_previewLabel;
+    PreviewCanvas *m_previewLabel;
     QPushButton *m_previewButton;
     QPushButton *m_exportPreviewButton;
     QPushButton *m_convertCurrentButton;
@@ -108,9 +110,6 @@ private:
     QTimer *m_autoPreviewTimer;
     QTimer *m_previewSharpeningTimer;
     QImage m_currentPreviewImage;
-    QImage m_scaledPreviewImage;
-    QImage m_adjustedPreviewImage;
-    QSize m_scaledPreviewTargetSize;
     bool m_previewDragging = false;
     QPoint m_lastPreviewDragPos;
     QString m_lastPreviewedInputPath;

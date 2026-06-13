@@ -76,7 +76,9 @@ endif()
 set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
+    src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp
+    src/PreviewPixelCorrection.cpp
     src/SuperCCDProcessor.cpp
     src/DngWriter.cpp
     resources/app_resources.qrc

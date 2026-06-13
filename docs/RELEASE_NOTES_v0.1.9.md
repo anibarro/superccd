@@ -11,6 +11,10 @@ This release improves preview image quality, adds true 16-bit TIFF preview expor
 - Preview generation and preview exports remain at 16-bit precision internally.
 - The live display uses fast lookup-table adjustments after scaling to preserve responsive slider interaction.
 - Added a luminance-preserving chroma cleanup pass to further reduce colored pixel artifacts around borders and high-contrast edges without softening image detail.
+- Added an optional final-image correction for strongly isolated light and dark preview pixels. It changes only classified outlier pixels, preventing global color or detail differences between corrected and uncorrected rendering.
+- Added a disabled-by-default `Correct isolated light/dark pixels` checkbox for the live preview and JPEG/TIFF preview exports. DNG output remains unchanged.
+- The isolated-pixel correction setting is included in saved and restored defaults.
+- Preview zoom and adjustment sliders now render only the visible viewport instead of rebuilding a potentially enormous full-frame image at the selected zoom.
 
 ### Preview export
 

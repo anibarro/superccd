@@ -21,7 +21,7 @@
 
 # Windows
 Thumbs.db
-/tests
+/tests/*
 LibRaw/
 /samples
 /.venv/

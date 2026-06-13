@@ -118,13 +118,27 @@ Preview-only saturation adjustment.
 
 ### Preview Sharpening
 
-Applies a mild luminance-only sharpening adjustment to the live preview and exported preview files.
+Applies a luminance-only sharpening adjustment to the live preview and exported preview files.
 
 - range: 0% to 100% (default 0%)
 - sharpens the scaled on-screen image after a short idle delay so other sliders remain responsive
 - sharpens JPEG and 16-bit TIFF exports at their final 6 MP or 12 MP resolution
 - preserves RGB color differences to avoid introducing colored edge artifacts
 - does not affect DNG export
+
+### Correct isolated light/dark pixels
+
+Disabled by default. Detects strongly isolated light or dark pixels in the
+finished 16-bit preview and replaces only those pixels with a robust local
+estimate.
+
+- affects the live preview and JPEG/TIFF preview exports
+- never changes the RAW CFA data or the preview demosaicing result globally
+- leaves every pixel not classified as an isolated outlier unchanged
+- requires the pixel to be separated from every immediate neighbor, protecting
+  supported edges, gradients, texture, and highlights
+- can be disabled to compare the uncorrected sensor rendering
+- does not alter DNG export
 
 ### Preview White Balance
 

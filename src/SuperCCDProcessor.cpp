@@ -19,6 +19,7 @@
 #include <climits>
 #include <cmath>
 #include <algorithm>
+#include <array>
 
 namespace {
 struct PairStats {
@@ -995,10 +996,13 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
         return (x & 1) == 0 ? CfaColor::Red : CfaColor::Green;
     };
+
     auto sample = [&](int x, int y) -> float {
         x = std::clamp(x, 0, width - 1);
         y = std::clamp(y, 0, height - 1);
-        return static_cast<float>(cfa[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)]);
+        return static_cast<float>(
+            cfa[static_cast<size_t>(y) * static_cast<size_t>(width)
+                + static_cast<size_t>(x)]);
     };
 
     // Green carries most edge detail. Reconstruct it first along the smoother
