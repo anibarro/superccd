@@ -1,6 +1,6 @@
 # SuperCCD S3/S5 RAF to DNG
 
-Windows desktop application for converting Fujifilm FinePix `S3 Pro` and `S5 Pro` `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses. The development work was centered on `S3 Pro` files, but `S5 Pro` files are also supported.
+Desktop application for converting Fujifilm FinePix `S3 Pro` and `S5 Pro` `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses. The development work was centered on `S3 Pro` files, but `S5 Pro` files are also supported.
 
 ![SuperCCD v1.2.0 screenshot](docs/img/superccd_v1.2.0.jpg)
 
@@ -43,6 +43,8 @@ Supported and intended:
 
 - Fujifilm FinePix `S3 Pro` and `S5 Pro` RAF files
 - Windows
+- macOS
+- Raspberry Pi OS on ARM64 Raspberry Pi devices
 - Qt 6 desktop GUI
 - `6MP Raw CFA DNG` export
 - high-quality preview export as `JPEG` or `16-bit TIFF` at `12MP` or `6MP`
@@ -170,39 +172,79 @@ The short version option is `-v`.
 
 ## Build Requirements
 
-- Windows
 - CMake `3.16+`
 - Qt `6` with `Widgets`
 - LibRaw
 - LibTIFF
-- Visual Studio C++ toolchain
+- a supported platform toolchain:
+  - Visual Studio C++ on Windows
+  - Xcode command line tools / Clang on macOS
+  - GCC or Clang on Raspberry Pi OS ARM64
 
-Adobe DNG SDK is not required for the current stable path. LibTIFF is the practical writer backend used here.
 
 ## Build
 
-This repository already includes `build_windows.cmd`, which is the expected local build entrypoint on Windows in this project.
+This repository includes platform-specific build entrypoints:
 
-Typical build:
+- Windows: `build_windows.cmd`
+- macOS: `build_macos.sh`
+- Raspberry Pi: `build_rpi.sh`
+
+Typical build commands:
+
+Windows:
 
 ```powershell
 cmd /c build_windows.cmd build
 ```
 
-GitHub release package:
+macOS:
+
+```bash
+chmod +x build_macos.sh
+./build_macos.sh build
+```
+
+Raspberry Pi:
+
+```bash
+chmod +x build_rpi.sh
+./build_rpi.sh build
+```
+
+Release packaging:
+
+Windows:
 
 ```powershell
 cmd /c build_windows.cmd package
 ```
 
-That creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-20260529.zip`.
-You can override the package name:
+macOS:
+
+```bash
+./build_macos.sh package
+```
+
+Raspberry Pi:
+
+```bash
+./build_rpi.sh package
+```
+
+The Windows package creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-20260529.zip`.
+You can override the Windows package name:
 
 ```powershell
 cmd /c build_windows.cmd package superccd2dng-windows-x64-v0.1.0
 ```
 
-If you need to configure from scratch, the important CMake inputs are:
+Platform-specific build guides:
+
+- [docs/MACOS_BUILD.md](docs/MACOS_BUILD.md)
+- [docs/RASPBERRYPI_BUILD.md](docs/RASPBERRYPI_BUILD.md)
+
+If you need to configure from scratch manually, the important CMake inputs are:
 
 - `Qt6_DIR`
 - `LIBRAW_ROOT`
