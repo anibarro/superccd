@@ -29,11 +29,13 @@ struct ConversionSettings {
 struct SuperCCDMetadata {
     QString make;
     QString model;
+    QString lensModel;
     QString software;
     QString dateTime;
     int iso = 0;
     double shutter = 0.0;
     double aperture = 0.0;
+    double focalLength = 0.0;
     uint16_t whiteLevel = 0;
     std::array<double, 4> blackLevels = {0.0, 0.0, 0.0, 0.0};
     bool hasBlackLevels = false;
@@ -71,6 +73,9 @@ public:
     static bool extractEmbeddedThumbnail(const QString &inputPath,
                                          QImage &thumbnail,
                                          QString *error = nullptr);
+    static bool readMetadata(const QString &inputPath,
+                             SuperCCDMetadata &metadata,
+                             QString *error = nullptr);
 
     bool process(const QString &inputPath,
                  const QString &outputPath,

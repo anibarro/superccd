@@ -29,6 +29,9 @@ Each RAF entry shows:
 
 - embedded thumbnail, when available
 - file name
+- camera model
+- ISO, shutter speed, and aperture
+- focal length and lens model, when available
 
 Available actions:
 

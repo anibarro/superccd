@@ -57,6 +57,31 @@ struct LinearShotPlanes {
     int expandedWidth = 0;
 };
 
+void populateBasicMetadata(LibRaw &raw, SuperCCDMetadata &metadata)
+{
+    metadata.make = QString::fromUtf8(raw.imgdata.idata.make);
+    metadata.model = QString::fromUtf8(raw.imgdata.idata.model);
+    metadata.software = QString::fromUtf8(raw.imgdata.idata.software);
+    metadata.lensModel = QString::fromUtf8(raw.imgdata.lens.Lens).trimmed();
+    metadata.dateTime = QString();
+    metadata.iso = raw.imgdata.other.iso_speed;
+    metadata.aperture = raw.imgdata.other.aperture;
+    metadata.shutter = raw.imgdata.other.shutter;
+    metadata.focalLength = raw.imgdata.other.focal_len;
+    metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
+    if (raw.imgdata.other.timestamp > 0) {
+        char dateBuf[32];
+        struct tm localTime {};
+#ifdef _WIN32
+        localtime_s(&localTime, &raw.imgdata.other.timestamp);
+#else
+        localtime_r(&raw.imgdata.other.timestamp, &localTime);
+#endif
+        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", &localTime);
+        metadata.dateTime = QString::fromLatin1(dateBuf);
+    }
+}
+
 void logProcessing(const char *format, ...)
 {
     static std::mutex logMutex;
@@ -2009,25 +2034,7 @@ bool readSelectedShotLinearPlanes12MP(const QString &inputPath,
         return false;
     }
 
-    metadata.make = QString::fromUtf8(raw.imgdata.idata.make);
-    metadata.model = QString::fromUtf8(raw.imgdata.idata.model);
-    metadata.software = QString::fromUtf8(raw.imgdata.idata.software);
-    metadata.dateTime = QString();
-    metadata.iso = raw.imgdata.other.iso_speed;
-    metadata.aperture = raw.imgdata.other.aperture;
-    metadata.shutter = raw.imgdata.other.shutter;
-    metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
-    if (raw.imgdata.other.timestamp > 0) {
-        char dateBuf[32];
-        struct tm localTime {};
-#ifdef _WIN32
-        localtime_s(&localTime, &raw.imgdata.other.timestamp);
-#else
-        localtime_r(&raw.imgdata.other.timestamp, &localTime);
-#endif
-        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", &localTime);
-        metadata.dateTime = QString::fromLatin1(dateBuf);
-    }
+    populateBasicMetadata(raw, metadata);
 
     result = raw.unpack();
     if (result != LIBRAW_SUCCESS) {
@@ -2528,6 +2535,26 @@ void fillSparsePlane(std::vector<uint16_t> &plane,
         }
     }
 }
+}
+
+bool SuperCCDProcessor::readMetadata(const QString &inputPath,
+                                     SuperCCDMetadata &metadata,
+                                     QString *error)
+{
+    metadata = SuperCCDMetadata{};
+
+    LibRaw raw;
+    const int result = raw.open_file(inputPath.toUtf8().constData());
+    if (result != LIBRAW_SUCCESS) {
+        if (error) {
+            *error = QString::fromUtf8(libraw_strerror(result));
+        }
+        return false;
+    }
+
+    populateBasicMetadata(raw, metadata);
+    raw.recycle();
+    return true;
 }
 
 bool SuperCCDProcessor::extractEmbeddedThumbnail(const QString &inputPath,

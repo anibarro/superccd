@@ -31,6 +31,7 @@
 #include <QSlider>
 #include <QSettings>
 #include <QSplitter>
+#include <QStringList>
 #include <QTimer>
 #include <QWheelEvent>
 #include <QWidget>
@@ -187,9 +188,68 @@ QString listItemPath(const QListWidgetItem *item)
     return storedPath.isEmpty() ? item->text() : storedPath;
 }
 
+QString displayCameraModel(const SuperCCDMetadata &metadata)
+{
+    const QString make = metadata.make.trimmed();
+    const QString model = metadata.model.trimmed();
+    if (model.isEmpty()) {
+        return make;
+    }
+    if (!make.isEmpty() && !model.startsWith(make, Qt::CaseInsensitive)) {
+        return make + QLatin1Char(' ') + model;
+    }
+    return model;
+}
+
+QString formatShutterSpeed(double shutterSeconds)
+{
+    if (!(shutterSeconds > 0.0)) {
+        return QString();
+    }
+    if (shutterSeconds >= 1.0) {
+        if (std::fabs(shutterSeconds - std::round(shutterSeconds)) < 0.01) {
+            return QStringLiteral("%1 s").arg(static_cast<int>(std::round(shutterSeconds)));
+        }
+        return QStringLiteral("%1 s").arg(QString::number(shutterSeconds, 'f', shutterSeconds >= 10.0 ? 1 : 2));
+    }
+
+    const double denominator = 1.0 / shutterSeconds;
+    return QStringLiteral("1/%1 s").arg(QString::number(std::round(denominator)));
+}
+
+QString formatExposureSummary(const SuperCCDMetadata &metadata)
+{
+    QStringList parts;
+    if (metadata.iso > 0) {
+        parts.append(QStringLiteral("ISO %1").arg(metadata.iso));
+    }
+    const QString shutter = formatShutterSpeed(metadata.shutter);
+    if (!shutter.isEmpty()) {
+        parts.append(shutter);
+    }
+    if (metadata.aperture > 0.0) {
+        parts.append(QStringLiteral("f/%1").arg(QString::number(metadata.aperture, 'f', 1)));
+    }
+    return parts.join(QStringLiteral("  "));
+}
+
+QString formatLensSummary(const SuperCCDMetadata &metadata)
+{
+    QStringList parts;
+    if (metadata.focalLength > 0.0) {
+        const int precision = std::fabs(metadata.focalLength - std::round(metadata.focalLength)) < 0.05 ? 0 : 1;
+        parts.append(QStringLiteral("%1 mm").arg(QString::number(metadata.focalLength, 'f', precision)));
+    }
+    if (!metadata.lensModel.trimmed().isEmpty()) {
+        parts.append(metadata.lensModel.trimmed());
+    }
+    return parts.join(QStringLiteral("  "));
+}
+
 QWidget *createFileListRow(const QString &displayName,
                            const QString &fullPath,
                            const QImage &thumbnail,
+                           const SuperCCDMetadata &metadata,
                            QWidget *parent)
 {
     QWidget *row = new QWidget(parent);
@@ -198,24 +258,52 @@ QWidget *createFileListRow(const QString &displayName,
     layout->setSpacing(8);
 
     QLabel *thumbLabel = new QLabel(row);
-    thumbLabel->setFixedSize(96, 96);
+    thumbLabel->setFixedSize(96, 64);
     thumbLabel->setAlignment(Qt::AlignCenter);
     thumbLabel->setStyleSheet(QStringLiteral("background:#2a2a2a; border:1px solid #505050;"));
     if (!thumbnail.isNull()) {
-        thumbLabel->setPixmap(QPixmap::fromImage(thumbnail.scaled(96, 96,
+        thumbLabel->setPixmap(QPixmap::fromImage(thumbnail.scaled(96, 64,
                                                                   Qt::KeepAspectRatio,
                                                                   Qt::SmoothTransformation)));
     } else {
         thumbLabel->setText(QStringLiteral("No\nthumb"));
     }
 
-    QLabel *textLabel = new QLabel(displayName, row);
-    textLabel->setToolTip(fullPath);
-    textLabel->setWordWrap(true);
-    textLabel->setTextInteractionFlags(Qt::NoTextInteraction);
+    QWidget *textContainer = new QWidget(row);
+    auto *textLayout = new QVBoxLayout(textContainer);
+    textLayout->setContentsMargins(0, 0, 0, 0);
+    textLayout->setSpacing(0);
+
+    QLabel *nameLabel = new QLabel(displayName, textContainer);
+    QFont nameFont = nameLabel->font();
+    nameFont.setBold(true);
+    nameLabel->setFont(nameFont);
+    nameLabel->setToolTip(fullPath);
+    nameLabel->setWordWrap(true);
+    nameLabel->setTextInteractionFlags(Qt::NoTextInteraction);
+    textLayout->addWidget(nameLabel);
+
+    const auto addMetaLabel = [textContainer, textLayout, &fullPath](const QString &text) {
+        if (text.isEmpty()) {
+            return;
+        }
+        QLabel *label = new QLabel(text, textContainer);
+        label->setToolTip(fullPath);
+        label->setWordWrap(true);
+        label->setTextInteractionFlags(Qt::NoTextInteraction);
+        QFont metaFont = label->font();
+        metaFont.setPointSizeF(std::max(8.0, metaFont.pointSizeF() - 1.0));
+        label->setFont(metaFont);
+        label->setStyleSheet(QStringLiteral("color:#707070;"));
+        textLayout->addWidget(label);
+    };
+
+    addMetaLabel(displayCameraModel(metadata));
+    addMetaLabel(formatExposureSummary(metadata));
+    addMetaLabel(formatLensSummary(metadata));
 
     layout->addWidget(thumbLabel, 0);
-    layout->addWidget(textLabel, 1);
+    layout->addWidget(textContainer, 1);
     return row;
 }
 
@@ -904,14 +992,25 @@ void MainWindow::dropEvent(QDropEvent *event)
             auto *item = new QListWidgetItem(QString(), m_fileList);
             item->setToolTip(file);
             item->setData(Qt::UserRole, file);
-            item->setSizeHint(QSize(0, 104));
+            item->setSizeHint(QSize(0, 72));
             QImage thumbnail;
             QString thumbErr;
+            SuperCCDMetadata metadata;
+            QString metadataErr;
             SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
+            SuperCCDProcessor::readMetadata(file, metadata, &metadataErr);
             if (!thumbErr.isEmpty()) {
                 item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
             }
-            m_fileList->setItemWidget(item, createFileListRow(info.fileName(), file, thumbnail, m_fileList));
+            if (!metadataErr.isEmpty()) {
+                item->setToolTip(item->toolTip() + QStringLiteral("\nMetadata error: %1").arg(metadataErr));
+            }
+            m_fileList->setItemWidget(item,
+                                      createFileListRow(info.fileName(),
+                                                        file,
+                                                        thumbnail,
+                                                        metadata,
+                                                        m_fileList));
         }
 
         if (!m_fileList->currentItem() && m_fileList->count() > 0) {
@@ -945,14 +1044,25 @@ void MainWindow::onAddFiles()
             auto *item = new QListWidgetItem(QString(), m_fileList);
             item->setToolTip(file);
             item->setData(Qt::UserRole, file);
-            item->setSizeHint(QSize(0, 104));
+            item->setSizeHint(QSize(0, 72));
             QImage thumbnail;
             QString thumbErr;
+            SuperCCDMetadata metadata;
+            QString metadataErr;
             SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
+            SuperCCDProcessor::readMetadata(file, metadata, &metadataErr);
             if (!thumbErr.isEmpty()) {
                 item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
             }
-            m_fileList->setItemWidget(item, createFileListRow(info.fileName(), file, thumbnail, m_fileList));
+            if (!metadataErr.isEmpty()) {
+                item->setToolTip(item->toolTip() + QStringLiteral("\nMetadata error: %1").arg(metadataErr));
+            }
+            m_fileList->setItemWidget(item,
+                                      createFileListRow(info.fileName(),
+                                                        file,
+                                                        thumbnail,
+                                                        metadata,
+                                                        m_fileList));
         }
     }
 
