@@ -76,6 +76,9 @@ public:
     static bool readMetadata(const QString &inputPath,
                              SuperCCDMetadata &metadata,
                              QString *error = nullptr);
+    static bool copyExifMetadata(const QString &inputPath,
+                                 const QString &outputPath,
+                                 QString *error = nullptr);
 
     bool process(const QString &inputPath,
                  const QString &outputPath,

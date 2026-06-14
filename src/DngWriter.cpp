@@ -68,6 +68,18 @@ namespace {
 #ifndef TIFFTAG_ISOSPEEDRATINGS
 #define TIFFTAG_ISOSPEEDRATINGS 37393
 #endif
+#ifndef TIFFTAG_FOCALLENGTH
+#define TIFFTAG_FOCALLENGTH 37386
+#endif
+#ifndef TIFFTAG_DATETIMEORIGINAL
+#define TIFFTAG_DATETIMEORIGINAL 36867
+#endif
+#ifndef TIFFTAG_DATETIMEDIGITIZED
+#define TIFFTAG_DATETIMEDIGITIZED 36868
+#endif
+#ifndef TIFFTAG_LENSMODEL
+#define TIFFTAG_LENSMODEL 42036
+#endif
 #ifndef TIFFTAG_EXPOSURETIME
 #define TIFFTAG_EXPOSURETIME 33434
 #endif
@@ -148,6 +160,10 @@ static const TIFFFieldInfo dngFieldInfo[] = {
     { TIFFTAG_FNUMBER, 1, 1, TIFF_RATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("FNumber") },
     { TIFFTAG_EXPOSURETIME, 1, 1, TIFF_RATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("ExposureTime") },
     { TIFFTAG_ISOSPEEDRATINGS, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_SHORT, FIELD_CUSTOM, 1, 1, const_cast<char *>("ISOSpeedRatings") },
+    { TIFFTAG_FOCALLENGTH, 1, 1, TIFF_RATIONAL, FIELD_CUSTOM, 1, 0, const_cast<char *>("FocalLength") },
+    { TIFFTAG_DATETIMEORIGINAL, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("DateTimeOriginal") },
+    { TIFFTAG_DATETIMEDIGITIZED, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("DateTimeDigitized") },
+    { TIFFTAG_LENSMODEL, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("LensModel") },
 };
 
 static const TIFFField *findTiffField(TIFF *tif, uint32_t tag, TIFFDataType type)
@@ -213,6 +229,18 @@ static void setSRationalArrayField(TIFF *tif, uint32_t tag, uint32_t count, cons
     }
 }
 
+static void setAsciiField(TIFF *tif, uint32_t tag, const QByteArray &value)
+{
+    if (value.isEmpty()) {
+        return;
+    }
+    if (tiffFieldWantsCount(tif, tag, TIFF_ASCII)) {
+        TIFFSetField(tif, tag, static_cast<uint32_t>(value.size() + 1), value.constData());
+    } else {
+        TIFFSetField(tif, tag, value.constData());
+    }
+}
+
 static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
 {
     // SRATIONAL is signed rational: (numerator, denominator)
@@ -237,6 +265,49 @@ static void setSingleRationalField(TIFF *tif, uint32_t tag, float value)
         TIFFSetField(tif, tag, 1, denom);
     } else {
         TIFFSetField(tif, tag, 0, 1);
+    }
+}
+
+static void writeCommonCaptureMetadata(TIFF *tif,
+                                       const SuperCCDMetadata &metadata,
+                                       const QByteArray &makeBytes,
+                                       const QByteArray &modelBytes,
+                                       const QByteArray &softwareBytes,
+                                       const QByteArray &dateTimeBytes,
+                                       const QByteArray &lensModelBytes)
+{
+    TIFFSetField(tif, TIFFTAG_MAKE, makeBytes.constData());
+    TIFFSetField(tif, TIFFTAG_MODEL, modelBytes.constData());
+    TIFFSetField(tif, TIFFTAG_SOFTWARE, softwareBytes.constData());
+
+    if (!metadata.dateTime.isEmpty()) {
+        TIFFSetField(tif, TIFFTAG_DATETIME, dateTimeBytes.constData());
+        setAsciiField(tif, TIFFTAG_DATETIMEORIGINAL, dateTimeBytes);
+        setAsciiField(tif, TIFFTAG_DATETIMEDIGITIZED, dateTimeBytes);
+    }
+
+    if (metadata.aperture > 0.0) {
+        const float fNumber = static_cast<float>(metadata.aperture);
+        logProcessing("writing FNumber tag: %.2f", fNumber);
+        setSingleRationalField(tif, TIFFTAG_FNUMBER, fNumber);
+    }
+    if (metadata.shutter > 0.0) {
+        const float exposureTime = static_cast<float>(metadata.shutter);
+        logProcessing("writing ExposureTime tag: %.6f", exposureTime);
+        setSingleRationalField(tif, TIFFTAG_EXPOSURETIME, exposureTime);
+    }
+    if (metadata.iso > 0) {
+        const uint16_t iso = static_cast<uint16_t>(metadata.iso);
+        logProcessing("writing ISOSpeedRatings tag: %u", iso);
+        TIFFSetField(tif, TIFFTAG_ISOSPEEDRATINGS, 1, &iso);
+    }
+    if (metadata.focalLength > 0.0) {
+        const float focalLength = static_cast<float>(metadata.focalLength);
+        logProcessing("writing FocalLength tag: %.2f", focalLength);
+        setSingleRationalField(tif, TIFFTAG_FOCALLENGTH, focalLength);
+    }
+    if (!metadata.lensModel.trimmed().isEmpty()) {
+        setAsciiField(tif, TIFFTAG_LENSMODEL, lensModelBytes);
     }
 }
 
@@ -304,6 +375,7 @@ bool writeDngWithLibTiff(const QString &outputPath,
     QByteArray modelBytes = metadata.model.toUtf8();
     QByteArray softwareBytes = metadata.software.toUtf8();
     QByteArray dateTimeBytes = metadata.dateTime.toUtf8();
+    QByteArray lensModelBytes = metadata.lensModel.toUtf8();
     const uint8_t dngVersion[4] = {1, 4, 0, 0};
     const uint8_t dngBackwardVersion[4] = {1, 1, 0, 0};
     const uint8_t cfaPlaneColor[3] = {0, 1, 2};
@@ -337,11 +409,13 @@ bool writeDngWithLibTiff(const QString &outputPath,
         logProcessing("TIFFMergeFieldInfo returned 0 (tags already registered)");
     }
 
-    TIFFSetField(tif, TIFFTAG_MAKE, makeBytes.constData());
-    TIFFSetField(tif, TIFFTAG_MODEL, modelBytes.constData());
-    TIFFSetField(tif, TIFFTAG_SOFTWARE, softwareBytes.constData());
-    if (!metadata.dateTime.isEmpty())
-        TIFFSetField(tif, TIFFTAG_DATETIME, dateTimeBytes.constData());
+    writeCommonCaptureMetadata(tif,
+                               metadata,
+                               makeBytes,
+                               modelBytes,
+                               softwareBytes,
+                               dateTimeBytes,
+                               lensModelBytes);
 
       setByteArrayField(tif, TIFFTAG_DNGVERSION, 4, dngVersion);
       setByteArrayField(tif, TIFFTAG_DNGBACKWARDVERSION, 4, dngBackwardVersion);
@@ -391,21 +465,6 @@ bool writeDngWithLibTiff(const QString &outputPath,
           const float baselineExposure = static_cast<float>(metadata.baselineExposure);
           logProcessing("writing BaselineExposure tag: %.6f", baselineExposure);
           setSingleSRationalField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
-      }
-      if (metadata.aperture > 0.0) {
-          const float fNumber = static_cast<float>(metadata.aperture);
-          logProcessing("writing FNumber tag: %.2f", fNumber);
-          setSingleRationalField(tif, TIFFTAG_FNUMBER, fNumber);
-      }
-      if (metadata.shutter > 0.0) {
-          const float exposureTime = static_cast<float>(metadata.shutter);
-          logProcessing("writing ExposureTime tag: %.6f", exposureTime);
-          setSingleRationalField(tif, TIFFTAG_EXPOSURETIME, exposureTime);
-      }
-      if (metadata.iso > 0) {
-          const uint16_t iso = static_cast<uint16_t>(metadata.iso);
-          logProcessing("writing ISOSpeedRatings tag: %u", iso);
-          TIFFSetField(tif, TIFFTAG_ISOSPEEDRATINGS, 1, &iso);
       }
       if (metadata.hasFlip) {
           // LibRaw flip: 0=none, 1=90CCW, 2=180, 3=270, negative=mirrored
@@ -486,6 +545,7 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
     QByteArray modelBytes = metadata.model.toUtf8();
     QByteArray softwareBytes = metadata.software.toUtf8();
     QByteArray dateTimeBytes = metadata.dateTime.toUtf8();
+    QByteArray lensModelBytes = metadata.lensModel.toUtf8();
     const uint8_t dngVersion[4] = {1, 4, 0, 0};
     const uint8_t dngBackwardVersion[4] = {1, 1, 0, 0};
     const double colorMatrix1[9] = {
@@ -509,11 +569,13 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
         logProcessing("TIFFMergeFieldInfo returned 0 (tags already registered)");
     }
 
-    TIFFSetField(tif, TIFFTAG_MAKE, makeBytes.constData());
-    TIFFSetField(tif, TIFFTAG_MODEL, modelBytes.constData());
-    TIFFSetField(tif, TIFFTAG_SOFTWARE, softwareBytes.constData());
-    if (!metadata.dateTime.isEmpty())
-        TIFFSetField(tif, TIFFTAG_DATETIME, dateTimeBytes.constData());
+    writeCommonCaptureMetadata(tif,
+                               metadata,
+                               makeBytes,
+                               modelBytes,
+                               softwareBytes,
+                               dateTimeBytes,
+                               lensModelBytes);
 
     setByteArrayField(tif, TIFFTAG_DNGVERSION, 4, dngVersion);
     setByteArrayField(tif, TIFFTAG_DNGBACKWARDVERSION, 4, dngBackwardVersion);

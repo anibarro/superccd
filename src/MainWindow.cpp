@@ -1409,6 +1409,11 @@ void MainWindow::onExportPreview()
     sizeComboBox->setCurrentIndex(exportSizeIndex >= 0 ? exportSizeIndex : 0);
     layout->addRow(tr("Export size:"), sizeComboBox);
 
+    QCheckBox *includeExifCheckBox = new QCheckBox(tr("Include EXIF metadata"), &dialog);
+    includeExifCheckBox->setChecked(
+        settingsStore.value(QStringLiteral("previewExport/includeExif"), true).toBool());
+    layout->addRow(QString(), includeExifCheckBox);
+
     QDialogButtonBox *buttonBox = new QDialogButtonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, &dialog);
     layout->addRow(buttonBox);
 
@@ -1442,6 +1447,7 @@ void MainWindow::onExportPreview()
     const PreviewExportSize exportSize = static_cast<PreviewExportSize>(sizeComboBox->currentData().toInt());
     const PreviewExportFormat exportFormat =
         static_cast<PreviewExportFormat>(formatComboBox->currentData().toInt());
+    const bool includeExif = includeExifCheckBox->isChecked();
     const QString exportSizeSuffix = exportSize == PreviewExportSize::SixMp
         ? QStringLiteral("_6MP")
         : QStringLiteral("_12MP");
@@ -1492,10 +1498,20 @@ void MainWindow::onExportPreview()
         }
     }
 
+    if (includeExif) {
+        QString metadataError;
+        if (!SuperCCDProcessor::copyExifMetadata(inputPath, outputPath, &metadataError)) {
+            QFile::remove(outputPath);
+            showStatus(tr("Could not attach EXIF metadata: %1").arg(metadataError));
+            return;
+        }
+    }
+
     settingsStore.setValue(QStringLiteral("previewExport/folder"), targetFolder);
     settingsStore.setValue(QStringLiteral("previewExport/quality"), quality);
     settingsStore.setValue(QStringLiteral("previewExport/size"), sizeComboBox->currentData().toInt());
     settingsStore.setValue(QStringLiteral("previewExport/format"), formatComboBox->currentData().toInt());
+    settingsStore.setValue(QStringLiteral("previewExport/includeExif"), includeExif);
     showStatus(tr("Preview exported to %1").arg(outputPath));
 }
 

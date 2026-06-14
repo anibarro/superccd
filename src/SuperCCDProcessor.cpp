@@ -318,6 +318,21 @@ QImage extractThumbnailWithExifTool(const QString &inputPath, QString *error = n
     return img;
 }
 
+QString findExifToolExecutable()
+{
+    QString exifTool = QStandardPaths::findExecutable(QStringLiteral("exiftool"));
+    if (exifTool.isEmpty()) {
+        const QString hb1 = QStringLiteral("/opt/homebrew/bin/exiftool");
+        const QString hb2 = QStringLiteral("/usr/local/bin/exiftool");
+        if (QFile::exists(hb1)) {
+            exifTool = hb1;
+        } else if (QFile::exists(hb2)) {
+            exifTool = hb2;
+        }
+    }
+    return exifTool;
+}
+
 bool saveDebugPGM(const QString &path, const std::vector<uint16_t> &data, int w, int h)
 {
     FILE *f = fopen(path.toUtf8().constData(), "wb");
@@ -2554,6 +2569,60 @@ bool SuperCCDProcessor::readMetadata(const QString &inputPath,
 
     populateBasicMetadata(raw, metadata);
     raw.recycle();
+    return true;
+}
+
+bool SuperCCDProcessor::copyExifMetadata(const QString &inputPath,
+                                         const QString &outputPath,
+                                         QString *error)
+{
+    const QString exifTool = findExifToolExecutable();
+    if (exifTool.isEmpty()) {
+        if (error) {
+            *error = QStringLiteral("exiftool not found");
+        }
+        return false;
+    }
+
+    const QStringList arguments = {
+        QStringLiteral("-overwrite_original"),
+        QStringLiteral("-m"),
+        QStringLiteral("-tagsFromFile"),
+        inputPath,
+        QStringLiteral("-EXIF:Make"),
+        QStringLiteral("-EXIF:Model"),
+        QStringLiteral("-EXIF:LensModel"),
+        QStringLiteral("-EXIF:FocalLength"),
+        QStringLiteral("-EXIF:FNumber"),
+        QStringLiteral("-EXIF:ExposureTime"),
+        QStringLiteral("-EXIF:ISO"),
+        QStringLiteral("-EXIF:DateTimeOriginal"),
+        QStringLiteral("-EXIF:CreateDate"),
+        QStringLiteral("-EXIF:ModifyDate"),
+        outputPath
+    };
+
+    QProcess process;
+    process.start(exifTool, arguments);
+    if (!process.waitForFinished(15000) ||
+        process.exitStatus() != QProcess::NormalExit ||
+        process.exitCode() != 0) {
+        const QString stderrText = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        const QString stdoutText = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        logProcessing("copyExifMetadata: exiftool failed for %s -> %s (code=%d, stderr='%s', stdout='%s')",
+                      inputPath.toUtf8().constData(),
+                      outputPath.toUtf8().constData(),
+                      process.exitCode(),
+                      stderrText.left(200).toUtf8().constData(),
+                      stdoutText.left(200).toUtf8().constData());
+        if (error) {
+            *error = stderrText.isEmpty()
+                ? QStringLiteral("exiftool failed with exit code %1").arg(process.exitCode())
+                : stderrText;
+        }
+        return false;
+    }
+
     return true;
 }
 
