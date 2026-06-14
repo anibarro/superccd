@@ -1,8 +1,8 @@
-superccd2dng (1.1.0) stable; urgency=low
+superccd2dng (1.2.0) stable; urgency=low
 
-  * Initial release for Raspberry Pi OS (ARM64)
-  * Support for Raspberry Pi 500+ and other ARM64 devices
-  * Qt6 with Wayland support
-  * .deb package for easy installation
+  * Add packaged Raspberry Pi ARM64 build output and refreshed build docs
+  * Add CFA plane alignment stage with dedicated tests for SuperCCD geometry
+  * Improve the preview UI with editable spinboxes and a resizable main splitter
+  * Fix white balance picker slider and numeric control synchronization
 
- -- Eduardo Anibarro <anibarro@example.com>  Sat, 13 Jun 2026 21:00:00 +0200
+ -- Eduardo Anibarro <anibarro@example.com>  Sun, 14 Jun 2026 10:45:00 +0200

@@ -103,10 +103,10 @@ exit /b %errorlevel%
 
 :usage
 echo Usage:
-echo   run_vs_setup.cmd configure
-echo   run_vs_setup.cmd build
-echo   run_vs_setup.cmd package [release-name]
-echo   run_vs_setup.cmd release [release-name]
+echo   build_windows.cmd configure
+echo   build_windows.cmd build
+echo   build_windows.cmd package [release-name]
+echo   build_windows.cmd release [release-name]
 echo.
 echo build     Configures, builds, and deploys runtime files into build\
 echo package   Builds and creates a GitHub-ready zip in dist\

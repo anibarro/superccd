@@ -1680,10 +1680,17 @@ void MainWindow::applyWhiteBalancePickerSample()
     const bool oldWhiteBalanceSignals =
         m_previewWhiteBalanceSlider->blockSignals(true);
     const bool oldTintSignals = m_previewTintSlider->blockSignals(true);
+    const bool oldWhiteBalanceSpinSignals =
+        m_previewWhiteBalanceSpinBox->blockSignals(true);
+    const bool oldTintSpinSignals = m_previewTintSpinBox->blockSignals(true);
     m_previewWhiteBalanceSlider->setValue(whiteBalance);
     m_previewTintSlider->setValue(tint);
+    m_previewWhiteBalanceSpinBox->setValue(whiteBalance);
+    m_previewTintSpinBox->setValue(tint);
     m_previewWhiteBalanceSlider->blockSignals(oldWhiteBalanceSignals);
     m_previewTintSlider->blockSignals(oldTintSignals);
+    m_previewWhiteBalanceSpinBox->blockSignals(oldWhiteBalanceSpinSignals);
+    m_previewTintSpinBox->blockSignals(oldTintSpinSignals);
     updatePreviewDisplay();
 
     showStatus(tr("White balance sampled: %1, tint: %2.")

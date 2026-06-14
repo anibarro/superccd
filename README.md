@@ -158,25 +158,25 @@ Adobe DNG SDK is not required for the current stable path. LibTIFF is the practi
 
 ## Build
 
-This repository already includes `run_vs_setup.cmd`, which is the expected local build entrypoint in this project.
+This repository already includes `build_windows.cmd`, which is the expected local build entrypoint on Windows in this project.
 
 Typical build:
 
 ```powershell
-cmd /c run_vs_setup.cmd build
+cmd /c build_windows.cmd build
 ```
 
 GitHub release package:
 
 ```powershell
-cmd /c run_vs_setup.cmd package
+cmd /c build_windows.cmd package
 ```
 
 That creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-20260529.zip`.
 You can override the package name:
 
 ```powershell
-cmd /c run_vs_setup.cmd package superccd2dng-windows-x64-v0.1.0
+cmd /c build_windows.cmd package superccd2dng-windows-x64-v0.1.0
 ```
 
 If you need to configure from scratch, the important CMake inputs are:

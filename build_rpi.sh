@@ -245,7 +245,7 @@ build_deb_package() {
 
     cat > "$deb_dir/DEBIAN/control" << EOF
 Package: superccd2dng
-Version: ${version:-1.1.0}
+Version: ${version:-1.2.0}
 Section: graphics
 Priority: optional
 Architecture: arm64
@@ -270,7 +270,7 @@ MimeType=image/x-raf;
 EOF
 
     cp "$PROJECT_DIR/LICENSE" "$deb_dir/usr/share/doc/superccd2dng/copyright"
-    echo "superccd2dng (${version:-1.1.0}) stable; urgency=low" > "$deb_dir/usr/share/doc/superccd2dng/changelog"
+    echo "superccd2dng (${version:-1.2.0}) stable; urgency=low" > "$deb_dir/usr/share/doc/superccd2dng/changelog"
     echo "" >> "$deb_dir/usr/share/doc/superccd2dng/changelog"
 
     chmod 755 "$deb_dir/usr/bin/superccd2dng"

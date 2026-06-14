@@ -64,13 +64,13 @@ Check:
 Primary local build command in this repository:
 
 ```powershell
-cmd /c run_vs_setup.cmd build
+cmd /c build_windows.cmd build
 ```
 
 GitHub release zip:
 
 ```powershell
-cmd /c run_vs_setup.cmd package
+cmd /c build_windows.cmd package
 ```
 
 ## Coding Notes
