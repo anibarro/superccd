@@ -30,6 +30,10 @@ error() {
     echo -e "${RED}[ERROR]${NC} $1"
 }
 
+get_version() {
+    grep "project(superccd2dng VERSION" "$PROJECT_DIR/CMakeLists.txt" | sed 's/.*VERSION \(.*\) LANGUAGES.*/\1/'
+}
+
 # Check for required tools
 check_dependencies() {
     info "Checking dependencies..."
@@ -225,7 +229,8 @@ package() {
     
     local app_name="SuperCCD2DNG"
     local app_bundle="$PROJECT_DIR/dist-macos/${app_name}.app"
-    local version=$(cat "$PROJECT_DIR/CMakeLists.txt" | grep "project(superccd2dng VERSION" | sed 's/.*VERSION \(.*\) LANGUAGES.*/\1/')
+    local version
+    version="$(get_version)"
     
     # Create app bundle structure
     mkdir -p "$app_bundle/Contents/MacOS"

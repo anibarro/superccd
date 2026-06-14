@@ -1,3 +1,11 @@
+superccd2dng (1.3.0) stable; urgency=low
+
+  * Expand multicore processing across alignment, merge, preview, and export stages
+  * Decode S and R RAF shots concurrently to reduce first-pass processing latency
+  * Add standalone parallel scheduling tests and explicit thread linkage support
+
+ -- Eduardo Anibarro <anibarro@example.com>  Sun, 14 Jun 2026 13:15:00 +0200
+
 superccd2dng (1.2.0) stable; urgency=low
 
   * Add packaged Raspberry Pi ARM64 build output and refreshed build docs

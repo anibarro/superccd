@@ -21,7 +21,7 @@
 // APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
 // If not defined (e.g., standalone compilation), use a default
 #ifndef APP_VERSION_STRING
-#define APP_VERSION_STRING "1.2.0"
+#define APP_VERSION_STRING "1.3.0"
 #endif
 
 static void write_log_message(const char *msg)

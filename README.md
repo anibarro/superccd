@@ -157,6 +157,10 @@ Performance note:
 - an individual LibRaw decode can still contain a short single-core phase
 - repeated previews on the same file are faster
 
+Latest release:
+
+- `v1.3.0` expands multicore scheduling across the alignment, merge, preview, and export pipeline to make first-pass processing noticeably faster on multi-core systems
+
 ## Command Line
 
 Convert a RAF file:
@@ -235,7 +239,7 @@ Raspberry Pi:
 ./build_rpi.sh package
 ```
 
-The Windows package creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-20260529.zip`.
+The Windows package creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-1.3.0.zip`.
 You can override the Windows package name:
 
 ```powershell

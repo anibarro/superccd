@@ -15,8 +15,19 @@ if (-not $BuildDir) {
 }
 
 if (-not $ReleaseName) {
-    $stamp = Get-Date -Format "yyyyMMdd"
-    $ReleaseName = "superccd2dng-windows-x64-$stamp"
+    $cmakeListsPath = Join-Path $RepoRoot "CMakeLists.txt"
+    if (-not (Test-Path $cmakeListsPath)) {
+        throw "CMakeLists.txt not found: $cmakeListsPath"
+    }
+
+    $cmakeListsContent = Get-Content -LiteralPath $cmakeListsPath -Raw
+    $versionMatch = [regex]::Match($cmakeListsContent, 'project\(superccd2dng VERSION ([^ )]+) LANGUAGES')
+    if (-not $versionMatch.Success) {
+        throw "Unable to extract project version from $cmakeListsPath"
+    }
+
+    $version = $versionMatch.Groups[1].Value
+    $ReleaseName = "superccd2dng-windows-x64-$version"
 }
 
 $distRoot = Join-Path $RepoRoot "dist"
