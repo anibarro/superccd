@@ -159,7 +159,7 @@ Performance note:
 
 Latest release:
 
-- `v1.3.0` expands multicore scheduling across the alignment, merge, preview, and export pipeline to make first-pass processing noticeably faster on multi-core systems
+- `v1.3.1` adds camera and exposure metadata to RAF list entries and tightens the thumbnail row layout with a compact `3:2` presentation
 
 ## Command Line
 
@@ -239,7 +239,7 @@ Raspberry Pi:
 ./build_rpi.sh package
 ```
 
-The Windows package creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-1.3.0.zip`.
+The Windows package creates a zip in `dist\` with a default name like `superccd2dng-windows-x64-1.3.1.zip`.
 You can override the Windows package name:
 
 ```powershell
