@@ -52,7 +52,13 @@ chmod +x build_rpi.sh
 ./build_rpi.sh package
 ```
 
-This creates a `.deb` package in `dist-rpi/`.
+This creates:
+
+- `dist-rpi/superccd2dng-rpi-arm64-<version>/`
+- `dist-rpi/superccd2dng-rpi-arm64-<version>.zip`
+- `dist-rpi/superccd2dng_<version>_arm64.deb`
+
+The folder and zip include the app binary, bundled Qt plugins, required shared libraries, documentation, and a launcher script named `superccd2dng`.
 
 ### 5. Install the Package
 
@@ -294,9 +300,18 @@ The build script can create a proper Debian package:
 ```
 
 This creates:
-- `dist-rpi/superccd2dng_VERSION_arm64.deb` - The installable package
+- `dist-rpi/superccd2dng-rpi-arm64-<version>/` - Self-contained release folder
+- `dist-rpi/superccd2dng-rpi-arm64-<version>.zip` - Self-contained release archive
+- `dist-rpi/superccd2dng_<version>_arm64.deb` - Installable Debian package
 
 ### Package Contents
+
+The self-contained zip package includes:
+- `superccd2dng` - Launcher script that points Qt to the bundled runtime
+- `bin/superccd2dng` - The executable
+- `lib/` - Bundled shared library dependencies
+- `plugins/` - Bundled Qt platform, image, and theme plugins
+- `docs/` - Documentation
 
 The .deb package includes:
 - `/usr/bin/superccd2dng` - The executable

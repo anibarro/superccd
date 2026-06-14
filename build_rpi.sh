@@ -13,6 +13,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$SCRIPT_DIR"
 BUILD_DIR="$PROJECT_DIR/build-rpi"
 CMAKE_GENERATOR="Unix Makefiles"
+DIST_DIR="$PROJECT_DIR/dist-rpi"
 
 # Default to Release build
 BUILD_TYPE="${BUILD_TYPE:-Release}"
@@ -33,6 +34,257 @@ warn() {
 
 error() {
     echo -e "${RED}[ERROR]${NC} $1"
+}
+
+get_version() {
+    grep "project(superccd2dng VERSION" "$PROJECT_DIR/CMakeLists.txt" | sed 's/.*VERSION \(.*\) LANGUAGES.*/\1/'
+}
+
+detect_qt_plugin_dir() {
+    local candidates=(
+        "/usr/lib/aarch64-linux-gnu/qt6/plugins"
+        "/usr/lib/qt6/plugins"
+        "/usr/local/lib/qt6/plugins"
+    )
+
+    for candidate in "${candidates[@]}"; do
+        if [ -d "$candidate" ]; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+
+    return 1
+}
+
+copy_if_exists() {
+    local src="$1"
+    local dst="$2"
+    if [ -e "$src" ]; then
+        cp -a "$src" "$dst"
+    fi
+}
+
+copy_qt_runtime_dirs() {
+    local qt_plugin_dir="$1"
+    local stage_dir="$2"
+    local plugin_root="$stage_dir/plugins"
+    local runtime_dirs=(
+        "platforms"
+        "platformthemes"
+        "iconengines"
+        "imageformats"
+        "generic"
+        "platforminputcontexts"
+        "wayland-shell-integration"
+        "wayland-decoration-client"
+        "wayland-graphics-integration-client"
+        "xcbglintegrations"
+        "tls"
+        "networkinformation"
+    )
+
+    mkdir -p "$plugin_root"
+    for runtime_dir in "${runtime_dirs[@]}"; do
+        if [ -d "$qt_plugin_dir/$runtime_dir" ]; then
+            cp -a "$qt_plugin_dir/$runtime_dir" "$plugin_root/"
+        fi
+    done
+}
+
+bundle_dependencies() {
+    local stage_dir="$1"
+    shift
+
+    local lib_dir="$stage_dir/lib"
+    mkdir -p "$lib_dir"
+
+    local queue=("$@")
+    local queue_index=0
+    declare -A seen=()
+
+    while [ $queue_index -lt ${#queue[@]} ]; do
+        local target="${queue[$queue_index]}"
+        queue_index=$((queue_index + 1))
+
+        if [ ! -e "$target" ]; then
+            continue
+        fi
+
+        while IFS= read -r dep; do
+            if [ -z "$dep" ] || [ ! -f "$dep" ]; then
+                continue
+            fi
+
+            case "$dep" in
+                /lib/ld-linux-*|/lib64/ld-linux-*|\
+                /lib/aarch64-linux-gnu/libc.so.*|\
+                /lib/aarch64-linux-gnu/libm.so.*|\
+                /lib/aarch64-linux-gnu/libpthread.so.*|\
+                /lib/aarch64-linux-gnu/libdl.so.*|\
+                /lib/aarch64-linux-gnu/librt.so.*|\
+                /lib/aarch64-linux-gnu/libgcc_s.so.*|\
+                /lib/aarch64-linux-gnu/libstdc++.so.*)
+                    continue
+                    ;;
+            esac
+
+            if [ -z "${seen[$dep]}" ]; then
+                seen[$dep]=1
+                cp -a "$dep" "$lib_dir/"
+                queue+=("$dep")
+            fi
+        done < <(ldd "$target" | awk '
+            /=> \// { print $3 }
+            /^[[:space:]]*\// { print $1 }
+        ')
+    done
+}
+
+create_runtime_launcher() {
+    local stage_dir="$1"
+    local launcher_path="$stage_dir/superccd2dng"
+
+    cat > "$launcher_path" << 'EOF'
+#!/bin/bash
+set -e
+
+APPDIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+export LD_LIBRARY_PATH="$APPDIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+export QT_PLUGIN_PATH="$APPDIR/plugins"
+export QT_QPA_PLATFORM_PLUGIN_PATH="$APPDIR/plugins/platforms"
+
+exec "$APPDIR/bin/superccd2dng" "$@"
+EOF
+
+    chmod 755 "$launcher_path"
+}
+
+create_release_desktop_entry() {
+    local stage_dir="$1"
+
+    cat > "$stage_dir/superccd2dng.desktop" << 'EOF'
+[Desktop Entry]
+Type=Application
+Name=SuperCCD RAF to DNG
+Comment=Convert Fujifilm S3 Pro RAF files to DNG
+Exec=./superccd2dng
+Icon=app_icon_256
+Terminal=false
+Categories=Graphics;Photography;
+MimeType=image/x-raf;
+EOF
+}
+
+build_zip_package() {
+    local version="$1"
+    local release_name="${2:-superccd2dng-rpi-arm64-$version}"
+    local stage_dir="$DIST_DIR/$release_name"
+    local zip_path="$DIST_DIR/$release_name.zip"
+    local qt_plugin_dir
+
+    qt_plugin_dir="$(detect_qt_plugin_dir)" || {
+        error "Qt6 plugin directory not found."
+        exit 1
+    }
+
+    rm -rf "$stage_dir"
+    mkdir -p "$stage_dir/bin" "$stage_dir/docs"
+
+    copy_if_exists "$BUILD_DIR/superccd2dng" "$stage_dir/bin/"
+    if [ ! -f "$stage_dir/bin/superccd2dng" ]; then
+        error "Executable not found in build directory: $BUILD_DIR/superccd2dng"
+        exit 1
+    fi
+
+    copy_if_exists "$PROJECT_DIR/README.md" "$stage_dir/"
+    copy_if_exists "$PROJECT_DIR/LICENSE" "$stage_dir/"
+    copy_if_exists "$PROJECT_DIR/THIRD_PARTY_NOTICES.md" "$stage_dir/"
+    copy_if_exists "$PROJECT_DIR/docs/MANUAL.md" "$stage_dir/docs/"
+    copy_if_exists "$PROJECT_DIR/RawTherapee profile" "$stage_dir/"
+    copy_if_exists "$PROJECT_DIR/resources/icons/app_icon_256.png" "$stage_dir/"
+
+    copy_qt_runtime_dirs "$qt_plugin_dir" "$stage_dir"
+    create_runtime_launcher "$stage_dir"
+    create_release_desktop_entry "$stage_dir"
+
+    local dependency_roots=("$stage_dir/bin/superccd2dng")
+    while IFS= read -r plugin_file; do
+        dependency_roots+=("$plugin_file")
+    done < <(find "$stage_dir/plugins" -type f \( -name "*.so" -o -name "*.so.*" \) 2>/dev/null | sort)
+
+    bundle_dependencies "$stage_dir" "${dependency_roots[@]}"
+
+    rm -f "$zip_path"
+    (
+        cd "$DIST_DIR"
+        zip -rq "$(basename "$zip_path")" "$release_name"
+    )
+
+    info "Release folder created: $stage_dir"
+    info "Zip package created: $zip_path"
+}
+
+build_deb_package() {
+    local version="$1"
+    local package_name="superccd2dng_${version}_arm64.deb"
+    local dist_dir="$DIST_DIR"
+    local deb_dir="$dist_dir/deb-package"
+
+    cd "$BUILD_DIR"
+    cmake --install . --prefix "$dist_dir"
+
+    rm -rf "$deb_dir"
+    mkdir -p "$deb_dir/DEBIAN"
+    mkdir -p "$deb_dir/usr/bin"
+    mkdir -p "$deb_dir/usr/share/applications"
+    mkdir -p "$deb_dir/usr/share/doc/superccd2dng"
+
+    cp "$dist_dir/bin/superccd2dng" "$deb_dir/usr/bin/" 2>/dev/null || \
+    cp "$BUILD_DIR/superccd2dng" "$deb_dir/usr/bin/"
+
+    cat > "$deb_dir/DEBIAN/control" << EOF
+Package: superccd2dng
+Version: ${version:-1.1.0}
+Section: graphics
+Priority: optional
+Architecture: arm64
+Depends: qt6-base, qt6-wayland, libraw23, libtiff6
+Maintainer: Eduardo Anibarro <anibarro@example.com>
+Description: Fujifilm S3 Pro RAF to DNG converter
+ A desktop application for converting Fujifilm FinePix S3 Pro .RAF files
+ into editable DNG files, with a focus on the Super CCD SR II sensor's
+ separate S and R responses.
+EOF
+
+    cat > "$deb_dir/usr/share/applications/superccd2dng.desktop" << EOF
+[Desktop Entry]
+Type=Application
+Name=SuperCCD RAF to DNG
+Comment=Convert Fujifilm S3 Pro RAF files to DNG
+Exec=superccd2dng
+Icon=superccd2dng
+Terminal=false
+Categories=Graphics;Photography;
+MimeType=image/x-raf;
+EOF
+
+    cp "$PROJECT_DIR/LICENSE" "$deb_dir/usr/share/doc/superccd2dng/copyright"
+    echo "superccd2dng (${version:-1.1.0}) stable; urgency=low" > "$deb_dir/usr/share/doc/superccd2dng/changelog"
+    echo "" >> "$deb_dir/usr/share/doc/superccd2dng/changelog"
+
+    chmod 755 "$deb_dir/usr/bin/superccd2dng"
+    chmod 644 "$deb_dir/DEBIAN/control"
+
+    info "Building .deb package..."
+    if dpkg-deb --help 2>&1 | grep -q -- "--root-owner-group"; then
+        dpkg-deb --build --root-owner-group "$deb_dir" "$dist_dir/$package_name"
+    else
+        dpkg-deb --build "$deb_dir" "$dist_dir/$package_name"
+    fi
+
+    info "Debian package created: $dist_dir/$package_name"
+    info "To install: sudo dpkg -i $dist_dir/$package_name"
 }
 
 # Check for required tools
@@ -214,72 +466,15 @@ build() {
 # Package the application
 package() {
     info "Packaging Raspberry Pi application..."
-    
-    local version=$(grep "project(superccd2dng VERSION" "$PROJECT_DIR/CMakeLists.txt" | sed 's/.*VERSION \(.*\) LANGUAGES.*/\1/')
-    local package_name="superccd2dng_${version}_arm64.deb"
-    local dist_dir="$PROJECT_DIR/dist-rpi"
-    
-    # Install to dist directory
-    cd "$BUILD_DIR"
-    cmake --install . --prefix "$dist_dir"
-    
-    # Create debian package structure
-    local deb_dir="$dist_dir/deb-package"
-    mkdir -p "$deb_dir/DEBIAN"
-    mkdir -p "$deb_dir/usr/bin"
-    mkdir -p "$deb_dir/usr/share/applications"
-    mkdir -p "$deb_dir/usr/share/doc/superccd2dng"
-    
-    # Copy executable
-    cp "$dist_dir/bin/superccd2dng" "$deb_dir/usr/bin/" 2>/dev/null || \
-    cp "$BUILD_DIR/superccd2dng" "$deb_dir/usr/bin/"
-    
-    # Create control file
-    cat > "$deb_dir/DEBIAN/control" << EOF
-Package: superccd2dng
-Version: ${version:-1.1.0}
-Section: graphics
-Priority: optional
-Architecture: arm64
-Depends: qt6-base, qt6-wayland, libraw19, libtiff6
-Maintainer: Eduardo Anibarro <anibarro@example.com>
-Description: Fujifilm S3 Pro RAF to DNG converter
- A desktop application for converting Fujifilm FinePix S3 Pro .RAF files
- into editable DNG files, with a focus on the Super CCD SR II sensor's
- separate S and R responses.
-EOF
-    
-    # Create desktop file
-    cat > "$deb_dir/usr/share/applications/superccd2dng.desktop" << EOF
-[Desktop Entry]
-Type=Application
-Name=SuperCCD RAF to DNG
-Comment=Convert Fujifilm S3 Pro RAF files to DNG
-Exec=superccd2dng
-Icon=superccd2dng
-Terminal=false
-Categories=Graphics;Photography;
-MimeType=image/x-raf;
-EOF
-    
-    # Copy copyright
-    cp "$PROJECT_DIR/LICENSE" "$deb_dir/usr/share/doc/superccd2dng/copyright"
-    
-    # Create changelog (minimal)
-    echo "superccd2dng (${version:-1.1.0}) stable; urgency=low" > "$deb_dir/usr/share/doc/superccd2dng/changelog"
-    echo "" >> "$deb_dir/usr/share/doc/superccd2dng/changelog"
-    
-    # Set permissions
-    sudo chmod 755 "$deb_dir/usr/bin/superccd2dng"
-    sudo chmod 644 "$deb_dir/DEBIAN/control"
-    
-    # Build the package
-    info "Building .deb package..."
-    dpkg-deb --build "$deb_dir" "$dist_dir/$package_name"
-    
-    info "Package created: $dist_dir/$package_name"
-    info "To install: sudo dpkg -i $dist_dir/$package_name"
-    info "Or: sudo apt install $dist_dir/$package_name"
+
+    local version
+    version="$(get_version)"
+
+    mkdir -p "$DIST_DIR"
+    build_zip_package "$version"
+    build_deb_package "$version"
+
+    info "Packaging complete."
 }
 
 # Main command handler
@@ -311,7 +506,7 @@ case "${1:-build}" in
         echo "Commands:"
         echo "  build        - Configure and build the project (default)"
         echo "  clean        - Clean the build directory"
-        echo "  package      - Build and create .deb package"
+        echo "  package      - Build and create a self-contained zip and .deb package"
         echo "  install-deps - Install dependencies via apt"
         echo ""
         echo "Prerequisites:"

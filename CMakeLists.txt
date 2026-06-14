@@ -79,6 +79,7 @@ set(SOURCES
     src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp
     src/PreviewPixelCorrection.cpp
+    src/CfaPlaneAlignment.cpp
     src/SuperCCDProcessor.cpp
     src/DngWriter.cpp
     resources/app_resources.qrc
@@ -153,6 +154,21 @@ if(CMAKE_VERSION VERSION_GREATER_EQUAL "3.9" OR CMAKE_GENERATOR MATCHES "Visual 
   if(IPO_SUPPORTED)
     set(CMAKE_INTERPROCEDURAL_OPTIMIZATION TRUE)
   endif()
+endif()
+
+include(CTest)
+if(BUILD_TESTING)
+  add_executable(cfa_plane_alignment_test
+    src/tests/CfaPlaneAlignmentTest.cpp
+    src/CfaPlaneAlignment.cpp
+  )
+  set_target_properties(cfa_plane_alignment_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(cfa_plane_alignment_test PRIVATE src)
+  add_test(NAME cfa_plane_alignment_test COMMAND cfa_plane_alignment_test)
 endif()
 
 # Linux installation support

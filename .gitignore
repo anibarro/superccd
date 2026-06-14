@@ -3,6 +3,8 @@
 /dist/
 /build-macos/
 /dist-macos/
+/dist-rpi/
+/build-rpi/
 /CMakeFiles/
 /CMakeCache.txt
 /*.user

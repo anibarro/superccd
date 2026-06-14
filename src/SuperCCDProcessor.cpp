@@ -3,6 +3,7 @@
 #endif
 
 #include "SuperCCDProcessor.h"
+#include "CfaPlaneAlignment.h"
 #include "DngWriter.h"
 
 #include <libraw/libraw.h>
@@ -2949,10 +2950,57 @@ bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
                              error)) {
         return false;
     }
-    if (rebuilt.width != rWidth || rebuilt.height != rHeight || rebuilt.bitDepth != rBitDepth) {
-        error = QStringLiteral("S and R canvas dimensions do not match.");
+    if (rebuilt.bitDepth != rBitDepth) {
+        error = QStringLiteral("S and R bit depths do not match.");
         return false;
     }
+
+    std::vector<uint16_t> alignedRCfa;
+    std::vector<uint8_t> canonicalChannels;
+    superccd::CfaPlaneAlignmentInfo alignmentInfo;
+    std::string alignmentError;
+    if (!superccd::alignSecondaryCfaToPrimary(
+            rebuilt.sCfa,
+            rebuilt.sChannels,
+            rebuilt.width,
+            rebuilt.height,
+            rebuilt.metadata.fujiWidth,
+            rebuilt.rCfa,
+            rebuilt.rChannels,
+            rWidth,
+            rHeight,
+            rMetadata.fujiWidth,
+            alignedRCfa,
+            canonicalChannels,
+            alignmentInfo,
+            alignmentError)) {
+        error = QStringLiteral(
+                    "Unable to align S and R canvases without changing the CFA: %1")
+                    .arg(QString::fromStdString(alignmentError));
+        return false;
+    }
+
+    logProcessing(
+        "S/R CFA alignment: S=%dx%d fujiWidth=%d R=%dx%d fujiWidth=%d "
+        "offset=(%d,%d) metadata=%d colorMatch=%.6f corr=%.6f "
+        "extrapolated=%zu dropped=%zu",
+        rebuilt.width,
+        rebuilt.height,
+        rebuilt.metadata.fujiWidth,
+        rWidth,
+        rHeight,
+        rMetadata.fujiWidth,
+        alignmentInfo.offsetX,
+        alignmentInfo.offsetY,
+        alignmentInfo.usedMetadataOffset ? 1 : 0,
+        alignmentInfo.colorMatchRatio,
+        alignmentInfo.correlation,
+        alignmentInfo.extrapolatedSamples,
+        alignmentInfo.droppedSourceSamples);
+
+    rebuilt.rCfa = std::move(alignedRCfa);
+    rebuilt.sChannels = canonicalChannels;
+    rebuilt.rChannels = std::move(canonicalChannels);
 
     // Upsample both S and R to 2x resolution using same-color neighbors
     // This avoids boundary artifacts from offset-based projection
