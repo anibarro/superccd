@@ -160,8 +160,8 @@ bool testFujiGeometryAlignment()
 
 bool testEqualGeometryIsUnchanged()
 {
-    const int width = 6;
-    const int height = 6;
+    const int width = 64;
+    const int height = 64;
     const std::array<uint8_t, 4> pattern = {3, 2, 0, 1};
     std::vector<uint16_t> primary(
         static_cast<size_t>(width) * static_cast<size_t>(height));

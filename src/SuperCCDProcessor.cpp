@@ -5,6 +5,7 @@
 #include "SuperCCDProcessor.h"
 #include "CfaPlaneAlignment.h"
 #include "DngWriter.h"
+#include "ParallelProcessing.h"
 
 #include <libraw/libraw.h>
 #include <QFileInfo>
@@ -23,6 +24,8 @@
 #include <cmath>
 #include <algorithm>
 #include <array>
+#include <future>
+#include <mutex>
 
 namespace {
 struct PairStats {
@@ -55,11 +58,20 @@ struct LinearShotPlanes {
 
 void logProcessing(const char *format, ...)
 {
+    static std::mutex logMutex;
+    const std::lock_guard<std::mutex> lock(logMutex);
+
     va_list args;
     va_start(args, format);
     time_t t = time(NULL);
     char timestr[32];
-    strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", localtime(&t));
+    struct tm localTime {};
+#ifdef _WIN32
+    localtime_s(&localTime, &t);
+#else
+    localtime_r(&t, &localTime);
+#endif
+    strftime(timestr, sizeof(timestr), "%Y-%m-%dT%H:%M:%S", &localTime);
     QString dir = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
     if (dir.isEmpty()) {
         dir = QDir::homePath();
@@ -660,7 +672,7 @@ bool upsampleCfa2x(const std::vector<uint16_t> &cfa,
     
     // For each original pixel, create a 2x2 block in the output
     // We use bilinear interpolation from neighboring original pixels
-    for (int y = 0; y < height; ++y) {
+    superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
             const size_t srcIdx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const uint16_t srcValue = cfa[srcIdx];
@@ -715,7 +727,7 @@ bool upsampleCfa2x(const std::vector<uint16_t> &cfa,
                 }
             }
         }
-    }
+    });
     
     logLabel = QStringLiteral("Upsampled 2x: %1x%2 -> %3x%4").arg(width).arg(height).arg(outWidth).arg(outHeight);
     return true;
@@ -737,7 +749,7 @@ bool interpolateCfaToFullResolution(const std::vector<uint16_t> &cfa,
     
     fullRes.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
     
-    for (int y = 0; y < height; ++y) {
+    superccd::parallel::forRows(height, 16, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const uint8_t channel = channels[idx];
@@ -766,7 +778,7 @@ bool interpolateCfaToFullResolution(const std::vector<uint16_t> &cfa,
                 }
             }
         }
-    }
+    });
     
     logLabel = QStringLiteral("Interpolated CFA to full resolution");
     return true;
@@ -928,84 +940,99 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
     uint64_t blendedCount = 0;
     uint64_t replacedCount = 0;
     double maxDesired = 0.0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const uint8_t channel = primaryChannels[i];
-        const uint16_t s = primary[i];
-        if (channel > 3 || s == 0) {
-            continue;
-        }
+    std::mutex mergeStatsMutex;
+    superccd::parallel::forRanges(
+        0,
+        pixelCount,
+        131072,
+        [&](size_t begin, size_t end, unsigned) {
+            uint64_t localBlendedCount = 0;
+            uint64_t localReplacedCount = 0;
+            double localMaxDesired = 0.0;
+            for (size_t i = begin; i < end; ++i) {
+                const uint8_t channel = primaryChannels[i];
+                const uint16_t s = primary[i];
+                if (channel > 3 || s == 0) {
+                    continue;
+                }
 
-        const uint16_t rProjected = projectedSecondary[i];
-        if (rProjected == 0) {
-            merged[i] = s;
-            desired[i] = static_cast<double>(s);
-            continue;
-        }
+                const uint16_t rProjected = projectedSecondary[i];
+                if (rProjected == 0) {
+                    merged[i] = s;
+                    desired[i] = static_cast<double>(s);
+                    continue;
+                }
 
-        const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
-        const double scaledS = static_cast<double>(s);
-        const double normalizedS = static_cast<double>(s) / white;
-        const double normalizedR = white > 0 ? static_cast<double>(rProjected) / white : 0.0;
+                const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
+                const double scaledS = static_cast<double>(s);
+                const double normalizedS = static_cast<double>(s) / white;
+                const double normalizedR = white > 0 ? static_cast<double>(rProjected) / white : 0.0;
 
-        // Detect S clipping: when S is very bright but R is disproportionately dark,
-        // R is likely more accurate (S may be clipping in highlight areas)
-        // Also require rProjected > 200 to ensure the R projection itself is reliable
-        // TEMPORARILY DISABLED - conditions were too aggressive, causing artifacts
-        const bool sMayBeClipping = false && (normalizedS > 0.70) && (normalizedR < 0.05) && (rProjected > 200);
+                // Detect S clipping: when S is very bright but R is disproportionately dark,
+                // R is likely more accurate (S may be clipping in highlight areas)
+                // Also require rProjected > 200 to ensure the R projection itself is reliable
+                // TEMPORARILY DISABLED - conditions were too aggressive, causing artifacts
+                const bool sMayBeClipping =
+                    false && (normalizedS > 0.70) && (normalizedR < 0.05) && (rProjected > 200);
 
-        double scaledR;
-        if (sMayBeClipping) {
-            // R is more reliable in extreme highlights; use R without gain boost
-            scaledR = static_cast<double>(rProjected);
-        } else {
-            scaledR = static_cast<double>(rProjected) * gains[channel];
-        }
-        const double delay = std::clamp(rTransitionDelay, 0.0, 1.0);
-        const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
-        double blendStart = 0.95;
-        double blendEnd = 1.02;
-        if (!sDrivenHighlightsOnly) {
-            const double shoulderEnd = 0.90 + 0.14 * delay;
-            const double shoulderWidth = 0.10 + 0.44 * smoothness;
-            blendEnd = std::clamp(shoulderEnd, 0.75, 1.05);
-            blendStart = std::clamp(blendEnd - shoulderWidth, 0.0, blendEnd - 0.002);
-        }
+                double scaledR;
+                if (sMayBeClipping) {
+                    // R is more reliable in extreme highlights; use R without gain boost
+                    scaledR = static_cast<double>(rProjected);
+                } else {
+                    scaledR = static_cast<double>(rProjected) * gains[channel];
+                }
+                const double delay = std::clamp(rTransitionDelay, 0.0, 1.0);
+                const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
+                double blendStart = 0.95;
+                double blendEnd = 1.02;
+                if (!sDrivenHighlightsOnly) {
+                    const double shoulderEnd = 0.90 + 0.14 * delay;
+                    const double shoulderWidth = 0.10 + 0.44 * smoothness;
+                    blendEnd = std::clamp(shoulderEnd, 0.75, 1.05);
+                    blendStart = std::clamp(blendEnd - shoulderWidth, 0.0, blendEnd - 0.002);
+                }
 
-        if (normalizedS <= blendStart) {
-            merged[i] = static_cast<uint16_t>(std::clamp<int>(static_cast<int>(scaledS + 0.5), 0, 65535));
-            desired[i] = scaledS;
-            continue;
-        }
+                if (normalizedS <= blendStart) {
+                    merged[i] = static_cast<uint16_t>(
+                        std::clamp<int>(static_cast<int>(scaledS + 0.5), 0, 65535));
+                    desired[i] = scaledS;
+                    continue;
+                }
 
-        if (normalizedS >= blendEnd) {
-            merged[i] = static_cast<uint16_t>(std::clamp<int>(static_cast<int>(scaledR + 0.5), 0, 65535));
-            desired[i] = scaledR;
-            replacedCount++;
-            if (scaledR > maxDesired) {
-                maxDesired = scaledR;
+                if (normalizedS >= blendEnd) {
+                    merged[i] = static_cast<uint16_t>(
+                        std::clamp<int>(static_cast<int>(scaledR + 0.5), 0, 65535));
+                    desired[i] = scaledR;
+                    localReplacedCount++;
+                    localMaxDesired = std::max(localMaxDesired, scaledR);
+                    continue;
+                }
+
+                const double t = (normalizedS - blendStart) / (blendEnd - blendStart);
+                const double delayHold = sDrivenHighlightsOnly ? 0.0 : (0.75 * delay);
+                const double delayedT = (t <= delayHold)
+                                          ? 0.0
+                                          : ((t - delayHold) / std::max(1e-6, 1.0 - delayHold));
+                const double smoothT = delayedT * delayedT * (3.0 - 2.0 * delayedT);
+                const double earlyT = std::pow(delayedT, 0.60);
+                const double blendT = sDrivenHighlightsOnly
+                                        ? smoothT
+                                        : ((1.0 - smoothness) * delayedT
+                                           + smoothness * (0.35 * smoothT + 0.65 * earlyT));
+                const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
+                desired[i] = mergedValue;
+                merged[i] = static_cast<uint16_t>(
+                    std::clamp<int>(static_cast<int>(mergedValue + 0.5), 0, 65535));
+                localBlendedCount++;
+                localMaxDesired = std::max(localMaxDesired, mergedValue);
             }
-            continue;
-        }
 
-        const double t = (normalizedS - blendStart) / (blendEnd - blendStart);
-        const double delayHold = sDrivenHighlightsOnly ? 0.0 : (0.75 * delay);
-        const double delayedT = (t <= delayHold)
-                                  ? 0.0
-                                  : ((t - delayHold) / std::max(1e-6, 1.0 - delayHold));
-        const double smoothT = delayedT * delayedT * (3.0 - 2.0 * delayedT);
-        const double earlyT = std::pow(delayedT, 0.60);
-        const double blendT = sDrivenHighlightsOnly
-                                ? smoothT
-                                   : ((1.0 - smoothness) * delayedT
-                                   + smoothness * (0.35 * smoothT + 0.65 * earlyT));
-        const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
-        desired[i] = mergedValue;
-        merged[i] = static_cast<uint16_t>(std::clamp<int>(static_cast<int>(mergedValue + 0.5), 0, 65535));
-        blendedCount++;
-        if (mergedValue > maxDesired) {
-            maxDesired = mergedValue;
-        }
-    }
+            const std::lock_guard<std::mutex> lock(mergeStatsMutex);
+            blendedCount += localBlendedCount;
+            replacedCount += localReplacedCount;
+            maxDesired = std::max(maxDesired, localMaxDesired);
+        });
 
     double outputScale = 1.0;
     if (maxDesired > 65535.0) {
@@ -1013,14 +1040,21 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
     }
     outputScale *= rHeadroomScale;
     if (outputScale < 1.0) {
-        for (size_t i = 0; i < pixelCount; ++i) {
-            if (desired[i] <= 0.0) {
-                merged[i] = 0;
-                continue;
-            }
-            const double outputValue = desired[i] * outputScale;
-            merged[i] = static_cast<uint16_t>(std::clamp<int>(static_cast<int>(outputValue + 0.5), 0, 65535));
-        }
+        superccd::parallel::forRanges(
+            0,
+            pixelCount,
+            131072,
+            [&](size_t begin, size_t end, unsigned) {
+                for (size_t i = begin; i < end; ++i) {
+                    if (desired[i] <= 0.0) {
+                        merged[i] = 0;
+                        continue;
+                    }
+                    const double outputValue = desired[i] * outputScale;
+                    merged[i] = static_cast<uint16_t>(
+                        std::clamp<int>(static_cast<int>(outputValue + 0.5), 0, 65535));
+                }
+            });
     }
 
     if (appliedOutputScale) {
@@ -1049,7 +1083,7 @@ void suppressPreviewFalseColor(std::vector<float> &rgb, int width, int height)
     const std::vector<float> source = rgb;
     static constexpr int spatialWeights[5] = {1, 2, 3, 2, 1};
 
-    for (int y = 0; y < height; ++y) {
+    superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const float centerG = source[idx * 3 + 1];
@@ -1097,7 +1131,7 @@ void suppressPreviewFalseColor(std::vector<float> &rgb, int width, int height)
             rgb[idx * 3 + 0] = std::clamp(centerG + mixedDr, 0.0f, 65535.0f);
             rgb[idx * 3 + 2] = std::clamp(centerG + mixedDb, 0.0f, 65535.0f);
         }
-    }
+    });
 }
 
 bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
@@ -1137,7 +1171,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
     // direction so red/blue can be interpolated as color differences instead
     // of as unrelated intensity planes.
     std::vector<float> green(sourcePixelCount, 0.0f);
-    for (int y = 0; y < height; ++y) {
+    superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const float center = sample(x, y);
@@ -1214,7 +1248,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                 green[idx] = count > 0 ? sum / static_cast<float>(count) : center;
             }
         }
-    }
+    });
 
     const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
     const int rectWidth = fujiWidth * 2 + 1;
@@ -1324,7 +1358,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         b = std::clamp(b, 0.0f, 65535.0f);
     };
 
-    for (int row = 0; row < height; ++row) {
+    superccd::parallel::forRows(height, 8, [&](int row, unsigned) {
         const int start = std::abs(fujiWidth - row);
         const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
         for (int col = start; col < end; ++col) {
@@ -1342,11 +1376,11 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                 rectifiedMask[rectIdx] = 1;
             }
         }
-    }
+    });
 
     // The diagonal sensor mapping leaves a checkerboard of gaps. Fill those
     // before tone mapping, using the direction with the smallest green edge.
-    for (int y = 0; y < rectHeight; ++y) {
+    superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
         for (int x = 0; x < rectWidth; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
             if (rectifiedMask[idx]) {
@@ -1417,7 +1451,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                 }
             }
         }
-    }
+    });
 
     green.clear();
     green.shrink_to_fit();
@@ -1472,8 +1506,11 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
     const double scaleB = 65535.0 / maxB;
     const double contrastFactor = std::pow(2.0, toneContrast);
     const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
-    for (int y = 0; y < rectHeight; ++y) {
-        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(filled.scanLine(y));
+    uchar *filledBits = filled.bits();
+    const qsizetype filledBytesPerLine = filled.bytesPerLine();
+    superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(
+            filledBits + static_cast<qsizetype>(y) * filledBytesPerLine);
         for (int x = 0; x < rectWidth; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
             double linearR = (rectifiedRgb[idx * 3 + 0] * gainR * scaleR) / 65535.0;
@@ -1493,7 +1530,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                 static_cast<quint16>(std::clamp(outB, 0, 65535)),
                 65535);
         }
-    }
+    });
 
     QTransform transform;
     if (previewRotation == 90 || previewRotation == 180 || previewRotation == 270) {
@@ -1978,8 +2015,13 @@ bool readSelectedShotLinearPlanes12MP(const QString &inputPath,
     metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
     if (raw.imgdata.other.timestamp > 0) {
         char dateBuf[32];
-        struct tm *tm_info = localtime(&raw.imgdata.other.timestamp);
-        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", tm_info);
+        struct tm localTime {};
+#ifdef _WIN32
+        localtime_s(&localTime, &raw.imgdata.other.timestamp);
+#else
+        localtime_r(&raw.imgdata.other.timestamp, &localTime);
+#endif
+        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", &localTime);
         metadata.dateTime = QString::fromLatin1(dateBuf);
     }
 
@@ -2926,28 +2968,39 @@ bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
     int rHeight = 0;
     int rBitDepth = 0;
     SuperCCDMetadata rMetadata;
-    if (!readSelectedShotCfa(inputPath,
-                             0,
-                             false,
-                             rebuilt.sCfa,
-                             rebuilt.width,
-                             rebuilt.height,
-                             rebuilt.bitDepth,
-                             rebuilt.metadata,
-                             &rebuilt.sChannels,
-                             error)) {
+    QString sError;
+    QString rError;
+    std::future<bool> sRead = std::async(
+        std::launch::async,
+        [&]() {
+            return readSelectedShotCfa(inputPath,
+                                       0,
+                                       false,
+                                       rebuilt.sCfa,
+                                       rebuilt.width,
+                                       rebuilt.height,
+                                       rebuilt.bitDepth,
+                                       rebuilt.metadata,
+                                       &rebuilt.sChannels,
+                                       sError);
+        });
+    const bool rRead = readSelectedShotCfa(inputPath,
+                                          1,
+                                          false,
+                                          rebuilt.rCfa,
+                                          rWidth,
+                                          rHeight,
+                                          rBitDepth,
+                                          rMetadata,
+                                          &rebuilt.rChannels,
+                                          rError);
+    const bool sReadSucceeded = sRead.get();
+    if (!sReadSucceeded) {
+        error = sError;
         return false;
     }
-    if (!readSelectedShotCfa(inputPath,
-                             1,
-                             false,
-                             rebuilt.rCfa,
-                             rWidth,
-                             rHeight,
-                             rBitDepth,
-                             rMetadata,
-                             &rebuilt.rChannels,
-                             error)) {
+    if (!rRead) {
+        error = rError;
         return false;
     }
     if (rebuilt.bitDepth != rBitDepth) {
@@ -3072,8 +3125,13 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
     metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
     if (raw.imgdata.other.timestamp > 0) {
         char dateBuf[32];
-        struct tm *tm_info = localtime(&raw.imgdata.other.timestamp);
-        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", tm_info);
+        struct tm localTime {};
+#ifdef _WIN32
+        localtime_s(&localTime, &raw.imgdata.other.timestamp);
+#else
+        localtime_r(&raw.imgdata.other.timestamp, &localTime);
+#endif
+        strftime(dateBuf, sizeof(dateBuf), "%Y:%m:%d %H:%M:%S", &localTime);
         metadata.dateTime = QString::fromLatin1(dateBuf);
     }
 

@@ -8,6 +8,7 @@ set(CMAKE_AUTORCC ON)
 set(CMAKE_AUTOUIC ON)
 
 find_package(Qt6 COMPONENTS Widgets REQUIRED)
+find_package(Threads REQUIRED)
 
 set(LIBRAW_ROOT "" CACHE PATH "Root directory for LibRaw installation")
 find_path(LIBRAW_INCLUDE_DIR NAMES libraw/libraw.h raw/libraw.h
@@ -127,7 +128,7 @@ if(APPLE)
   )
 endif()
 target_include_directories(superccd2dng PRIVATE src)
-target_link_libraries(superccd2dng PRIVATE Qt6::Widgets ${LIBRAW_LIBRARY})
+target_link_libraries(superccd2dng PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
 target_compile_definitions(superccd2dng PRIVATE APP_VERSION_STRING="${PROJECT_VERSION}")
 
 if(DNG_SDK_LIBRARY)
@@ -168,7 +169,20 @@ if(BUILD_TESTING)
     AUTOUIC OFF
   )
   target_include_directories(cfa_plane_alignment_test PRIVATE src)
+  target_link_libraries(cfa_plane_alignment_test PRIVATE Threads::Threads)
   add_test(NAME cfa_plane_alignment_test COMMAND cfa_plane_alignment_test)
+
+  add_executable(parallel_processing_test
+    src/tests/ParallelProcessingTest.cpp
+  )
+  set_target_properties(parallel_processing_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(parallel_processing_test PRIVATE src)
+  target_link_libraries(parallel_processing_test PRIVATE Threads::Threads)
+  add_test(NAME parallel_processing_test COMMAND parallel_processing_test)
 endif()
 
 # Linux installation support

@@ -3,6 +3,7 @@
 #include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
 #include "PreviewPixelCorrection.h"
+#include "ParallelProcessing.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -94,11 +95,14 @@ void suppressPreviewFalseColor(QImage &image)
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     std::vector<std::int32_t> horizontalDr(pixelCount);
     std::vector<std::int32_t> horizontalDb(pixelCount);
+    uchar *imageBits = image.bits();
+    const qsizetype imageBytesPerLine = image.bytesPerLine();
 
     // Blur only color differences. The final reconstruction keeps the original
     // luminance, so edge sharpness is not reduced.
-    for (int y = 0; y < height; ++y) {
-        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(image.constScanLine(y));
+    superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
+        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(
+            imageBits + static_cast<qsizetype>(y) * imageBytesPerLine);
         int sumDr = 0;
         int sumDb = 0;
         for (int dx = -radius; dx <= radius; ++dx) {
@@ -122,53 +126,56 @@ void suppressPreviewFalseColor(QImage &image)
             sumDb += (static_cast<int>(entering.blue()) - static_cast<int>(entering.green())) -
                 (static_cast<int>(leaving.blue()) - static_cast<int>(leaving.green()));
         }
-    }
+    });
 
-    std::vector<int> columnDr(static_cast<size_t>(width), 0);
-    std::vector<int> columnDb(static_cast<size_t>(width), 0);
-    for (int dy = -radius; dy <= radius; ++dy) {
-        const int sourceY = std::clamp(dy, 0, height - 1);
-        const size_t rowOffset = static_cast<size_t>(sourceY) * static_cast<size_t>(width);
-        for (int x = 0; x < width; ++x) {
-            columnDr[static_cast<size_t>(x)] += horizontalDr[rowOffset + static_cast<size_t>(x)];
-            columnDb[static_cast<size_t>(x)] += horizontalDb[rowOffset + static_cast<size_t>(x)];
-        }
-    }
+    superccd::parallel::forRanges(
+        0,
+        static_cast<size_t>(width),
+        64,
+        [&](size_t begin, size_t end, unsigned) {
+            for (size_t x = begin; x < end; ++x) {
+                int columnDr = 0;
+                int columnDb = 0;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    const int sourceY = std::clamp(dy, 0, height - 1);
+                    const size_t index =
+                        static_cast<size_t>(sourceY) * static_cast<size_t>(width) + x;
+                    columnDr += horizontalDr[index];
+                    columnDb += horizontalDb[index];
+                }
 
-    for (int y = 0; y < height; ++y) {
-        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
-        for (int x = 0; x < width; ++x) {
-            const QRgba64 source = scanLine[x];
-            const double luma = (source.red() + 2.0 * source.green() + source.blue()) * 0.25;
-            const double filteredDr = static_cast<double>(columnDr[static_cast<size_t>(x)]) / filterArea;
-            const double filteredDb = static_cast<double>(columnDb[static_cast<size_t>(x)]) / filterArea;
-            const double filteredG = luma - (filteredDr + filteredDb) * 0.25;
-            scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::clamp(
-                    static_cast<int>(std::lround(filteredG + filteredDr)), 0, 65535)),
-                static_cast<quint16>(std::clamp(
-                    static_cast<int>(std::lround(filteredG)), 0, 65535)),
-                static_cast<quint16>(std::clamp(
-                    static_cast<int>(std::lround(filteredG + filteredDb)), 0, 65535)),
-                65535);
-        }
+                for (int y = 0; y < height; ++y) {
+                    QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(
+                        imageBits + static_cast<qsizetype>(y) * imageBytesPerLine);
+                    const QRgba64 source = scanLine[x];
+                    const double luma =
+                        (source.red() + 2.0 * source.green() + source.blue()) * 0.25;
+                    const double filteredDr = static_cast<double>(columnDr) / filterArea;
+                    const double filteredDb = static_cast<double>(columnDb) / filterArea;
+                    const double filteredG = luma - (filteredDr + filteredDb) * 0.25;
+                    scanLine[x] = QRgba64::fromRgba64(
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG + filteredDr)), 0, 65535)),
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG)), 0, 65535)),
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG + filteredDb)), 0, 65535)),
+                        65535);
 
-        if (y + 1 >= height) {
-            continue;
-        }
-        const int leavingY = std::clamp(y - radius, 0, height - 1);
-        const int enteringY = std::clamp(y + radius + 1, 0, height - 1);
-        const size_t leavingOffset = static_cast<size_t>(leavingY) * static_cast<size_t>(width);
-        const size_t enteringOffset = static_cast<size_t>(enteringY) * static_cast<size_t>(width);
-        for (int x = 0; x < width; ++x) {
-            columnDr[static_cast<size_t>(x)] +=
-                horizontalDr[enteringOffset + static_cast<size_t>(x)] -
-                horizontalDr[leavingOffset + static_cast<size_t>(x)];
-            columnDb[static_cast<size_t>(x)] +=
-                horizontalDb[enteringOffset + static_cast<size_t>(x)] -
-                horizontalDb[leavingOffset + static_cast<size_t>(x)];
-        }
-    }
+                    if (y + 1 >= height) {
+                        continue;
+                    }
+                    const int leavingY = std::clamp(y - radius, 0, height - 1);
+                    const int enteringY = std::clamp(y + radius + 1, 0, height - 1);
+                    const size_t leavingIndex =
+                        static_cast<size_t>(leavingY) * static_cast<size_t>(width) + x;
+                    const size_t enteringIndex =
+                        static_cast<size_t>(enteringY) * static_cast<size_t>(width) + x;
+                    columnDr += horizontalDr[enteringIndex] - horizontalDr[leavingIndex];
+                    columnDb += horizontalDb[enteringIndex] - horizontalDb[leavingIndex];
+                }
+            }
+        });
 }
 
 QString listItemPath(const QListWidgetItem *item)
