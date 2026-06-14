@@ -9,12 +9,12 @@ InTrash=false
 [Exposure]
 Auto=false
 Clip=0.02
-Compensation=2.5
+Compensation=0
 Brightness=0
-Contrast=46
+Contrast=37
 Saturation=19
 Black=0
-HighlightCompr=89
+HighlightCompr=0
 HighlightComprThreshold=0
 ShadowCompr=50
 HistogramMatching=false
@@ -396,10 +396,10 @@ AllowUpscaling=false
 
 [PostDemosaicSharpening]
 Enabled=true
-Contrast=6
+Contrast=7
 AutoContrast=true
 AutoRadius=true
-DeconvRadius=0.62
+DeconvRadius=0.68999999999999995
 DeconvRadiusOffset=0
 DeconvIterCheck=true
 DeconvIterations=20

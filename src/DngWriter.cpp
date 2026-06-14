@@ -467,24 +467,23 @@ bool writeDngWithLibTiff(const QString &outputPath,
           setSingleSRationalField(tif, TIFFTAG_BASELINEEXPOSURE, baselineExposure);
       }
       if (metadata.hasFlip) {
-          // LibRaw flip: 0=none, 1=90CCW, 2=180, 3=270, negative=mirrored
+          // LibRaw flip: 0=none, 3=180, 5=90CCW, 6=90CW, negative=mirrored
           // TIFF orientation: 1=TLL, 2=TR, 3=BRL, 4=BL, 5=LR, 6=RT, 7=RB, 8=LB
           uint16_t orientation = 1; // default: normal
-          const int flip = metadata.flip;
-          if (flip == 1) {
-              orientation = 6; // RIGHTTOP - 90° CCW
-          } else if (flip == 2) {
+          const int flip = metadata.flip < 0 ? -metadata.flip : metadata.flip;
+          if (flip == 3 || flip == 2) {
               orientation = 3; // BOTRIGHT - 180°
-          } else if (flip == 3) {
-              orientation = 8; // LEFTBOT - 270° (90° CW)
-          } else if (flip < 0) {
+          } else if (flip == 5 || flip == 1) {
+              orientation = 8; // LEFTBOT - 90° CCW
+          } else if (flip == 6) {
+              orientation = 6; // RIGHTTOP - 90° CW
+          } else if (metadata.flip < 0) {
               // Mirrored - use negative flip to determine base orientation
-              int baseFlip = -flip;
-              if (baseFlip == 1) {
-                  orientation = 5; // LEFTOP - mirrored 90° CCW
-              } else if (baseFlip == 2) {
+              if (flip == 3 || flip == 2) {
                   orientation = 2; // TOPRIGHT - mirrored horizontal
-              } else if (baseFlip == 3) {
+              } else if (flip == 5 || flip == 1) {
+                  orientation = 5; // LEFTTOP - mirrored 90° CCW
+              } else if (flip == 6) {
                   orientation = 7; // RIGHTBOT - mirrored 90° CW
               }
           }

@@ -70,6 +70,8 @@ void populateBasicMetadata(LibRaw &raw, SuperCCDMetadata &metadata)
     metadata.shutter = raw.imgdata.other.shutter;
     metadata.focalLength = raw.imgdata.other.focal_len;
     metadata.fujiWidth = raw.get_internal_data_pointer()->internal_output_params.fuji_width;
+    metadata.flip = raw.imgdata.sizes.flip;
+    metadata.hasFlip = (metadata.flip != 0);
     if (raw.imgdata.other.timestamp > 0) {
         char dateBuf[32];
         struct tm localTime {};
@@ -1200,13 +1202,34 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
         return (x & 1) == 0 ? CfaColor::Red : CfaColor::Green;
     };
+    const float greenBlack = metadata.hasBlackLevels
+        ? static_cast<float>((metadata.blackLevels[0] + metadata.blackLevels[3]) * 0.5)
+        : 0.0f;
+    const float blueBlack = metadata.hasBlackLevels
+        ? static_cast<float>(metadata.blackLevels[1])
+        : 0.0f;
+    const float redBlack = metadata.hasBlackLevels
+        ? static_cast<float>(metadata.blackLevels[2])
+        : 0.0f;
+    auto blackLevelForColor = [&](CfaColor color) -> float {
+        switch (color) {
+        case CfaColor::Red:
+            return redBlack;
+        case CfaColor::Blue:
+            return blueBlack;
+        case CfaColor::Green:
+            return greenBlack;
+        }
+        return 0.0f;
+    };
 
     auto sample = [&](int x, int y) -> float {
         x = std::clamp(x, 0, width - 1);
         y = std::clamp(y, 0, height - 1);
-        return static_cast<float>(
+        const float rawValue = static_cast<float>(
             cfa[static_cast<size_t>(y) * static_cast<size_t>(width)
                 + static_cast<size_t>(x)]);
+        return std::max(0.0f, rawValue - blackLevelForColor(colorAt(x, y)));
     };
 
     // Green carries most edge detail. Reconstruct it first along the smoother
@@ -1502,9 +1525,6 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
     double sumR = 0.0;
     double sumG = 0.0;
     double sumB = 0.0;
-    double maxR = 1.0;
-    double maxG = 1.0;
-    double maxB = 1.0;
     for (size_t idx = 0; idx < rectPixelCount; ++idx) {
         const double r = rectifiedRgb[idx * 3 + 0];
         const double g = rectifiedRgb[idx * 3 + 1];
@@ -1512,9 +1532,6 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         sumR += r;
         sumG += g;
         sumB += b;
-        maxR = std::max(maxR, r);
-        maxG = std::max(maxG, g);
-        maxB = std::max(maxB, b);
     }
 
     const double pixelCount = static_cast<double>(rectPixelCount);
@@ -1544,8 +1561,42 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         error = QStringLiteral("Failed to allocate preview image.");
         return false;
     }
+    constexpr double kPreviewHighlightPercentile = 0.9995;
+    const double balancedSensorWhite = std::max(
+        {1.0,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - redBlack) * gains.red,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - greenBlack) * gains.green,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - blueBlack) * gains.blue});
+    std::vector<std::uint32_t> balancedHistogram(65536, 0);
+    std::uint64_t balancedSampleCount = 0;
+    for (size_t idx = 0; idx < rectPixelCount; ++idx) {
+        const double balancedLevel = std::max(
+            {0.0,
+             rectifiedRgb[idx * 3 + 0] * gains.red,
+             rectifiedRgb[idx * 3 + 1] * gains.green,
+             rectifiedRgb[idx * 3 + 2] * gains.blue});
+        const std::size_t bucket = static_cast<std::size_t>(std::clamp(
+            static_cast<int>(std::lround(balancedLevel)),
+            0,
+            65535));
+        balancedHistogram[bucket]++;
+        balancedSampleCount++;
+    }
+    const double highlightReference =
+        superccd::previewReferenceLevelFromHistogram(
+            balancedHistogram,
+            balancedSampleCount,
+            kPreviewHighlightPercentile);
+    const double previewReference =
+        std::max(balancedSensorWhite, highlightReference);
     const double previewScale =
-        superccd::previewScaleToFit16Bit(maxR, maxG, maxB, gains);
+        superccd::previewScaleToFit16Bit(previewReference);
+    logProcessing(
+        "Preview normalization: sensorWhite=%.2f highlightRef=%.2f reference=%.2f scale=%.6f",
+        balancedSensorWhite,
+        highlightReference,
+        previewReference,
+        previewScale);
     const double contrastFactor = std::pow(2.0, toneContrast);
     const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
     uchar *filledBits = filled.bits();
@@ -1751,20 +1802,25 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
     double sumR = 0.0;
     double sumG = 0.0;
     double sumB = 0.0;
-    uint32_t maxR = 1;
-    uint32_t maxG = 1;
-    uint32_t maxB = 1;
+    const double greenBlack = metadata.hasBlackLevels
+        ? (metadata.blackLevels[0] + metadata.blackLevels[3]) * 0.5
+        : 0.0;
+    const double blueBlack = metadata.hasBlackLevels ? metadata.blackLevels[1] : 0.0;
+    const double redBlack = metadata.hasBlackLevels ? metadata.blackLevels[2] : 0.0;
     const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     for (size_t i = 0; i < pixelCount; ++i) {
-        const uint16_t r = rgb[i * 3 + 0];
-        const uint16_t g = rgb[i * 3 + 1];
-        const uint16_t b = rgb[i * 3 + 2];
+        const double r = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 0]) - redBlack);
+        const double g = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 1]) - greenBlack);
+        const double b = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 2]) - blueBlack);
         sumR += r;
         sumG += g;
         sumB += b;
-        maxR = std::max(maxR, static_cast<uint32_t>(r));
-        maxG = std::max(maxG, static_cast<uint32_t>(g));
-        maxB = std::max(maxB, static_cast<uint32_t>(b));
     }
 
     const double avgR = sumR / static_cast<double>(pixelCount);
@@ -1782,26 +1838,60 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
     }
-    const double previewScale = superccd::previewScaleToFit16Bit(
-        static_cast<double>(maxR),
-        static_cast<double>(maxG),
-        static_cast<double>(maxB),
-        gains);
+    constexpr double kPreviewHighlightPercentile = 0.9995;
+    const double balancedSensorWhite = std::max(
+        {1.0,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - redBlack) * gains.red,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - greenBlack) * gains.green,
+         std::max(1.0, static_cast<double>(metadata.whiteLevel) - blueBlack) * gains.blue});
+    std::vector<std::uint32_t> balancedHistogram(65536, 0);
+    std::uint64_t balancedSampleCount = 0;
+    for (size_t i = 0; i < pixelCount; ++i) {
+        const double r = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 0]) - redBlack);
+        const double g = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 1]) - greenBlack);
+        const double b = std::max(
+            0.0,
+            static_cast<double>(rgb[i * 3 + 2]) - blueBlack);
+        const double balancedLevel = std::max(
+            {0.0, r * gains.red, g * gains.green, b * gains.blue});
+        const std::size_t bucket = static_cast<std::size_t>(std::clamp(
+            static_cast<int>(std::lround(balancedLevel)),
+            0,
+            65535));
+        balancedHistogram[bucket]++;
+        balancedSampleCount++;
+    }
+    const double highlightReference =
+        superccd::previewReferenceLevelFromHistogram(
+            balancedHistogram,
+            balancedSampleCount,
+            kPreviewHighlightPercentile);
+    const double previewReference =
+        std::max(balancedSensorWhite, highlightReference);
+    const double previewScale =
+        superccd::previewScaleToFit16Bit(previewReference);
 
     for (int y = 0; y < height; ++y) {
         QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
         for (int x = 0; x < width; ++x) {
             const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
             const double linearR = std::clamp(
-                (static_cast<double>(rgb[idx + 0]) * gains.red * previewScale) / 65535.0,
+                (std::max(0.0, static_cast<double>(rgb[idx + 0]) - redBlack)
+                 * gains.red * previewScale) / 65535.0,
                 0.0,
                 1.0);
             const double linearG = std::clamp(
-                (static_cast<double>(rgb[idx + 1]) * gains.green * previewScale) / 65535.0,
+                (std::max(0.0, static_cast<double>(rgb[idx + 1]) - greenBlack)
+                 * gains.green * previewScale) / 65535.0,
                 0.0,
                 1.0);
             const double linearB = std::clamp(
-                (static_cast<double>(rgb[idx + 2]) * gains.blue * previewScale) / 65535.0,
+                (std::max(0.0, static_cast<double>(rgb[idx + 2]) - blueBlack)
+                 * gains.blue * previewScale) / 65535.0,
                 0.0,
                 1.0);
             const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 65535.0 + 0.5);

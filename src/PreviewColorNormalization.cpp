@@ -1,6 +1,7 @@
 #include "PreviewColorNormalization.h"
 
 #include <algorithm>
+#include <cmath>
 
 namespace superccd {
 
@@ -27,6 +28,11 @@ PreviewChannelGains derivePreviewChannelGains(double avgRed,
     return gains;
 }
 
+double previewScaleToFit16Bit(double referenceLevel)
+{
+    return 65535.0 / std::max(1.0, referenceLevel);
+}
+
 double previewScaleToFit16Bit(double maxRed,
                               double maxGreen,
                               double maxBlue,
@@ -37,7 +43,33 @@ double previewScaleToFit16Bit(double maxRed,
          maxRed * gains.red,
          maxGreen * gains.green,
          maxBlue * gains.blue});
-    return 65535.0 / maxBalancedChannel;
+    return previewScaleToFit16Bit(maxBalancedChannel);
+}
+
+double previewReferenceLevelFromHistogram(
+    const std::vector<std::uint32_t> &histogram,
+    std::uint64_t sampleCount,
+    double percentile)
+{
+    if (histogram.empty() || sampleCount == 0) {
+        return 1.0;
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const std::uint64_t targetRank = std::max<std::uint64_t>(
+        1,
+        static_cast<std::uint64_t>(std::ceil(
+            static_cast<double>(sampleCount) * clampedPercentile)));
+
+    std::uint64_t cumulative = 0;
+    for (std::size_t index = 0; index < histogram.size(); ++index) {
+        cumulative += histogram[index];
+        if (cumulative >= targetRank) {
+            return static_cast<double>(index);
+        }
+    }
+
+    return static_cast<double>(histogram.size() - 1);
 }
 
 } // namespace superccd

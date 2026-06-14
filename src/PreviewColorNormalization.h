@@ -2,6 +2,8 @@
 #define PREVIEWCOLORNORMALIZATION_H
 
 #include <array>
+#include <cstdint>
+#include <vector>
 
 namespace superccd {
 
@@ -18,10 +20,17 @@ PreviewChannelGains derivePreviewChannelGains(double avgRed,
                                              const std::array<double, 3> &asShotNeutral,
                                              double asShotTint);
 
+double previewScaleToFit16Bit(double referenceLevel);
+
 double previewScaleToFit16Bit(double maxRed,
                               double maxGreen,
                               double maxBlue,
                               const PreviewChannelGains &gains);
+
+double previewReferenceLevelFromHistogram(
+    const std::vector<std::uint32_t> &histogram,
+    std::uint64_t sampleCount,
+    double percentile);
 
 } // namespace superccd
 

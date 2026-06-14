@@ -1,8 +1,10 @@
 #include "PreviewColorNormalization.h"
 
 #include <array>
+#include <cstdint>
 #include <cmath>
 #include <cstdio>
+#include <vector>
 
 namespace {
 
@@ -50,12 +52,44 @@ bool testMetadataGainsOverrideAverageRatios()
     return true;
 }
 
+bool testReferenceIgnoresIsolatedHighlightOutlier()
+{
+    std::vector<std::uint32_t> histogram(65536, 0);
+    histogram[4000] = 100000;
+    histogram[32000] = 1;
+
+    const double reference =
+        superccd::previewReferenceLevelFromHistogram(histogram, 100001, 0.9995);
+    if (!nearlyEqual(reference, 4000.0)) {
+        std::fprintf(stderr, "isolated highlight outlier still changed preview reference\n");
+        return false;
+    }
+    return true;
+}
+
+bool testReferenceKeepsBroadHighlights()
+{
+    std::vector<std::uint32_t> histogram(65536, 0);
+    histogram[4000] = 95000;
+    histogram[32000] = 5000;
+
+    const double reference =
+        superccd::previewReferenceLevelFromHistogram(histogram, 100000, 0.9995);
+    if (!nearlyEqual(reference, 32000.0)) {
+        std::fprintf(stderr, "broad highlights were ignored too aggressively\n");
+        return false;
+    }
+    return true;
+}
+
 } // namespace
 
 int main()
 {
     return testScaleKeepsColorRatiosStable() &&
-           testMetadataGainsOverrideAverageRatios()
+           testMetadataGainsOverrideAverageRatios() &&
+           testReferenceIgnoresIsolatedHighlightOutlier() &&
+           testReferenceKeepsBroadHighlights()
         ? 0
         : 1;
 }

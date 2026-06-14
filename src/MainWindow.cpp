@@ -26,6 +26,7 @@
 #include <QPixmap>
 #include <QPushButton>
 #include <QRadioButton>
+#include <QSignalBlocker>
 #include <QScrollArea>
 #include <QScrollBar>
 #include <QSlider>
@@ -52,17 +53,18 @@
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
 constexpr int kDefaultSmoothnessSliderValue = 50;
-constexpr int kDefaultPreviewExposureSliderValue = 12;
+constexpr int kDefaultPreviewExposureSliderValue = 0;
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
-constexpr int kDefaultPreviewGammaSliderValue = 31;
-constexpr int kDefaultPreviewContrastSliderValue = 18;
+constexpr int kDefaultPreviewGammaSliderValue = 40;
+constexpr int kDefaultPreviewContrastSliderValue = 38;
 constexpr int kDefaultPreviewSaturationSliderValue = 64;
 constexpr int kDefaultPreviewSharpeningSliderValue = 0;
-constexpr int kDefaultPreviewHighlightCompressionSliderValue = 39;
-constexpr int kDefaultPreviewZoomSliderValue = 20;
-constexpr bool kDefaultAutoPreview = false;
+constexpr int kDefaultPreviewHighlightCompressionSliderValue = 30;
+constexpr int kDefaultPreviewZoomSliderValue = 35;
+constexpr bool kDefaultAutoPreview = true;
 constexpr int kPreviewExportSixMpShortSide = 2016;
+constexpr int kItemPreviewRotationRole = Qt::UserRole + 1;
 
 enum class PreviewExportSize {
     FullSize12Mp = 0,
@@ -186,6 +188,25 @@ QString listItemPath(const QListWidgetItem *item)
     }
     const QString storedPath = item->data(Qt::UserRole).toString();
     return storedPath.isEmpty() ? item->text() : storedPath;
+}
+
+int previewRotationFromMetadata(const SuperCCDMetadata &metadata)
+{
+    const int flip = metadata.flip < 0 ? -metadata.flip : metadata.flip;
+    switch (flip) {
+    case 3:
+        return 180;
+    case 5:
+        return 270;
+    case 6:
+        return 90;
+    case 2:
+        return 180;
+    case 1:
+        return 270;
+    default:
+        return 0;
+    }
 }
 
 QString displayCameraModel(const SuperCCDMetadata &metadata)
@@ -676,6 +697,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
         m_whiteBalancePickerButton->setChecked(false);
         if (row >= 0) {
+            const QListWidgetItem *item = m_fileList->item(row);
+            const int metadataRotation = item ? item->data(kItemPreviewRotationRole).toInt() : 0;
+            const int rotationIndex = m_previewRotationCombo->findData(metadataRotation);
+            const QSignalBlocker blocker(m_previewRotationCombo);
+            m_previewRotationCombo->setCurrentIndex(rotationIndex >= 0 ? rotationIndex : 0);
             queueAutoPreview();
             updateControls(false);
         }
@@ -999,6 +1025,7 @@ void MainWindow::dropEvent(QDropEvent *event)
             QString metadataErr;
             SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
             SuperCCDProcessor::readMetadata(file, metadata, &metadataErr);
+            item->setData(kItemPreviewRotationRole, previewRotationFromMetadata(metadata));
             if (!thumbErr.isEmpty()) {
                 item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
             }
@@ -1051,6 +1078,7 @@ void MainWindow::onAddFiles()
             QString metadataErr;
             SuperCCDProcessor::extractEmbeddedThumbnail(file, thumbnail, &thumbErr);
             SuperCCDProcessor::readMetadata(file, metadata, &metadataErr);
+            item->setData(kItemPreviewRotationRole, previewRotationFromMetadata(metadata));
             if (!thumbErr.isEmpty()) {
                 item->setToolTip(item->toolTip() + QStringLiteral("\nThumbnail error: %1").arg(thumbErr));
             }

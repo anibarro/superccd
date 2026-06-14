@@ -53,7 +53,7 @@ struct SuperCCDMetadata {
     int fujiWidth = 0;
     QImage embeddedThumbnail;
 
-    // Rotation/flip info from RAF (0=none, 1=90CCW, 2=180, 3=270, negative=mirrored)
+    // Rotation/flip info from LibRaw/RAF metadata (0=none, 3=180, 5=90CCW, 6=90CW, negative=mirrored)
     int flip = 0;
     bool hasFlip = false;
 
