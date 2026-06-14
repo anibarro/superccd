@@ -16,7 +16,10 @@
 #endif
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDir>
+#include <QFile>
 #include <QIcon>
+#include <QStandardPaths>
 
 // APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
 // If not defined (e.g., standalone compilation), use a default
@@ -24,11 +27,29 @@
 #define APP_VERSION_STRING "1.3.0"
 #endif
 
+static char error_log_path[4096] = "last_error.log";
+
+static void initialize_error_log_path()
+{
+    QString directory = QStandardPaths::writableLocation(QStandardPaths::AppDataLocation);
+    if (directory.isEmpty()) {
+        directory = QDir::homePath();
+    }
+    QDir().mkpath(directory);
+
+    const QByteArray encodedPath =
+        QFile::encodeName(QDir(directory).filePath(QStringLiteral("last_error.log")));
+    std::snprintf(error_log_path,
+                  sizeof(error_log_path),
+                  "%s",
+                  encodedPath.constData());
+}
+
 static void write_log_message(const char *msg)
 {
 #if defined(_WIN32)
     // Use Win32 API to avoid C runtime buffering issues in signal handlers
-    HANDLE h = CreateFileA("last_error.log", FILE_APPEND_DATA, FILE_SHARE_WRITE | FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    HANDLE h = CreateFileA(error_log_path, FILE_APPEND_DATA, FILE_SHARE_WRITE | FILE_SHARE_READ, NULL, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
     if (h != INVALID_HANDLE_VALUE) {
         DWORD written = 0;
         // Prepend timestamp
@@ -41,7 +62,7 @@ static void write_log_message(const char *msg)
     }
 #elif defined(__APPLE__) || defined(__unix__) || defined(__linux__)
     // macOS and Linux: use POSIX file I/O with flock for safe concurrent writes
-    FILE *f = fopen("last_error.log", "a");
+    FILE *f = fopen(error_log_path, "a");
     if (f) {
         // Try to acquire exclusive lock (non-blocking)
         struct flock fl;
@@ -67,7 +88,7 @@ static void write_log_message(const char *msg)
     }
 #else
     // Fallback for other platforms
-    FILE *f = fopen("last_error.log", "a");
+    FILE *f = fopen(error_log_path, "a");
     if (f) {
         time_t t = time(NULL);
         struct tm tm;
@@ -160,6 +181,7 @@ int main(int argc, char *argv[])
 
     QCoreApplication::setApplicationName(QStringLiteral("SuperCCD RAF to DNG Converter"));
     QCoreApplication::setApplicationVersion(QString::fromLatin1(APP_VERSION_STRING));
+    initialize_error_log_path();
 
     for (int i = 1; i < argc; ++i) {
         if (is_version_option(argv[i])) {

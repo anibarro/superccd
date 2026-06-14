@@ -25,6 +25,7 @@
 #include <algorithm>
 #include <array>
 #include <future>
+#include <memory>
 #include <mutex>
 
 namespace {
@@ -1996,7 +1997,10 @@ bool readSelectedShotLinearPlanes12MP(const QString &inputPath,
                                       SuperCCDMetadata &metadata,
                                       QString &error)
 {
-    LibRaw raw;
+    // LibRaw is large enough to overflow the default macOS worker-thread stack.
+    // Keep it off the stack because this function can run through std::async.
+    auto rawStorage = std::make_unique<LibRaw>();
+    LibRaw &raw = *rawStorage;
     raw.imgdata.rawparams.shot_select = static_cast<unsigned>(shotSelect);
 
     int result = raw.open_file(inputPath.toUtf8().constData());
@@ -3099,7 +3103,10 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
                   inputPath.toUtf8().constData(),
                   shotSelect);
 
-    LibRaw raw;
+    // This reader runs concurrently for the S and R shots. A stack-allocated
+    // LibRaw exceeds the default macOS worker-thread stack.
+    auto rawStorage = std::make_unique<LibRaw>();
+    LibRaw &raw = *rawStorage;
     raw.imgdata.rawparams.shot_select = static_cast<unsigned>(shotSelect);
 
     int result = raw.open_file(inputPath.toUtf8().constData());
