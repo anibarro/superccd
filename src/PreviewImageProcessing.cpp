@@ -1,4 +1,5 @@
 #include "PreviewImageProcessing.h"
+#include "ParallelProcessing.h"
 
 #include <algorithm>
 #include <array>
@@ -103,8 +104,11 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     }
 
     const double saturationScale = 1.0 + adjustments.saturation / 100.0;
-    for (int y = 0; y < displayImage.height(); ++y) {
-        QRgb *scanLine = reinterpret_cast<QRgb *>(displayImage.scanLine(y));
+    uchar *displayBits = displayImage.bits();
+    const qsizetype displayBytesPerLine = displayImage.bytesPerLine();
+    superccd::parallel::forRows(displayImage.height(), 16, [&](int y, unsigned) {
+        QRgb *scanLine = reinterpret_cast<QRgb *>(
+            displayBits + static_cast<qsizetype>(y) * displayBytesPerLine);
         for (int x = 0; x < displayImage.width(); ++x) {
             const QRgb sourcePixel = scanLine[x];
             int r = toneLut[static_cast<size_t>(std::clamp(
@@ -132,7 +136,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
 
             scanLine[x] = qRgb(r, g, b);
         }
-    }
+    });
 
     return displayImage;
 }

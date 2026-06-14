@@ -1,4 +1,5 @@
 #include "CfaPlaneAlignment.h"
+#include "ParallelProcessing.h"
 
 #include <algorithm>
 #include <array>
@@ -20,18 +21,28 @@ bool inferCfaPattern(const std::vector<uint8_t> &channels,
                      int height,
                      std::array<uint8_t, 4> &pattern)
 {
-    std::array<std::array<uint64_t, 4>, 4> counts{};
-    for (int y = 0; y < height; ++y) {
+    using PatternCounts = std::array<std::array<uint64_t, 4>, 4>;
+    std::vector<PatternCounts> partialCounts(parallel::availableWorkers());
+    parallel::forRows(height, 16, [&](int y, unsigned workerIndex) {
+        PatternCounts &counts = partialCounts[workerIndex];
         for (int x = 0; x < width; ++x) {
             const size_t index =
                 static_cast<size_t>(y) * static_cast<size_t>(width) +
                 static_cast<size_t>(x);
             const uint8_t channel = channels[index];
-            if (channel > 3) {
-                continue;
+            if (channel <= 3) {
+                const int parity = ((y & 1) << 1) | (x & 1);
+                counts[parity][channel]++;
             }
-            const int parity = ((y & 1) << 1) | (x & 1);
-            counts[parity][channel]++;
+        }
+    });
+
+    PatternCounts counts{};
+    for (const PatternCounts &partial : partialCounts) {
+        for (int parity = 0; parity < 4; ++parity) {
+            for (int channel = 0; channel < 4; ++channel) {
+                counts[parity][channel] += partial[parity][channel];
+            }
         }
     }
 
@@ -61,6 +72,17 @@ struct AlignmentScore {
     double sourceCoverage = 0.0;
     double correlation = 0.0;
     bool valid = false;
+};
+
+struct AlignmentAccumulator {
+    uint64_t comparedSamples = 0;
+    uint64_t matchingSamples = 0;
+    std::array<long double, 4> sumPrimary{};
+    std::array<long double, 4> sumSecondary{};
+    std::array<long double, 4> sumPrimarySquared{};
+    std::array<long double, 4> sumSecondarySquared{};
+    std::array<long double, 4> sumProduct{};
+    std::array<uint64_t, 4> correlationCounts{};
 };
 
 AlignmentScore scoreAlignment(const std::vector<uint16_t> &primary,
@@ -96,17 +118,12 @@ AlignmentScore scoreAlignment(const std::vector<uint16_t> &primary,
         ? static_cast<double>(overlapArea) / static_cast<double>(sourceArea)
         : 0.0;
 
-    std::array<long double, 4> sumPrimary{};
-    std::array<long double, 4> sumSecondary{};
-    std::array<long double, 4> sumPrimarySquared{};
-    std::array<long double, 4> sumSecondarySquared{};
-    std::array<long double, 4> sumProduct{};
-    std::array<uint64_t, 4> correlationCounts{};
-
-    for (int sourceY = 0; sourceY < secondaryHeight; ++sourceY) {
+    std::vector<AlignmentAccumulator> partials(parallel::availableWorkers());
+    parallel::forRows(secondaryHeight, 16, [&](int sourceY, unsigned workerIndex) {
+        AlignmentAccumulator &partial = partials[workerIndex];
         const int targetY = sourceY + offsetY;
         if (targetY < 0 || targetY >= primaryHeight) {
-            continue;
+            return;
         }
         for (int sourceX = 0; sourceX < secondaryWidth; ++sourceX) {
             const int targetX = sourceX + offsetX;
@@ -125,11 +142,11 @@ AlignmentScore scoreAlignment(const std::vector<uint16_t> &primary,
 
             const int targetParity = ((targetY & 1) << 1) | (targetX & 1);
             const uint8_t targetChannel = primaryPattern[targetParity];
-            score.comparedSamples++;
+            partial.comparedSamples++;
             if (colorClass(secondaryChannel) != colorClass(targetChannel)) {
                 continue;
             }
-            score.matchingSamples++;
+            partial.matchingSamples++;
 
             const size_t targetIndex =
                 static_cast<size_t>(targetY) * static_cast<size_t>(primaryWidth) +
@@ -142,14 +159,30 @@ AlignmentScore scoreAlignment(const std::vector<uint16_t> &primary,
             const int channel = targetChannel;
             const long double primarySample = primaryValue;
             const long double secondarySample = secondaryValue;
-            sumPrimary[channel] += primarySample;
-            sumSecondary[channel] += secondarySample;
-            sumPrimarySquared[channel] += primarySample * primarySample;
-            sumSecondarySquared[channel] += secondarySample * secondarySample;
-            sumProduct[channel] += primarySample * secondarySample;
-            correlationCounts[channel]++;
+            partial.sumPrimary[channel] += primarySample;
+            partial.sumSecondary[channel] += secondarySample;
+            partial.sumPrimarySquared[channel] += primarySample * primarySample;
+            partial.sumSecondarySquared[channel] += secondarySample * secondarySample;
+            partial.sumProduct[channel] += primarySample * secondarySample;
+            partial.correlationCounts[channel]++;
+        }
+    });
+
+    AlignmentAccumulator totals;
+    for (const AlignmentAccumulator &partial : partials) {
+        totals.comparedSamples += partial.comparedSamples;
+        totals.matchingSamples += partial.matchingSamples;
+        for (int channel = 0; channel < 4; ++channel) {
+            totals.sumPrimary[channel] += partial.sumPrimary[channel];
+            totals.sumSecondary[channel] += partial.sumSecondary[channel];
+            totals.sumPrimarySquared[channel] += partial.sumPrimarySquared[channel];
+            totals.sumSecondarySquared[channel] += partial.sumSecondarySquared[channel];
+            totals.sumProduct[channel] += partial.sumProduct[channel];
+            totals.correlationCounts[channel] += partial.correlationCounts[channel];
         }
     }
+    score.comparedSamples = totals.comparedSamples;
+    score.matchingSamples = totals.matchingSamples;
 
     if (score.comparedSamples > 0) {
         score.colorMatchRatio =
@@ -160,21 +193,21 @@ AlignmentScore scoreAlignment(const std::vector<uint16_t> &primary,
     long double weightedCorrelation = 0.0;
     uint64_t correlationWeight = 0;
     for (int channel = 0; channel < 4; ++channel) {
-        const uint64_t count = correlationCounts[channel];
+        const uint64_t count = totals.correlationCounts[channel];
         if (count < 2) {
             continue;
         }
         const long double sampleCount = static_cast<long double>(count);
         const long double covariance =
-            sumProduct[channel] / sampleCount -
-            (sumPrimary[channel] / sampleCount) *
-                (sumSecondary[channel] / sampleCount);
+            totals.sumProduct[channel] / sampleCount -
+            (totals.sumPrimary[channel] / sampleCount) *
+                (totals.sumSecondary[channel] / sampleCount);
         const long double primaryVariance =
-            sumPrimarySquared[channel] / sampleCount -
-            std::pow(sumPrimary[channel] / sampleCount, 2);
+            totals.sumPrimarySquared[channel] / sampleCount -
+            std::pow(totals.sumPrimary[channel] / sampleCount, 2);
         const long double secondaryVariance =
-            sumSecondarySquared[channel] / sampleCount -
-            std::pow(sumSecondary[channel] / sampleCount, 2);
+            totals.sumSecondarySquared[channel] / sampleCount -
+            std::pow(totals.sumSecondary[channel] / sampleCount, 2);
         if (primaryVariance <= 0.0 || secondaryVariance <= 0.0) {
             continue;
         }
@@ -334,7 +367,7 @@ bool alignSecondaryCfaToPrimary(
     alignedSecondary.assign(primaryPixelCount, 0);
     canonicalChannels.resize(primaryPixelCount);
     std::vector<uint8_t> covered(primaryPixelCount, 0);
-    for (int y = 0; y < primaryHeight; ++y) {
+    parallel::forRows(primaryHeight, 16, [&](int y, unsigned) {
         for (int x = 0; x < primaryWidth; ++x) {
             const size_t index =
                 static_cast<size_t>(y) * static_cast<size_t>(primaryWidth) +
@@ -342,10 +375,10 @@ bool alignSecondaryCfaToPrimary(
             canonicalChannels[index] =
                 primaryPattern[((y & 1) << 1) | (x & 1)];
         }
-    }
+    });
 
-    size_t droppedSourceSamples = 0;
-    for (int sourceY = 0; sourceY < secondaryHeight; ++sourceY) {
+    std::vector<size_t> droppedCounts(parallel::availableWorkers(), 0);
+    parallel::forRows(secondaryHeight, 16, [&](int sourceY, unsigned workerIndex) {
         const int targetY = sourceY + selected.offsetY;
         for (int sourceX = 0; sourceX < secondaryWidth; ++sourceX) {
             const int targetX = sourceX + selected.offsetX;
@@ -356,7 +389,7 @@ bool alignSecondaryCfaToPrimary(
             if (targetX < 0 || targetX >= primaryWidth ||
                 targetY < 0 || targetY >= primaryHeight) {
                 if (value != 0) {
-                    droppedSourceSamples++;
+                    droppedCounts[workerIndex]++;
                 }
                 continue;
             }
@@ -373,12 +406,16 @@ bool alignSecondaryCfaToPrimary(
             }
             alignedSecondary[targetIndex] = value;
         }
+    });
+    size_t droppedSourceSamples = 0;
+    for (size_t count : droppedCounts) {
+        droppedSourceSamples += count;
     }
 
     // Fill only the border not covered by the translated source, using the
     // same primary CFA phase so the exported GBRG pattern stays unchanged.
-    size_t extrapolatedSamples = 0;
-    for (int y = 0; y < primaryHeight; ++y) {
+    std::vector<size_t> extrapolatedCounts(parallel::availableWorkers(), 0);
+    parallel::forRows(primaryHeight, 16, [&](int y, unsigned workerIndex) {
         for (int x = 0; x < primaryWidth; ++x) {
             const size_t index =
                 static_cast<size_t>(y) * static_cast<size_t>(primaryWidth) +
@@ -420,9 +457,13 @@ bool alignSecondaryCfaToPrimary(
                 alignedSecondary[index] =
                     static_cast<uint16_t>((sum + static_cast<uint64_t>(count / 2)) /
                                           static_cast<uint64_t>(count));
-                extrapolatedSamples++;
+                extrapolatedCounts[workerIndex]++;
             }
         }
+    });
+    size_t extrapolatedSamples = 0;
+    for (size_t count : extrapolatedCounts) {
+        extrapolatedSamples += count;
     }
 
     info.offsetX = selected.offsetX;

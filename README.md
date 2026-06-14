@@ -152,6 +152,9 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 Performance note:
 
 - the first preview or conversion of a RAF file is slower because the app must decode and cache the raw data
+- CPU-heavy cache, merge, alignment, demosaic, and preview cleanup stages use the available CPU cores
+- the independent `S` and `R` RAF shots are decoded concurrently
+- an individual LibRaw decode can still contain a short single-core phase
 - repeated previews on the same file are faster
 
 ## Command Line

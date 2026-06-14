@@ -85,6 +85,8 @@ Important behavior:
 
 - the first preview or conversion for a RAF file is slower
 - later previews of the same file are faster because the app reuses cached decoded data
+- CPU-heavy alignment, interpolation, merge, demosaic, and preview cleanup stages use the available CPU cores
+- the independent `S` and `R` shots are decoded concurrently, although an individual LibRaw decode can still contain a short single-core phase
 
 ### Update preview automatically
 
@@ -341,6 +343,12 @@ Make sure:
 That is normal.
 
 The application caches decoded `S`, `R`, and projected merge data after the first pass for a given RAF file. The first preview or conversion pays that cost. Later operations on the same file are faster.
+
+During the first pass, the application divides its own image-processing stages
+across the available CPU cores and decodes the independent `S` and `R` shots
+concurrently. LibRaw may still use one core during parts of each individual
+decode, so CPU usage does not necessarily remain at 100 percent for the entire
+operation.
 
 ### The merged DNG opens darker than expected
 
