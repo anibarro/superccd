@@ -79,6 +79,7 @@ set(SOURCES
     src/MainWindow.cpp
     src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp
+    src/PreviewColorNormalization.cpp
     src/PreviewPixelCorrection.cpp
     src/CfaPlaneAlignment.cpp
     src/SuperCCDProcessor.cpp
@@ -183,6 +184,19 @@ if(BUILD_TESTING)
   target_include_directories(parallel_processing_test PRIVATE src)
   target_link_libraries(parallel_processing_test PRIVATE Threads::Threads)
   add_test(NAME parallel_processing_test COMMAND parallel_processing_test)
+
+  add_executable(preview_color_normalization_test
+    src/tests/PreviewColorNormalizationTest.cpp
+    src/PreviewColorNormalization.cpp
+  )
+  set_target_properties(preview_color_normalization_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(preview_color_normalization_test PRIVATE src)
+  target_link_libraries(preview_color_normalization_test PRIVATE Threads::Threads)
+  add_test(NAME preview_color_normalization_test COMMAND preview_color_normalization_test)
 endif()
 
 # Linux installation support

@@ -6,6 +6,7 @@
 #include "CfaPlaneAlignment.h"
 #include "DngWriter.h"
 #include "ParallelProcessing.h"
+#include "PreviewColorNormalization.h"
 
 #include <libraw/libraw.h>
 #include <QFileInfo>
@@ -1520,21 +1521,22 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
     const double avgR = sumR / pixelCount;
     const double avgG = sumG / pixelCount;
     const double avgB = sumB / pixelCount;
-    double gainR = avgR > 0.0 ? avgG / avgR : 1.0;
-    double gainG = 1.0;
-    double gainB = avgB > 0.0 ? avgG / avgB : 1.0;
+    const superccd::PreviewChannelGains gains =
+        superccd::derivePreviewChannelGains(avgR,
+                                            avgG,
+                                            avgB,
+                                            metadata.hasAsShotNeutral,
+                                            metadata.asShotNeutral,
+                                            metadata.asShotTint);
     if (metadata.hasAsShotNeutral &&
         metadata.asShotNeutral[0] > 0.0 &&
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
-        gainR = metadata.asShotNeutral[1] / metadata.asShotNeutral[0];
-        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);
-        gainB = metadata.asShotNeutral[1] / metadata.asShotNeutral[2];
         logProcessing("WB from AsShotNeutral: R=%.4f G=%.4f B=%.4f tint=%.2f",
-                      gainR, gainG, gainB, metadata.asShotTint);
+                      gains.red, gains.green, gains.blue, metadata.asShotTint);
     } else {
         logProcessing("WB from average ratios: R=%.4f G=%.4f B=%.4f (no AsShotNeutral)",
-                      gainR, gainG, gainB);
+                      gains.red, gains.green, gains.blue);
     }
 
     QImage filled(rectWidth, rectHeight, QImage::Format_RGBX64);
@@ -1542,9 +1544,8 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         error = QStringLiteral("Failed to allocate preview image.");
         return false;
     }
-    const double scaleR = 65535.0 / maxR;
-    const double scaleG = 65535.0 / maxG;
-    const double scaleB = 65535.0 / maxB;
+    const double previewScale =
+        superccd::previewScaleToFit16Bit(maxR, maxG, maxB, gains);
     const double contrastFactor = std::pow(2.0, toneContrast);
     const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
     uchar *filledBits = filled.bits();
@@ -1554,9 +1555,12 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
             filledBits + static_cast<qsizetype>(y) * filledBytesPerLine);
         for (int x = 0; x < rectWidth; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
-            double linearR = (rectifiedRgb[idx * 3 + 0] * gainR * scaleR) / 65535.0;
-            double linearG = (rectifiedRgb[idx * 3 + 1] * gainG * scaleG) / 65535.0;
-            double linearB = (rectifiedRgb[idx * 3 + 2] * gainB * scaleB) / 65535.0;
+            double linearR =
+                (rectifiedRgb[idx * 3 + 0] * gains.red * previewScale) / 65535.0;
+            double linearG =
+                (rectifiedRgb[idx * 3 + 1] * gains.green * previewScale) / 65535.0;
+            double linearB =
+                (rectifiedRgb[idx * 3 + 2] * gains.blue * previewScale) / 65535.0;
 
             linearR = std::clamp(0.5 + (linearR - 0.5) * contrastFactor, 0.0, 1.0);
             linearG = std::clamp(0.5 + (linearG - 0.5) * contrastFactor, 0.0, 1.0);
@@ -1766,28 +1770,40 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
     const double avgR = sumR / static_cast<double>(pixelCount);
     const double avgG = sumG / static_cast<double>(pixelCount);
     const double avgB = sumB / static_cast<double>(pixelCount);
-    double gainR = avgR > 0.0 ? avgG / avgR : 1.0;
-    double gainG = 1.0;
-    double gainB = avgB > 0.0 ? avgG / avgB : 1.0;
+    const superccd::PreviewChannelGains gains =
+        superccd::derivePreviewChannelGains(avgR,
+                                            avgG,
+                                            avgB,
+                                            metadata.hasAsShotNeutral,
+                                            metadata.asShotNeutral,
+                                            metadata.asShotTint);
     if (metadata.hasAsShotNeutral &&
         metadata.asShotNeutral[0] > 0.0 &&
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
-        gainR = metadata.asShotNeutral[1] / metadata.asShotNeutral[0];
-        gainG = 1.0 / (1.0 + metadata.asShotTint * 0.01);  // Apply tint via green adjustment
-        gainB = metadata.asShotNeutral[1] / metadata.asShotNeutral[2];
     }
-    const double scaleR = 65535.0 / static_cast<double>(maxR);
-    const double scaleG = 65535.0 / static_cast<double>(maxG);
-    const double scaleB = 65535.0 / static_cast<double>(maxB);
+    const double previewScale = superccd::previewScaleToFit16Bit(
+        static_cast<double>(maxR),
+        static_cast<double>(maxG),
+        static_cast<double>(maxB),
+        gains);
 
     for (int y = 0; y < height; ++y) {
         QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
         for (int x = 0; x < width; ++x) {
             const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
-            const double linearR = std::clamp((static_cast<double>(rgb[idx + 0]) * gainR * scaleR) / 65535.0, 0.0, 1.0);
-            const double linearG = std::clamp((static_cast<double>(rgb[idx + 1]) * gainG * scaleG) / 65535.0, 0.0, 1.0);
-            const double linearB = std::clamp((static_cast<double>(rgb[idx + 2]) * gainB * scaleB) / 65535.0, 0.0, 1.0);
+            const double linearR = std::clamp(
+                (static_cast<double>(rgb[idx + 0]) * gains.red * previewScale) / 65535.0,
+                0.0,
+                1.0);
+            const double linearG = std::clamp(
+                (static_cast<double>(rgb[idx + 1]) * gains.green * previewScale) / 65535.0,
+                0.0,
+                1.0);
+            const double linearB = std::clamp(
+                (static_cast<double>(rgb[idx + 2]) * gains.blue * previewScale) / 65535.0,
+                0.0,
+                1.0);
             const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 65535.0 + 0.5);
             const int outG = static_cast<int>(std::pow(linearG, 1.0 / 2.2) * 65535.0 + 0.5);
             const int outB = static_cast<int>(std::pow(linearB, 1.0 / 2.2) * 65535.0 + 0.5);

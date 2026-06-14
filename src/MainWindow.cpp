@@ -1854,14 +1854,29 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
 {
     const bool oldDelaySignals = m_rTransitionDelaySlider->blockSignals(true);
     const bool oldSmoothnessSignals = m_rTransitionSmoothnessSlider->blockSignals(true);
+    const bool oldDelaySpinSignals = m_rTransitionDelaySpinBox->blockSignals(true);
+    const bool oldSmoothnessSpinSignals =
+        m_rTransitionSmoothnessSpinBox->blockSignals(true);
     const bool oldCorrectionSignals =
         m_correctPreviewOutliersCheckBox->blockSignals(true);
-    m_rTransitionDelaySlider->setValue(std::clamp(static_cast<int>(settings.rTransitionDelay * 100.0 + 0.5), 0, 100));
-    m_rTransitionSmoothnessSlider->setValue(std::clamp(static_cast<int>(settings.rTransitionSmoothness * 100.0 + 0.5), 0, 100));
+    const int delayValue =
+        std::clamp(static_cast<int>(settings.rTransitionDelay * 100.0 + 0.5),
+                   0,
+                   100);
+    const int smoothnessValue =
+        std::clamp(static_cast<int>(settings.rTransitionSmoothness * 100.0 + 0.5),
+                   0,
+                   100);
+    m_rTransitionDelaySlider->setValue(delayValue);
+    m_rTransitionDelaySpinBox->setValue(delayValue);
+    m_rTransitionSmoothnessSlider->setValue(smoothnessValue);
+    m_rTransitionSmoothnessSpinBox->setValue(smoothnessValue);
     m_correctPreviewOutliersCheckBox->setChecked(
         settings.correctPreviewOutliers);
     m_rTransitionDelaySlider->blockSignals(oldDelaySignals);
     m_rTransitionSmoothnessSlider->blockSignals(oldSmoothnessSignals);
+    m_rTransitionDelaySpinBox->blockSignals(oldDelaySpinSignals);
+    m_rTransitionSmoothnessSpinBox->blockSignals(oldSmoothnessSpinSignals);
     m_correctPreviewOutliersCheckBox->blockSignals(oldCorrectionSignals);
 }
 
