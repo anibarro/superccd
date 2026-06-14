@@ -2,6 +2,8 @@
 
 Windows desktop application for converting Fujifilm FinePix S3 Pro `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses.
 
+![SuperCCD v1.2.0 screenshot](docs/img/superccd_v1.2.0.jpg)
+
 ## Project Status
 
 This repository is currently centered on one supported output path:
