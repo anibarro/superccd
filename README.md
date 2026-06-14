@@ -1,6 +1,6 @@
-# SuperCCD S3 RAF to DNG
+# SuperCCD S3/S5 RAF to DNG
 
-Windows desktop application for converting Fujifilm FinePix S3 Pro `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses.
+Windows desktop application for converting Fujifilm FinePix `S3 Pro` and `S5 Pro` `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses. The development work was centered on `S3 Pro` files, but `S5 Pro` files are also supported.
 
 ![SuperCCD v1.2.0 screenshot](docs/img/superccd_v1.2.0.jpg)
 
@@ -10,7 +10,14 @@ This repository is currently centered on one supported output path:
 
 - `6MP Raw CFA DNG`
 
-That path is the stable result of the current work and is the one intended for real use.
+That path is the stable result of the current work and is the main archival and editing output.
+
+The application also has a strong preview export path for rendered output review:
+
+- `JPEG` preview export at `12MP` or `6MP`
+- `16-bit TIFF` preview export at `12MP` or `6MP`
+
+Those preview exports are derived from the app's high-quality internal preview pipeline and can produce very usable final-looking images, even though they are not the raw-preserving workflow.
 
 ## AI-Origin Statement
 
@@ -23,27 +30,38 @@ That statement is included here deliberately so contributors understand the orig
 
 ## What The Application Does
 
-- Loads one or more Fujifilm S3 Pro `RAF` files
+- Loads one or more Fujifilm `S3 Pro` or `S5 Pro` `RAF` files
 - Extracts separate `S` and `R` shot data
 - Merges both responses into a highlight-safe `6MP` CFA DNG
 - Preserves the original embedded RAF preview for the GUI file list and DNG preview embedding
 - Provides a preview workflow for tuning the `S/R` highlight handoff before export
+- Exports the adjusted preview as `JPEG` or lossless `16-bit TIFF`
 
 ## Current Scope
 
 Supported and intended:
 
-- Fujifilm FinePix S3 Pro RAF files
+- Fujifilm FinePix `S3 Pro` and `S5 Pro` RAF files
 - Windows
 - Qt 6 desktop GUI
 - `6MP Raw CFA DNG` export
+- high-quality preview export as `JPEG` or `16-bit TIFF` at `12MP` or `6MP`
 
 Present in source but not a supported workflow:
 
-- legacy experimental `12MP` reconstruction code
-- older diagnostic and reverse-engineering helpers inside `SuperCCDProcessor.cpp`
+- legacy experimental `12MP` linear export code, exposed as `ExportMode::Linear12MPExperimental` and the CLI flag `--12mp-linear`
+- older diagnostic and reverse-engineering helpers inside `SuperCCDProcessor.cpp`, including detailed processing logging, `exiftool` thumbnail fallback code, and FujiCurve export helpers
 
-Those experimental paths are kept only as research history. They are not the recommended path for normal use.
+Those paths remain in the repository as research and troubleshooting history. They are not the recommended path for normal use. This does not apply to the supported preview export feature, which can export rendered previews at `12MP` or `6MP`.
+
+## Preview Export Quality
+
+Preview export is not just a debugging feature. The application renders preview adjustments from a 16-bit internal image path, and the exported preview can produce surprisingly strong image quality for practical use.
+
+- `16-bit TIFF` preview export preserves the rendered 16-bit RGB result without JPEG compression
+- preview exports include the current live adjustments, including white balance, tint, gamma, contrast, saturation, highlight compression, and sharpening
+- exports are available at `6MP` and `12MP`
+- this is a good path when you want a strong rendered image directly from the app instead of a raw-editing workflow in RawTherapee
 
 ## Why The Output Is A CFA DNG
 
@@ -107,7 +125,7 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 
 ## Key Limitations
 
-- The project is specialized for the S3 Pro Super CCD SR II sensor
+- The project is specialized for the Fujifilm Super CCD SR II workflow and was developed primarily around `S3 Pro` files, although `S5 Pro` files are also supported
 - The output is intentionally highlight-safe by default, so images may open darker than a normal camera raw
 - Some experimental code remains in the repository and should not be treated as stable API
 - The codebase is usable, but it is still research-driven rather than polished as a general-purpose photo product
@@ -118,7 +136,10 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 - independently resizable preview window for the currently selected RAF file
 - draggable and zoomable preview
 - preview exposure, white-balance, and tint controls
+- preview gamma, contrast, saturation, sharpening, and highlight compression controls
 - preview rotation options
+- preview export as `JPEG` or lossless `16-bit TIFF`
+- preview export at `6MP` or `12MP`
 - adjustable `S -> R` highlight handoff parameters
 - optional export of individual S and R plane images
 - convert current previewed RAF
