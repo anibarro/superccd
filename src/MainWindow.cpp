@@ -634,7 +634,7 @@ MainWindow::MainWindow(QWidget *parent)
     smoothnessLayout->addWidget(m_rTransitionSmoothnessSpinBox, 0);
     transitionLayout->addRow(tr("Smoothness:"), smoothnessLayout);
 
-    // Preview controls group box
+    // Preview controls group box (wrapped in scrollable area)
     QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
     QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
     
@@ -699,11 +699,22 @@ MainWindow::MainWindow(QWidget *parent)
     previewControlsLayout->addRow(m_correctPreviewOutliersCheckBox);
     previewControlsLayout->addRow(m_autoPreviewCheckBox);
 
+    // Wrap preview group in scrollable area - constrain height to ~2 sliders tall
+    QScrollArea *previewScrollArea = new QScrollArea(this);
+    previewScrollArea->setWidget(previewGroup);
+    previewScrollArea->setWidgetResizable(true);
+    previewScrollArea->setFrameShape(QFrame::NoFrame);
+    previewScrollArea->setMinimumHeight(60);  // About 2 slider rows tall
+    previewScrollArea->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
+
+    // Make transition group fixed size - it should never grow vertically
+    transitionGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+
     QFormLayout *optionsLayout = new QFormLayout;
     optionsLayout->addRow(tr("Output folder:"), m_outputFolder);
     optionsLayout->addRow(tr(""), selectFolderButton);
     optionsLayout->addRow(transitionGroup);
-    optionsLayout->addRow(previewGroup);
+    optionsLayout->addRow(previewScrollArea);
 
     QHBoxLayout *defaultsButtonsLayout = new QHBoxLayout;
     defaultsButtonsLayout->addWidget(m_resetDefaultsButton);
