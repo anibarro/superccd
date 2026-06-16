@@ -11,6 +11,8 @@ struct PreviewAdjustmentValues {
     int tint = 0;
     int gammaHundredths = 220;
     int contrast = 0;
+    int shadows = 0;
+    int shadowRange = 100;
     int saturation = 0;
     int highlightCompression = 0;
 };

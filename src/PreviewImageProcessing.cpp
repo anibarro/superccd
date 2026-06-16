@@ -10,6 +10,32 @@
 namespace {
 constexpr int kToneLutMaxInput = 8192;
 
+double shadowRangeMask(double linear, double shadowRange)
+{
+    constexpr double kMinimumPivot = 0.08;
+    constexpr double kMaximumPivot = 0.80;
+    const double pivot =
+        kMinimumPivot + (kMaximumPivot - kMinimumPivot) * shadowRange;
+    const double normalized =
+        std::clamp(std::clamp(linear, 0.0, 1.0) / std::max(pivot, 0.001), 0.0, 1.0);
+    const double baseMask =
+        1.0 - normalized * normalized * (3.0 - 2.0 * normalized);
+    const double maskStrength = std::pow(1.0 - shadowRange, 2.5);
+    return 1.0 - (1.0 - baseMask) * maskStrength;
+}
+
+double applyShadowRecovery(double linear, double shadowRecovery, double shadowRange)
+{
+    if (shadowRecovery <= 0.0) {
+        return linear;
+    }
+
+    const double clamped = std::clamp(linear, 0.0, 1.0);
+    const double exponent = 1.0 + shadowRecovery * 3.0;
+    const double lifted = 1.0 - std::pow(1.0 - clamped, exponent);
+    return clamped + (lifted - clamped) * shadowRangeMask(clamped, shadowRange);
+}
+
 template <typename FillLuma, typename ApplyPixel>
 void applyLumaSharpening(int width,
                          int height,
@@ -71,6 +97,8 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     constexpr double kOriginalGamma = 2.2;
     const double newGamma = std::max(adjustments.gammaHundredths / 100.0, 0.01);
     const double contrastScale = 1.0 + adjustments.contrast / 100.0;
+    const double shadowRecovery = adjustments.shadows / 100.0;
+    const double shadowRange = adjustments.shadowRange / 100.0;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
     const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
@@ -81,6 +109,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
         if (contrastScale != 1.0) {
             linear = (linear - 0.5) * contrastScale + 0.5;
         }
+        linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
         gammaLut[static_cast<size_t>(i)] = static_cast<quint8>(std::clamp(
             static_cast<int>(std::lround(
                 std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 255.0)),

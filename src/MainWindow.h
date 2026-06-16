@@ -53,6 +53,8 @@ private slots:
     void onWhiteBalancePickerToggled(bool enabled);
     void onPreviewGammaChanged(int value);
     void onPreviewContrastChanged(int value);
+    void onPreviewShadowsChanged(int value);
+    void onPreviewShadowRangeChanged(int value);
     void onPreviewSaturationChanged(int value);
     void onPreviewSharpeningChanged(int value);
     void onPreviewHighlightCompressionChanged(int value);
@@ -91,6 +93,8 @@ private:
     QPushButton *m_whiteBalancePickerButton;
     QSlider *m_previewGammaSlider;
     QSlider *m_previewContrastSlider;
+    QSlider *m_previewShadowsSlider;
+    QSlider *m_previewShadowRangeSlider;
     QSlider *m_previewSaturationSlider;
     QSlider *m_previewSharpeningSlider;
     QSlider *m_previewHighlightCompressionSlider;
@@ -120,6 +124,8 @@ private:
     QSpinBox *m_previewTintSpinBox;
     QDoubleSpinBox *m_previewGammaSpinBox;
     QSpinBox *m_previewContrastSpinBox;
+    QSpinBox *m_previewShadowsSpinBox;
+    QSpinBox *m_previewShadowRangeSpinBox;
     QSpinBox *m_previewSaturationSpinBox;
     QSpinBox *m_previewSharpeningSpinBox;
     QSpinBox *m_previewHighlightCompressionSpinBox;

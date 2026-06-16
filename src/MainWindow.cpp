@@ -58,6 +58,8 @@ constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
 constexpr int kDefaultPreviewGammaSliderValue = 40;
 constexpr int kDefaultPreviewContrastSliderValue = 38;
+constexpr int kDefaultPreviewShadowsSliderValue = 0;
+constexpr int kDefaultPreviewShadowRangeSliderValue = 100;
 constexpr int kDefaultPreviewSaturationSliderValue = 64;
 constexpr int kDefaultPreviewSharpeningSliderValue = 0;
 constexpr int kDefaultPreviewHighlightCompressionSliderValue = 30;
@@ -75,6 +77,32 @@ enum class PreviewExportFormat {
     Jpeg = 0,
     Tiff16 = 1
 };
+
+double shadowRangeMask(double linear, double shadowRange)
+{
+    constexpr double kMinimumPivot = 0.08;
+    constexpr double kMaximumPivot = 0.80;
+    const double pivot =
+        kMinimumPivot + (kMaximumPivot - kMinimumPivot) * shadowRange;
+    const double normalized =
+        std::clamp(std::clamp(linear, 0.0, 1.0) / std::max(pivot, 0.001), 0.0, 1.0);
+    const double baseMask =
+        1.0 - normalized * normalized * (3.0 - 2.0 * normalized);
+    const double maskStrength = std::pow(1.0 - shadowRange, 2.5);
+    return 1.0 - (1.0 - baseMask) * maskStrength;
+}
+
+double applyShadowRecoveryCurve(double linear, double shadowRecovery, double shadowRange)
+{
+    if (shadowRecovery <= 0.0) {
+        return linear;
+    }
+
+    const double clamped = std::clamp(linear, 0.0, 1.0);
+    const double exponent = 1.0 + shadowRecovery * 3.0;
+    const double lifted = 1.0 - std::pow(1.0 - clamped, exponent);
+    return clamped + (lifted - clamped) * shadowRangeMask(clamped, shadowRange);
+}
 
 QSettings appSettings()
 {
@@ -373,6 +401,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_whiteBalancePickerButton(new QPushButton(tr("White Balance Picker: Off"), this))
     , m_previewGammaSlider(new QSlider(Qt::Horizontal, this))
     , m_previewContrastSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewShadowsSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewShadowRangeSlider(new QSlider(Qt::Horizontal, this))
     , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
     , m_previewSharpeningSlider(new QSlider(Qt::Horizontal, this))
     , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
@@ -403,6 +433,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewTintSpinBox(new QSpinBox(this))
     , m_previewGammaSpinBox(new QDoubleSpinBox(this))
     , m_previewContrastSpinBox(new QSpinBox(this))
+    , m_previewShadowsSpinBox(new QSpinBox(this))
+    , m_previewShadowRangeSpinBox(new QSpinBox(this))
     , m_previewSaturationSpinBox(new QSpinBox(this))
     , m_previewSharpeningSpinBox(new QSpinBox(this))
     , m_previewHighlightCompressionSpinBox(new QSpinBox(this))
@@ -450,6 +482,12 @@ MainWindow::MainWindow(QWidget *parent)
     // Contrast slider: range -200 to +200, default 0
     m_previewContrastSlider->setRange(-200, 200);
     m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
+    // Shadows slider: range 0 to 100, default 0
+    m_previewShadowsSlider->setRange(0, 100);
+    m_previewShadowsSlider->setValue(kDefaultPreviewShadowsSliderValue);
+    // Shadow range slider: range 0 to 100, default 100
+    m_previewShadowRangeSlider->setRange(0, 100);
+    m_previewShadowRangeSlider->setValue(kDefaultPreviewShadowRangeSliderValue);
     // Saturation slider: range -200 to +200, default 0
     m_previewSaturationSlider->setRange(-200, 200);
     m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
@@ -539,6 +577,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewContrastSpinBox->setRange(-200, 200);
     m_previewContrastSpinBox->setValue(kDefaultPreviewContrastSliderValue);
     m_previewContrastSpinBox->setSingleStep(5);
+
+    // Shadows spinbox: 0 to 100
+    m_previewShadowsSpinBox->setRange(0, 100);
+    m_previewShadowsSpinBox->setValue(kDefaultPreviewShadowsSliderValue);
+    m_previewShadowsSpinBox->setSingleStep(5);
+
+    // Shadow range spinbox: 0 to 100
+    m_previewShadowRangeSpinBox->setRange(0, 100);
+    m_previewShadowRangeSpinBox->setValue(kDefaultPreviewShadowRangeSliderValue);
+    m_previewShadowRangeSpinBox->setSingleStep(5);
     
     // Saturation spinbox: -200 to +200
     m_previewSaturationSpinBox->setRange(-200, 200);
@@ -614,6 +662,16 @@ MainWindow::MainWindow(QWidget *parent)
     sharpeningLayout->addWidget(m_previewSharpeningSlider, 1);
     sharpeningLayout->addWidget(m_previewSharpeningSpinBox, 0);
     previewControlsLayout->addRow(tr("Sharpening:"), sharpeningLayout);
+
+    QHBoxLayout *shadowsLayout = new QHBoxLayout;
+    shadowsLayout->addWidget(m_previewShadowsSlider, 1);
+    shadowsLayout->addWidget(m_previewShadowsSpinBox, 0);
+    previewControlsLayout->addRow(tr("Shadows:"), shadowsLayout);
+
+    QHBoxLayout *shadowRangeLayout = new QHBoxLayout;
+    shadowRangeLayout->addWidget(m_previewShadowRangeSlider, 1);
+    shadowRangeLayout->addWidget(m_previewShadowRangeSpinBox, 0);
+    previewControlsLayout->addRow(tr("Shadow range:"), shadowRangeLayout);
     
     QHBoxLayout *highlightCompressionLayout = new QHBoxLayout;
     highlightCompressionLayout->addWidget(m_previewHighlightCompressionSlider, 1);
@@ -714,10 +772,10 @@ MainWindow::MainWindow(QWidget *parent)
             &QTimer::timeout,
             this,
             &MainWindow::updateSharpenedPreviewDisplay);
-    connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int value) {
+    connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int) {
         queueAutoPreview();
     });
-    connect(m_rTransitionSmoothnessSlider, &QSlider::valueChanged, this, [this](int value) {
+    connect(m_rTransitionSmoothnessSlider, &QSlider::valueChanged, this, [this](int) {
         queueAutoPreview();
     });
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewZoomChanged);
@@ -730,6 +788,8 @@ MainWindow::MainWindow(QWidget *parent)
             &MainWindow::onWhiteBalancePickerToggled);
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
+    connect(m_previewShadowsSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewShadowsChanged);
+    connect(m_previewShadowRangeSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewShadowRangeChanged);
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
     connect(m_previewSharpeningSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSharpeningChanged);
     connect(m_previewHighlightCompressionSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewHighlightCompressionChanged);
@@ -778,6 +838,12 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewContrastSpinBox->setValue(value);
+    });
+    connect(m_previewShadowsSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_previewShadowsSpinBox->setValue(value);
+    });
+    connect(m_previewShadowRangeSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_previewShadowRangeSpinBox->setValue(value);
     });
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewSaturationSpinBox->setValue(value);
@@ -830,6 +896,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewContrastSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         if (m_previewContrastSlider->value() != value) {
             m_previewContrastSlider->setValue(value);
+        }
+    });
+    connect(m_previewShadowsSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_previewShadowsSlider->value() != value) {
+            m_previewShadowsSlider->setValue(value);
+        }
+    });
+    connect(m_previewShadowRangeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_previewShadowRangeSlider->value() != value) {
+            m_previewShadowRangeSlider->setValue(value);
         }
     });
     connect(m_previewSaturationSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
@@ -1564,6 +1640,10 @@ void MainWindow::updateControls(bool busy)
     m_previewGammaSpinBox->setEnabled(!busy);
     m_previewContrastSlider->setEnabled(!busy);
     m_previewContrastSpinBox->setEnabled(!busy);
+    m_previewShadowsSlider->setEnabled(!busy);
+    m_previewShadowsSpinBox->setEnabled(!busy);
+    m_previewShadowRangeSlider->setEnabled(!busy);
+    m_previewShadowRangeSpinBox->setEnabled(!busy);
     m_previewSaturationSlider->setEnabled(!busy);
     m_previewSaturationSpinBox->setEnabled(!busy);
     m_previewSharpeningSlider->setEnabled(!busy);
@@ -1655,6 +1735,18 @@ void MainWindow::onPreviewContrastChanged(int value)
     updatePreviewDisplay();
 }
 
+void MainWindow::onPreviewShadowsChanged(int value)
+{
+    Q_UNUSED(value);
+    updatePreviewDisplay();
+}
+
+void MainWindow::onPreviewShadowRangeChanged(int value)
+{
+    Q_UNUSED(value);
+    updatePreviewDisplay();
+}
+
 void MainWindow::onPreviewSaturationChanged(int value)
 {
     Q_UNUSED(value);
@@ -1693,6 +1785,10 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
         std::max(static_cast<double>(m_previewGammaSlider->value()) / 100.0, 0.01);
     const double contrastBias = static_cast<double>(m_previewContrastSlider->value()) / 100.0;
     const double contrastScale = 1.0 + contrastBias;
+    const double shadowRecovery =
+        static_cast<double>(m_previewShadowsSlider->value()) / 100.0;
+    const double shadowRange =
+        static_cast<double>(m_previewShadowRangeSlider->value()) / 100.0;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
     const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = static_cast<double>(m_previewHighlightCompressionSlider->value()) / 100.0;
@@ -1712,6 +1808,7 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
             if (contrastScale != 1.0) {
                 linear = (linear - 0.5) * contrastScale + 0.5;
             }
+            linear = applyShadowRecoveryCurve(linear, shadowRecovery, shadowRange);
             const double output =
                 std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
             lut[static_cast<size_t>(i)] = static_cast<quint16>(
@@ -1781,6 +1878,8 @@ void MainWindow::updatePreviewDisplay()
     adjustments.tint = m_previewTintSlider->value();
     adjustments.gammaHundredths = m_previewGammaSlider->value();
     adjustments.contrast = m_previewContrastSlider->value();
+    adjustments.shadows = m_previewShadowsSlider->value();
+    adjustments.shadowRange = m_previewShadowRangeSlider->value();
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
     m_previewLabel->setDisplayState(zoom, adjustments, 0);
@@ -1949,6 +2048,16 @@ void MainWindow::loadSavedDefaults()
     m_previewContrastSlider->setValue(std::clamp(previewContrast,
                                                  m_previewContrastSlider->minimum(),
                                                  m_previewContrastSlider->maximum()));
+    const int previewShadows = settingsStore.value(QStringLiteral("defaults/previewShadowsSlider"),
+                                                   kDefaultPreviewShadowsSliderValue).toInt();
+    m_previewShadowsSlider->setValue(std::clamp(previewShadows,
+                                                m_previewShadowsSlider->minimum(),
+                                                m_previewShadowsSlider->maximum()));
+    const int previewShadowRange = settingsStore.value(QStringLiteral("defaults/previewShadowRangeSlider"),
+                                                       kDefaultPreviewShadowRangeSliderValue).toInt();
+    m_previewShadowRangeSlider->setValue(std::clamp(previewShadowRange,
+                                                    m_previewShadowRangeSlider->minimum(),
+                                                    m_previewShadowRangeSlider->maximum()));
     const int previewSaturation = settingsStore.value(QStringLiteral("defaults/previewSaturationSlider"),
                                                       kDefaultPreviewSaturationSliderValue).toInt();
     m_previewSaturationSlider->setValue(std::clamp(previewSaturation,
@@ -1991,6 +2100,8 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/previewTintSlider"), m_previewTintSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewGammaSlider"), m_previewGammaSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewContrastSlider"), m_previewContrastSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewShadowsSlider"), m_previewShadowsSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewShadowRangeSlider"), m_previewShadowRangeSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewSaturationSlider"), m_previewSaturationSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewSharpeningSlider"), m_previewSharpeningSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewHighlightCompressionSlider"), m_previewHighlightCompressionSlider->value());
@@ -2019,6 +2130,8 @@ void MainWindow::onResetDefaults()
     m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
     m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
+    m_previewShadowsSlider->setValue(kDefaultPreviewShadowsSliderValue);
+    m_previewShadowRangeSlider->setValue(kDefaultPreviewShadowRangeSliderValue);
     m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
     m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
