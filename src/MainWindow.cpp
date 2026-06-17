@@ -1,7 +1,6 @@
 #include "MainWindow.h"
 #include "DngWriter.h"
 #include "PreviewCanvas.h"
-#include "PreviewFalseColorSuppression.h"
 #include "PreviewImageProcessing.h"
 #include "PreviewPixelCorrection.h"
 
