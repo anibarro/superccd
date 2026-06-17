@@ -69,7 +69,7 @@ constexpr int kPreviewExportSixMpShortSide = 2016;
 constexpr int kItemPreviewRotationRole = Qt::UserRole + 1;
 
 enum class PreviewExportSize {
-    FullSize12Mp = 0,
+    FullSize = 0,
     SixMp = 1
 };
 
@@ -258,7 +258,7 @@ QWidget *createFileListRow(const QString &displayName,
 
 QImage resizeForPreviewExport(const QImage &image, PreviewExportSize exportSize)
 {
-    if (image.isNull() || exportSize == PreviewExportSize::FullSize12Mp) {
+    if (image.isNull() || exportSize == PreviewExportSize::FullSize) {
         return image;
     }
 
@@ -1411,13 +1411,15 @@ void MainWindow::onExportPreview()
     updateQualityAvailability();
 
     QComboBox *sizeComboBox = new QComboBox(&dialog);
-    sizeComboBox->addItem(tr("12 MP"), static_cast<int>(PreviewExportSize::FullSize12Mp));
-    sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
+    sizeComboBox->addItem(tr("Full size"), static_cast<int>(PreviewExportSize::FullSize));
+    if (std::min(m_currentPreviewImage.width(), m_currentPreviewImage.height()) > kPreviewExportSixMpShortSide) {
+        sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
+    }
     const int exportSizeSetting = settingsStore.contains(QStringLiteral("previewExport/size"))
-        ? settingsStore.value(QStringLiteral("previewExport/size"), static_cast<int>(PreviewExportSize::FullSize12Mp)).toInt()
+        ? settingsStore.value(QStringLiteral("previewExport/size"), static_cast<int>(PreviewExportSize::FullSize)).toInt()
         : (settingsStore.value(QStringLiteral("previewExport/export6Mp"), false).toBool()
                ? static_cast<int>(PreviewExportSize::SixMp)
-               : static_cast<int>(PreviewExportSize::FullSize12Mp));
+               : static_cast<int>(PreviewExportSize::FullSize));
     const int exportSizeIndex = sizeComboBox->findData(exportSizeSetting);
     sizeComboBox->setCurrentIndex(exportSizeIndex >= 0 ? exportSizeIndex : 0);
     layout->addRow(tr("Export size:"), sizeComboBox);
@@ -1463,7 +1465,7 @@ void MainWindow::onExportPreview()
     const bool includeExif = includeExifCheckBox->isChecked();
     const QString exportSizeSuffix = exportSize == PreviewExportSize::SixMp
         ? QStringLiteral("_6MP")
-        : QStringLiteral("_12MP");
+        : QStringLiteral("_full");
     const QString extension = exportFormat == PreviewExportFormat::Tiff16
         ? QStringLiteral(".tif")
         : QStringLiteral(".jpg");
@@ -1680,87 +1682,19 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
         return QImage();
     }
 
-    QImage adjustedImage = m_currentPreviewImage.convertToFormat(QImage::Format_RGBX64);
-
-    const double exposureEv = static_cast<double>(m_previewExposureSlider->value()) / 10.0;
-    const double exposureScale = std::pow(2.0, exposureEv);
-    const double wbBias = static_cast<double>(m_previewWhiteBalanceSlider->value()) / 100.0;
-    const double redScale = std::pow(2.0, wbBias);
-    const double blueScale = std::pow(2.0, -wbBias);
-    const double tintBias = static_cast<double>(m_previewTintSlider->value()) / 100.0;
-    const double greenScale = std::pow(2.0, -tintBias);
-    constexpr double kOriginalGamma = 2.2;
-    const double newGamma =
-        std::max(static_cast<double>(m_previewGammaSlider->value()) / 100.0, 0.01);
-    const double contrastBias = static_cast<double>(m_previewContrastSlider->value()) / 100.0;
-    const double contrastScale = 1.0 + contrastBias;
-    const double shadowRecovery =
-        static_cast<double>(m_previewShadowsSlider->value()) / 100.0;
-    const double shadowRange =
-        static_cast<double>(m_previewShadowRangeSlider->value()) / 100.0;
-    const double invOriginalGamma = 1.0 / kOriginalGamma;
-    const double invNewGamma = 1.0 / newGamma;
-    const double highlightCompression = static_cast<double>(m_previewHighlightCompressionSlider->value()) / 100.0;
-    const double compressionStart = 200.0 - highlightCompression * 152.0;
-    const double compressionStrength = highlightCompression * 2.0
-        + highlightCompression * highlightCompression * 14.0;
-    const auto buildToneLut = [&](double channelScale) {
-        std::vector<quint16> lut(65536);
-        for (int i = 0; i <= 65535; ++i) {
-            double compressed = (static_cast<double>(i) / 257.0) * exposureScale * channelScale;
-            if (highlightCompression > 0.0 && compressed > compressionStart) {
-                const double excess = compressed - compressionStart;
-                compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
-            }
-
-            double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invOriginalGamma);
-            if (contrastScale != 1.0) {
-                linear = (linear - 0.5) * contrastScale + 0.5;
-            }
-            linear = applyShadowRecoveryCurve(linear, shadowRecovery, shadowRange);
-            const double output =
-                std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
-            lut[static_cast<size_t>(i)] = static_cast<quint16>(
-                std::clamp(static_cast<int>(std::lround(output)), 0, 65535));
-        }
-        return lut;
-    };
-
-    const std::vector<quint16> redLut = buildToneLut(redScale);
-    const std::vector<quint16> greenLut = buildToneLut(greenScale);
-    const std::vector<quint16> blueLut = buildToneLut(blueScale);
-
-    const double saturationBias = static_cast<double>(m_previewSaturationSlider->value()) / 100.0;
-    const double saturationScale = 1.0 + saturationBias;
-
-    for (int y = 0; y < adjustedImage.height(); ++y) {
-        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(adjustedImage.scanLine(y));
-        for (int x = 0; x < adjustedImage.width(); ++x) {
-            const QRgba64 source = scanLine[x];
-            int r = redLut[static_cast<size_t>(source.red())];
-            int g = greenLut[static_cast<size_t>(source.green())];
-            int b = blueLut[static_cast<size_t>(source.blue())];
-
-            if (saturationScale != 1.0) {
-                const double gray = (r + g + b) / 3.0;
-                r = std::clamp(static_cast<int>(
-                    std::lround(gray + (r - gray) * saturationScale)), 0, 65535);
-                g = std::clamp(static_cast<int>(
-                    std::lround(gray + (g - gray) * saturationScale)), 0, 65535);
-                b = std::clamp(static_cast<int>(
-                    std::lround(gray + (b - gray) * saturationScale)), 0, 65535);
-            }
-
-            scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(r),
-                static_cast<quint16>(g),
-                static_cast<quint16>(b),
-                65535);
-        }
-    }
-
-    superccd::suppressPreviewFalseColor(adjustedImage);
-    return adjustedImage;
+    PreviewAdjustmentValues adjustments;
+    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
+    adjustments.tint = m_previewTintSlider->value();
+    adjustments.gammaHundredths = m_previewGammaSlider->value();
+    adjustments.contrast = m_previewContrastSlider->value();
+    adjustments.shadows = m_previewShadowsSlider->value();
+    adjustments.shadowRange = m_previewShadowRangeSlider->value();
+    adjustments.saturation = m_previewSaturationSlider->value();
+    adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+    return PreviewImageProcessing::applyExportAdjustments16(
+        m_currentPreviewImage,
+        adjustments);
 }
 
 void MainWindow::updatePreviewDisplay()

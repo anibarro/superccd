@@ -3,6 +3,7 @@
 #endif
 
 #include "SuperCCDProcessor.h"
+#include "AmazeDemosaic.h"
 #include "CfaPlaneAlignment.h"
 #include "DngWriter.h"
 #include "ParallelProcessing.h"
@@ -57,6 +58,12 @@ struct LinearShotPlanes {
     int height = 0;
     int expandedWidth = 0;
 };
+
+bool applyPreviewRotationAndScale(const QImage &source,
+                                  int previewRotation,
+                                  int maxSize,
+                                  QImage &preview,
+                                  QString &error);
 
 void populateBasicMetadata(LibRaw &raw, SuperCCDMetadata &metadata)
 {
@@ -1628,22 +1635,12 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
     });
 
-    QTransform transform;
-    if (previewRotation == 90 || previewRotation == 180 || previewRotation == 270) {
-        transform.rotate(previewRotation);
-    }
-    QImage display = transform.isIdentity() ? filled : filled.transformed(transform, Qt::FastTransformation);
-
-    if (maxSize > 0 && (display.width() > maxSize || display.height() > maxSize)) {
-        preview = display.scaled(maxSize,
-                                 maxSize,
-                                 Qt::KeepAspectRatio,
-                                 Qt::SmoothTransformation);
-    } else {
-        preview = display;
-    }
-
-    return true;
+    return applyPreviewRotationAndScale(
+        filled,
+        previewRotation,
+        maxSize,
+        preview,
+        error);
 }
 
 bool buildLinearRgbFromCfa(const std::vector<uint16_t> &cfa,
@@ -1911,6 +1908,248 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
         preview = image;
     }
     return true;
+}
+
+bool applyPreviewRotationAndScale(const QImage &source,
+                                  int previewRotation,
+                                  int maxSize,
+                                  QImage &preview,
+                                  QString &error)
+{
+    if (source.isNull()) {
+        error = QStringLiteral("Invalid source image for preview.");
+        return false;
+    }
+
+    QTransform transform;
+    if (previewRotation == 90 || previewRotation == 180 || previewRotation == 270) {
+        transform.rotate(previewRotation);
+    }
+    QImage display = transform.isIdentity()
+        ? source
+        : source.transformed(transform, Qt::FastTransformation);
+
+    if (maxSize > 0 && (display.width() > maxSize || display.height() > maxSize)) {
+        preview = display.scaled(maxSize,
+                                 maxSize,
+                                 Qt::KeepAspectRatio,
+                                 Qt::SmoothTransformation);
+    } else {
+        preview = display;
+    }
+
+    return true;
+}
+
+bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
+                                    int width,
+                                    int height,
+                                    const SuperCCDMetadata &metadata,
+                                    int maxSize,
+                                    int previewRotation,
+                                    QImage &preview,
+                                    QString &error)
+{
+    if (width <= 0 || height <= 0 ||
+        rgb.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3) {
+        error = QStringLiteral("Invalid sparse RGB data for preview.");
+        return false;
+    }
+
+    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
+    const int rectWidth = fujiWidth * 2 + 1;
+    const int rectHeight = (height - fujiWidth) * 2 + 1;
+    if (rectWidth <= 0 || rectHeight <= 0) {
+        error = QStringLiteral("Invalid Fuji preview geometry.");
+        return false;
+    }
+
+    auto rowBounds = [&](int row) {
+        const int start = std::abs(fujiWidth - row);
+        const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
+        return std::pair<int, int>(start, end);
+    };
+    auto isValidSparseCoordinate = [&](int col, int row) {
+        if (row < 0 || row >= height || col < 0 || col >= width) {
+            return false;
+        }
+        const auto [start, end] = rowBounds(row);
+        return col >= start && col < end;
+    };
+    auto sampleRgb = [&](int col, int row, int channel) -> double {
+        const size_t idx =
+            (static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col)) * 3 +
+            static_cast<size_t>(channel);
+        return rgb[idx];
+    };
+    auto bilinearSampleRgb = [&](double srcX, double srcY, int channel) -> double {
+        if (srcX < 0.0 || srcY < 0.0 ||
+            srcX > static_cast<double>(width - 1) ||
+            srcY > static_cast<double>(height - 1)) {
+            return 0.0;
+        }
+
+        const int x0 = static_cast<int>(std::floor(srcX));
+        const int y0 = static_cast<int>(std::floor(srcY));
+        const int x1 = std::min(x0 + 1, width - 1);
+        const int y1 = std::min(y0 + 1, height - 1);
+        const double fx = srcX - static_cast<double>(x0);
+        const double fy = srcY - static_cast<double>(y0);
+
+        struct Corner {
+            int x;
+            int y;
+            double weight;
+        };
+        const Corner corners[4] = {
+            {x0, y0, (1.0 - fx) * (1.0 - fy)},
+            {x1, y0, fx * (1.0 - fy)},
+            {x0, y1, (1.0 - fx) * fy},
+            {x1, y1, fx * fy}
+        };
+
+        double weightedSum = 0.0;
+        double weightSum = 0.0;
+        for (const Corner &corner : corners) {
+            if (!isValidSparseCoordinate(corner.x, corner.y) || corner.weight <= 0.0) {
+                continue;
+            }
+            weightedSum += sampleRgb(corner.x, corner.y, channel) * corner.weight;
+            weightSum += corner.weight;
+        }
+        return weightSum > 0.0 ? (weightedSum / weightSum) : 0.0;
+    };
+    auto cubicWeight = [](double distance) -> double {
+        const double x = std::abs(distance);
+        if (x < 1.0) {
+            return ((1.5 * x - 2.5) * x * x) + 1.0;
+        }
+        if (x < 2.0) {
+            return (((-0.5 * x) + 2.5) * x - 4.0) * x + 2.0;
+        }
+        return 0.0;
+    };
+    auto bicubicSampleRgb = [&](double srcX, double srcY, int channel) -> double {
+        if (srcX < 0.0 || srcY < 0.0 ||
+            srcX > static_cast<double>(width - 1) ||
+            srcY > static_cast<double>(height - 1)) {
+            return 0.0;
+        }
+
+        const int xBase = static_cast<int>(std::floor(srcX));
+        const int yBase = static_cast<int>(std::floor(srcY));
+        double weightedSum = 0.0;
+        double weightSum = 0.0;
+        for (int dy = -1; dy <= 2; ++dy) {
+            const int sampleY = std::clamp(yBase + dy, 0, height - 1);
+            const double weightY = cubicWeight(srcY - static_cast<double>(sampleY));
+            if (weightY == 0.0) {
+                continue;
+            }
+            for (int dx = -1; dx <= 2; ++dx) {
+                const int sampleX = std::clamp(xBase + dx, 0, width - 1);
+                if (!isValidSparseCoordinate(sampleX, sampleY)) {
+                    continue;
+                }
+                const double weightX = cubicWeight(srcX - static_cast<double>(sampleX));
+                const double weight = weightX * weightY;
+                if (weight == 0.0) {
+                    continue;
+                }
+                weightedSum += sampleRgb(sampleX, sampleY, channel) * weight;
+                weightSum += weight;
+            }
+        }
+        if (weightSum > 0.0) {
+            return weightedSum / weightSum;
+        }
+        return bilinearSampleRgb(srcX, srcY, channel);
+    };
+
+    std::vector<uint16_t> rectifiedRgb(
+        static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight) * 3,
+        0);
+    superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
+        for (int x = 0; x < rectWidth; ++x) {
+            const double srcX = (static_cast<double>(x) + static_cast<double>(y)) * 0.5;
+            const double srcY =
+                (static_cast<double>(y) - static_cast<double>(x)) * 0.5 + static_cast<double>(fujiWidth);
+            const size_t dstIdx =
+                (static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x)) * 3;
+            for (int channel = 0; channel < 3; ++channel) {
+                rectifiedRgb[dstIdx + static_cast<size_t>(channel)] =
+                    static_cast<uint16_t>(std::clamp<int>(
+                        static_cast<int>(std::lround(bicubicSampleRgb(srcX, srcY, channel))),
+                        0,
+                        65535));
+            }
+        }
+    });
+
+    SuperCCDMetadata previewMetadata = metadata;
+    if (previewMetadata.hasBlackLevels) {
+        const double meanBlack =
+            (previewMetadata.blackLevels[0] + previewMetadata.blackLevels[1] +
+             previewMetadata.blackLevels[2] + previewMetadata.blackLevels[3]) * 0.25;
+        previewMetadata.whiteLevel = static_cast<uint16_t>(std::max(
+            1,
+            static_cast<int>(previewMetadata.whiteLevel) -
+                static_cast<int>(std::lround(meanBlack))));
+        previewMetadata.blackLevels = {0.0, 0.0, 0.0, 0.0};
+        previewMetadata.hasBlackLevels = false;
+    }
+
+    QImage image;
+    if (!buildPreviewImageFromRgb(rectifiedRgb,
+                                  rectWidth,
+                                  rectHeight,
+                                  previewMetadata,
+                                  0,
+                                  image,
+                                  error)) {
+        return false;
+    }
+
+    return applyPreviewRotationAndScale(
+        image,
+        previewRotation,
+        maxSize,
+        preview,
+        error);
+}
+
+bool buildPreviewImageFromDngStyleCfa(const std::vector<uint16_t> &cfa,
+                                      int width,
+                                      int height,
+                                      const SuperCCDMetadata &metadata,
+                                      int maxSize,
+                                      int previewRotation,
+                                      QImage &preview,
+                                      QString &error)
+{
+    std::vector<uint16_t> sparseRgb;
+    int rgbWidth = 0;
+    int rgbHeight = 0;
+    if (!demosaicSparseBayerAmaze(cfa,
+                                  width,
+                                  height,
+                                  metadata,
+                                  sparseRgb,
+                                  rgbWidth,
+                                  rgbHeight,
+                                  error)) {
+        return false;
+    }
+
+    return buildPreviewImageFromSparseRgb(
+        sparseRgb,
+        rgbWidth,
+        rgbHeight,
+        metadata,
+        maxSize,
+        previewRotation,
+        preview,
+        error);
 }
 
 void rotateRgb90CW(std::vector<uint16_t> &rgb, int &width, int &height)
@@ -3134,16 +3373,14 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       mergedSr,
                                       mergeSummary);
 
-    return buildPreviewImageFromCfa(mergedSr,
-                                    m_cfaPreviewCache.width,
-                                    m_cfaPreviewCache.height,
-                                    m_cfaPreviewCache.metadata,
-                                    settings.previewMaxSize,
-                                    settings.previewRotation,
-                                    settings.toneGamma,
-                                    settings.toneContrast,
-                                    preview,
-                                    error);
+    return buildPreviewImageFromDngStyleCfa(mergedSr,
+                                            m_cfaPreviewCache.width,
+                                            m_cfaPreviewCache.height,
+                                            m_cfaPreviewCache.metadata,
+                                            settings.previewMaxSize,
+                                            settings.previewRotation,
+                                            preview,
+                                            error);
 }
 
 bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,

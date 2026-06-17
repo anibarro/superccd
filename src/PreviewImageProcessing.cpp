@@ -77,6 +77,44 @@ void applyLumaSharpening(int width,
         fillLuma(std::min(height - 1, y + 2), next);
     }
 }
+
+std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
+                                    double channelScale)
+{
+    const double exposureScale = std::pow(2.0, adjustments.exposureTenthsEv / 10.0);
+    constexpr double kOriginalGamma = 2.2;
+    const double newGamma = std::max(adjustments.gammaHundredths / 100.0, 0.01);
+    const double contrastScale = 1.0 + adjustments.contrast / 100.0;
+    const double shadowRecovery = adjustments.shadows / 100.0;
+    const double shadowRange = adjustments.shadowRange / 100.0;
+    const double invOriginalGamma = 1.0 / kOriginalGamma;
+    const double invNewGamma = 1.0 / newGamma;
+    const double highlightCompression = adjustments.highlightCompression / 100.0;
+    const double compressionStart = 200.0 - highlightCompression * 152.0;
+    const double compressionStrength = highlightCompression * 2.0
+        + highlightCompression * highlightCompression * 14.0;
+
+    std::vector<quint16> lut(65536);
+    for (int i = 0; i <= 65535; ++i) {
+        double compressed = (static_cast<double>(i) / 257.0) * exposureScale * channelScale;
+        if (highlightCompression > 0.0 && compressed > compressionStart) {
+            const double excess = compressed - compressionStart;
+            compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
+        }
+
+        double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invOriginalGamma);
+        if (contrastScale != 1.0) {
+            linear = (linear - 0.5) * contrastScale + 0.5;
+        }
+        linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
+        const double output =
+            std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
+        lut[static_cast<size_t>(i)] = static_cast<quint16>(
+            std::clamp(static_cast<int>(std::lround(output)), 0, 65535));
+    }
+
+    return lut;
+}
 }
 
 QImage PreviewImageProcessing::applyDisplayAdjustments(
@@ -170,6 +208,56 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
 
     superccd::suppressPreviewFalseColor(displayImage);
     return displayImage;
+}
+
+QImage PreviewImageProcessing::applyExportAdjustments16(
+    const QImage &source,
+    const PreviewAdjustmentValues &adjustments)
+{
+    if (source.isNull()) {
+        return QImage();
+    }
+
+    QImage adjustedImage = source.convertToFormat(QImage::Format_RGBX64);
+
+    const double wbBias = adjustments.whiteBalance / 100.0;
+    const double redScale = std::pow(2.0, wbBias);
+    const double blueScale = std::pow(2.0, -wbBias);
+    const double tintBias = adjustments.tint / 100.0;
+    const double greenScale = std::pow(2.0, -tintBias);
+    const std::vector<quint16> redLut = buildToneLut16(adjustments, redScale);
+    const std::vector<quint16> greenLut = buildToneLut16(adjustments, greenScale);
+    const std::vector<quint16> blueLut = buildToneLut16(adjustments, blueScale);
+    const double saturationScale = 1.0 + adjustments.saturation / 100.0;
+
+    for (int y = 0; y < adjustedImage.height(); ++y) {
+        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(adjustedImage.scanLine(y));
+        for (int x = 0; x < adjustedImage.width(); ++x) {
+            const QRgba64 sourcePixel = scanLine[x];
+            int r = redLut[static_cast<size_t>(sourcePixel.red())];
+            int g = greenLut[static_cast<size_t>(sourcePixel.green())];
+            int b = blueLut[static_cast<size_t>(sourcePixel.blue())];
+
+            if (saturationScale != 1.0) {
+                const double gray = (r + g + b) / 3.0;
+                r = std::clamp(static_cast<int>(
+                    std::lround(gray + (r - gray) * saturationScale)), 0, 65535);
+                g = std::clamp(static_cast<int>(
+                    std::lround(gray + (g - gray) * saturationScale)), 0, 65535);
+                b = std::clamp(static_cast<int>(
+                    std::lround(gray + (b - gray) * saturationScale)), 0, 65535);
+            }
+
+            scanLine[x] = QRgba64::fromRgba64(
+                static_cast<quint16>(r),
+                static_cast<quint16>(g),
+                static_cast<quint16>(b),
+                65535);
+        }
+    }
+
+    superccd::suppressPreviewFalseColor(adjustedImage);
+    return adjustedImage;
 }
 
 std::optional<PreviewWhiteBalanceEstimate>

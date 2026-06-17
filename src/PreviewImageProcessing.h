@@ -26,6 +26,8 @@ namespace PreviewImageProcessing {
 
 QImage applyDisplayAdjustments(const QImage &scaledSource,
                                const PreviewAdjustmentValues &adjustments);
+QImage applyExportAdjustments16(const QImage &source,
+                                const PreviewAdjustmentValues &adjustments);
 std::optional<PreviewWhiteBalanceEstimate> estimateNeutralWhiteBalance(
     const QImage &source,
     const QRect &sampleRect);
