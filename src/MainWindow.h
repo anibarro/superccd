@@ -17,6 +17,7 @@ class QSlider;
 class QScrollArea;
 class QCheckBox;
 class QComboBox;
+class QButtonGroup;
 class QCloseEvent;
 class QWidget;
 class QSpinBox;
@@ -51,6 +52,8 @@ private slots:
     void onPreviewWhiteBalanceChanged(int value);
     void onPreviewTintChanged(int value);
     void onWhiteBalancePickerToggled(bool enabled);
+    void onPreviewMethodChanged();
+    PreviewMethod currentPreviewMethod() const;
     void onPreviewGammaChanged(int value);
     void onPreviewContrastChanged(int value);
     void onPreviewShadowsChanged(int value);
@@ -99,6 +102,10 @@ private:
     QSlider *m_previewSharpeningSlider;
     QSlider *m_previewHighlightCompressionSlider;
     QComboBox *m_previewRotationCombo;
+    QWidget *m_previewMethodRow;
+    QRadioButton *m_previewMethodReconstructionButton;
+    QRadioButton *m_previewMethodAmazeButton;
+    QButtonGroup *m_previewMethodGroup;
     QCheckBox *m_correctPreviewOutliersCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
     QWidget *m_previewWindow;

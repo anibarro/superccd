@@ -3310,51 +3310,6 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       QImage &preview,
                                       QString &error)
 {
-    if (settings.exportMode == ExportMode::Linear12MPExperimental) {
-        LinearShotPlanes sPlanes;
-        LinearShotPlanes rPlanes;
-        SuperCCDMetadata metadata;
-        SuperCCDMetadata rMetadata;
-        if (!readSelectedShotLinearPlanes12MP(inputPath, 0, sPlanes, metadata, error)) {
-            return false;
-        }
-        if (!readSelectedShotLinearPlanes12MP(inputPath, 1, rPlanes, rMetadata, error)) {
-            return false;
-        }
-        if (sPlanes.width != rPlanes.width || sPlanes.height != rPlanes.height) {
-            error = QStringLiteral("S and R linear plane dimensions do not match.");
-            return false;
-        }
-
-        std::vector<double> mergedG1;
-        std::vector<double> mergedR;
-        std::vector<double> mergedB;
-        std::vector<double> mergedG2;
-        double gainG1 = 1.0;
-        double gainR = 1.0;
-        double gainB = 1.0;
-        double gainG2 = 1.0;
-        double maxG1 = 0.0;
-        double maxR = 0.0;
-        double maxB = 0.0;
-        double maxG2 = 0.0;
-        mergeLinearPlane(sPlanes.g1, rPlanes.g1, settings.rHeadroomScale, 0.95, 0.995, mergedG1, maxG1, gainG1);
-        mergeLinearPlane(sPlanes.r, rPlanes.r, settings.rHeadroomScale, 0.95, 0.995, mergedR, maxR, gainR);
-        mergeLinearPlane(sPlanes.b, rPlanes.b, settings.rHeadroomScale, 0.95, 0.995, mergedB, maxB, gainB);
-        mergeLinearPlane(sPlanes.g2, rPlanes.g2, settings.rHeadroomScale, 0.95, 0.995, mergedG2, maxG2, gainG2);
-
-        const double maxDesired = std::max(std::max(maxG1, maxR), std::max(maxB, maxG2));
-        const double outputScale = maxDesired > 65535.0 ? (65535.0 / maxDesired) : 1.0;
-
-        std::vector<uint16_t> mergedRgb;
-        int width = 0;
-        int height = 0;
-        composeLinearRgbFromPlanes(sPlanes, &mergedG1, &mergedR, &mergedB, &mergedG2, outputScale, mergedRgb, width, height);
-        suppressLinearRgbColorFringing(mergedRgb, width, height, settings.linearChromaSuppression);
-        rotateRgb90CW(mergedRgb, width, height);
-        return buildPreviewImageFromRgb(mergedRgb, width, height, metadata, settings.previewMaxSize, preview, error);
-    }
-
     if (!ensure6MPCache(inputPath, m_cfaPreviewCache, error)) {
         return false;
     }
@@ -3372,6 +3327,20 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       false,
                                       mergedSr,
                                       mergeSummary);
+
+    if (settings.previewMethod == PreviewMethod::Reconstruction) {
+        return buildPreviewImageFromCfa(
+            mergedSr,
+            m_cfaPreviewCache.width,
+            m_cfaPreviewCache.height,
+            m_cfaPreviewCache.metadata,
+            settings.previewMaxSize,
+            settings.previewRotation,
+            settings.toneGamma,
+            settings.toneContrast,
+            preview,
+            error);
+    }
 
     return buildPreviewImageFromDngStyleCfa(mergedSr,
                                             m_cfaPreviewCache.width,

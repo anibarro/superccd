@@ -79,7 +79,6 @@ set(SOURCES
     src/MainWindow.cpp
     src/AmazeDemosaic.cpp
     src/PreviewCanvas.cpp
-    src/PreviewFalseColorSuppression.cpp
     src/PreviewImageProcessing.cpp
     src/PreviewColorNormalization.cpp
     src/PreviewPixelCorrection.cpp
@@ -200,43 +199,6 @@ if(BUILD_TESTING)
   target_link_libraries(preview_color_normalization_test PRIVATE Threads::Threads)
   add_test(NAME preview_color_normalization_test COMMAND preview_color_normalization_test)
 
-  add_executable(preview_false_color_probe
-    src/tests/PreviewFalseColorProbe.cpp
-    src/PreviewImageProcessing.cpp
-    src/PreviewFalseColorSuppression.cpp
-  )
-  set_target_properties(preview_false_color_probe PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-  )
-  target_include_directories(preview_false_color_probe PRIVATE src)
-  target_link_libraries(preview_false_color_probe PRIVATE Qt6::Gui Threads::Threads)
-
-  add_executable(preview_render_probe
-    src/tests/PreviewRenderProbe.cpp
-    src/AmazeDemosaic.cpp
-    src/PreviewFalseColorSuppression.cpp
-    src/PreviewImageProcessing.cpp
-    src/PreviewColorNormalization.cpp
-    src/PreviewPixelCorrection.cpp
-    src/CfaPlaneAlignment.cpp
-    src/SuperCCDProcessor.cpp
-    src/DngWriter.cpp
-  )
-  set_target_properties(preview_render_probe PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-  )
-  target_include_directories(preview_render_probe PRIVATE src)
-  target_link_libraries(preview_render_probe PRIVATE Qt6::Gui Threads::Threads ${LIBRAW_LIBRARY})
-  if(DNG_SDK_LIBRARY)
-    target_link_libraries(preview_render_probe PRIVATE ${DNG_SDK_LIBRARY})
-  endif()
-  if(TIFF_FOUND)
-    target_link_libraries(preview_render_probe PRIVATE ${TIFF_LIBRARIES})
-  endif()
 endif()
 
 # Linux installation support
@@ -244,3 +206,4 @@ if(LINUX)
   install(TARGETS superccd2dng RUNTIME DESTINATION bin)
   install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION share/doc/superccd2dng RENAME copyright)
 endif()
+

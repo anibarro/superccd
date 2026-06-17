@@ -7,6 +7,11 @@
 #include <array>
 #include <vector>
 
+enum class PreviewMethod {
+    Reconstruction,    // Old 12MP+6MP reconstruction pipeline
+    AmazeDebayer       // Experimental 6MP pipeline that runs AMaZE demosaicing on the merged S/R CFA
+};
+
 enum class ExportMode {
     RawCfa6MP,
     Linear12MPExperimental
@@ -14,6 +19,7 @@ enum class ExportMode {
 
 struct ConversionSettings {
     ExportMode exportMode = ExportMode::RawCfa6MP;
+    PreviewMethod previewMethod = PreviewMethod::Reconstruction;
     int previewMaxSize = 960;
     int previewRotation = 0;
     double rHeadroomScale = 1.0;

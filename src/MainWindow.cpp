@@ -306,6 +306,10 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewSharpeningSlider(new QSlider(Qt::Horizontal, this))
     , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
     , m_previewRotationCombo(new QComboBox(this))
+    , m_previewMethodRow(new QWidget(this))
+    , m_previewMethodReconstructionButton(new QRadioButton(tr("Reconstruction"), this))
+    , m_previewMethodAmazeButton(new QRadioButton(tr("Amaze debayer"), this))
+    , m_previewMethodGroup(new QButtonGroup(this))
     , m_correctPreviewOutliersCheckBox(
           new QCheckBox(tr("Correct isolated light/dark pixels"), this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
@@ -400,6 +404,18 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
     m_previewRotationCombo->addItem(tr("Rotate 90 CCW"), 270);
+    m_previewMethodGroup->addButton(m_previewMethodReconstructionButton, static_cast<int>(PreviewMethod::Reconstruction));
+    m_previewMethodGroup->addButton(m_previewMethodAmazeButton, static_cast<int>(PreviewMethod::AmazeDebayer));
+    m_previewMethodReconstructionButton->setChecked(true);
+    m_previewMethodAmazeButton->setToolTip(
+        tr("Experimental 6 MP pipeline that demosaics the merged S/R CFA with AMaZE. Faster, keeps more chroma fidelity, but only outputs 6 MP previews."));
+    {
+        QHBoxLayout *methodLayout = new QHBoxLayout(m_previewMethodRow);
+        methodLayout->setContentsMargins(0, 0, 0, 0);
+        methodLayout->addWidget(m_previewMethodReconstructionButton);
+        methodLayout->addWidget(m_previewMethodAmazeButton);
+        methodLayout->addStretch();
+    }
     m_correctPreviewOutliersCheckBox->setChecked(false);
     m_correctPreviewOutliersCheckBox->setToolTip(
         tr("Correct only strongly isolated light or dark pixels in the finished "
@@ -540,6 +556,7 @@ MainWindow::MainWindow(QWidget *parent)
     QHBoxLayout *exposureLayout = new QHBoxLayout;
     exposureLayout->addWidget(m_previewExposureSlider, 1);
     exposureLayout->addWidget(m_previewExposureSpinBox, 0);
+    previewControlsLayout->addRow(tr("Method:"), m_previewMethodRow);
     previewControlsLayout->addRow(tr("Exposure:"), exposureLayout);
     
     QHBoxLayout *gammaLayout = new QHBoxLayout;
@@ -722,6 +739,8 @@ MainWindow::MainWindow(QWidget *parent)
             m_autoPreviewTimer->stop();
         }
     });
+    connect(m_previewMethodGroup, &QButtonGroup::buttonClicked,
+            this, &MainWindow::onPreviewMethodChanged);
 
     // Bidirectional connections between spinboxes and sliders
     // When slider changes, update spinbox
@@ -1410,9 +1429,16 @@ void MainWindow::onExportPreview()
     updateQualityAvailability();
 
     QComboBox *sizeComboBox = new QComboBox(&dialog);
-    sizeComboBox->addItem(tr("Full size"), static_cast<int>(PreviewExportSize::FullSize));
-    if (std::min(m_currentPreviewImage.width(), m_currentPreviewImage.height()) > kPreviewExportSixMpShortSide) {
+    const bool amazeSelected = currentPreviewMethod() == PreviewMethod::AmazeDebayer;
+    if (amazeSelected) {
         sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
+        sizeComboBox->setCurrentIndex(0);
+        sizeComboBox->setEnabled(false);
+    } else {
+        sizeComboBox->addItem(tr("Full size"), static_cast<int>(PreviewExportSize::FullSize));
+        if (std::min(m_currentPreviewImage.width(), m_currentPreviewImage.height()) > kPreviewExportSixMpShortSide) {
+            sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
+        }
     }
     const int exportSizeSetting = settingsStore.contains(QStringLiteral("previewExport/size"))
         ? settingsStore.value(QStringLiteral("previewExport/size"), static_cast<int>(PreviewExportSize::FullSize)).toInt()
@@ -1927,6 +1953,13 @@ void MainWindow::loadSavedDefaults()
 
     m_autoPreviewCheckBox->setChecked(settingsStore.value(QStringLiteral("defaults/autoPreview"),
                                                           kDefaultAutoPreview).toBool());
+    const int savedMethod = settingsStore.value(QStringLiteral("defaults/previewMethod"),
+        static_cast<int>(PreviewMethod::Reconstruction)).toInt();
+    if (savedMethod == static_cast<int>(PreviewMethod::AmazeDebayer)) {
+        m_previewMethodAmazeButton->setChecked(true);
+    } else {
+        m_previewMethodReconstructionButton->setChecked(true);
+    }
 }
 
 void MainWindow::saveCurrentDefaults() const
@@ -1951,6 +1984,8 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/previewZoomSlider"), m_previewZoomSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
     settingsStore.setValue(QStringLiteral("defaults/autoPreview"), m_autoPreviewCheckBox->isChecked());
+    settingsStore.setValue(QStringLiteral("defaults/previewMethod"),
+                            static_cast<int>(currentPreviewMethod()));
 }
 
 void MainWindow::onSaveDefaults()
@@ -2007,6 +2042,7 @@ ConversionSettings MainWindow::currentSettings() const
 {
     ConversionSettings settings;
     settings.exportMode = ExportMode::RawCfa6MP;
+    settings.previewMethod = currentPreviewMethod();
     settings.previewMaxSize = 0;
     settings.rTransitionDelay = static_cast<double>(m_rTransitionDelaySlider->value()) / 100.0;
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
@@ -2016,4 +2052,21 @@ ConversionSettings MainWindow::currentSettings() const
         m_correctPreviewOutliersCheckBox->isChecked();
     settings.exportPlaneImages = m_exportPlaneImagesCheckBox->isChecked();
     return settings;
+}
+
+PreviewMethod MainWindow::currentPreviewMethod() const
+{
+    const int id = m_previewMethodGroup->checkedId();
+    if (id == static_cast<int>(PreviewMethod::AmazeDebayer)) {
+        return PreviewMethod::AmazeDebayer;
+    }
+    return PreviewMethod::Reconstruction;
+}
+
+void MainWindow::onPreviewMethodChanged()
+{
+    m_whiteBalancePickerButton->setChecked(false);
+    m_lastPreviewedInputPath.clear();
+    updateControls(false);
+    queueAutoPreview();
 }
