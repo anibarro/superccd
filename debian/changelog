@@ -1,3 +1,12 @@
+superccd2dng (1.4.0) stable; urgency=low
+
+  * Add preview shadow recovery and shadow-range controls
+  * Add selectable preview methods with Reconstruction and Amaze debayer modes
+  * Improve preview rendering with reduced false color, better 6 MP Amaze output, and preserved zoom on file changes
+  * Wrap the preview controls panel in a scroll area to keep the main layout usable at smaller heights
+
+ -- Eduardo Anibarro <anibarro@example.com>  Wed, 17 Jun 2026 13:30:00 +0200
+
 superccd2dng (1.3.1) stable; urgency=low
 
   * Add camera and shot metadata lines to RAF list entries
