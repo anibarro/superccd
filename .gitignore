@@ -26,7 +26,7 @@
 # Windows
 Thumbs.db
 /tests/*
-LibRaw/
+/LibRaw/
 /samples
 /.venv/
 /.git-safe-config
