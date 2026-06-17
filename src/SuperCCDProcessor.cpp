@@ -27,6 +27,7 @@
 #include <algorithm>
 #include <array>
 #include <future>
+#include <limits>
 #include <memory>
 #include <mutex>
 
@@ -1957,91 +1958,124 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
     }
 
     const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
+    const int rectWidth = fujiWidth * 2 + 1;
+    const int rectHeight = (height - fujiWidth) * 2 + 1;
+    if (rectWidth <= 0 || rectHeight <= 0) {
+        error = QStringLiteral("Invalid native Fuji preview geometry.");
+        return false;
+    }
+
     auto rowBounds = [&](int row) {
-        const int rectWidth = fujiWidth * 2 + 1;
-        const int rectHeight = (height - fujiWidth) * 2 + 1;
         const int start = std::abs(fujiWidth - row);
         const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
         return std::pair<int, int>(start, end);
     };
 
-    int minNativeX = INT_MAX;
-    int minNativeY = INT_MAX;
-    int maxNativeX = -1;
-    int maxNativeY = -1;
+    constexpr double kInvSqrt2 = 0.7071067811865476;
+    double minNativeX = std::numeric_limits<double>::max();
+    double minNativeY = std::numeric_limits<double>::max();
+    double maxNativeX = std::numeric_limits<double>::lowest();
+    double maxNativeY = std::numeric_limits<double>::lowest();
+
     for (int row = 0; row < height; ++row) {
         const auto [start, end] = rowBounds(row);
         for (int col = start; col < end; ++col) {
-            const int nativeX = (fujiWidth - row + col) / 2;
-            const int nativeY = (row + col - fujiWidth) / 2;
+            const double nativeX =
+                static_cast<double>(fujiWidth - row + col) * kInvSqrt2;
+            const double nativeY =
+                static_cast<double>(row + col - fujiWidth) * kInvSqrt2;
             minNativeX = std::min(minNativeX, nativeX);
             minNativeY = std::min(minNativeY, nativeY);
             maxNativeX = std::max(maxNativeX, nativeX);
             maxNativeY = std::max(maxNativeY, nativeY);
         }
     }
-    if (minNativeX > maxNativeX || minNativeY > maxNativeY) {
+    if (!(minNativeX <= maxNativeX) || !(minNativeY <= maxNativeY)) {
         error = QStringLiteral("Invalid native Fuji preview geometry.");
         return false;
     }
 
-    const int nativeWidth = maxNativeX - minNativeX + 1;
-    const int nativeHeight = maxNativeY - minNativeY + 1;
-    std::vector<uint16_t> rectifiedRgb(
-        static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight) * 3,
-        0);
-    std::vector<uint8_t> rectifiedMask(
-        static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight),
-        0);
+    const int nativeWidth =
+        std::max(1, static_cast<int>(std::floor(maxNativeX - minNativeX + 1.5)));
+    const int nativeHeight =
+        std::max(1, static_cast<int>(std::floor(maxNativeY - minNativeY + 1.5)));
+    const size_t nativePixelCount =
+        static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight);
 
-    for (int row = 0; row < height; ++row) {
-        const auto [start, end] = rowBounds(row);
-        for (int col = start; col < end; ++col) {
-            const int nativeX = (fujiWidth - row + col) / 2 - minNativeX;
-            const int nativeY = (row + col - fujiWidth) / 2 - minNativeY;
-            const size_t srcIdx =
-                (static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col)) * 3;
-            const size_t dstIdx =
-                (static_cast<size_t>(nativeY) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(nativeX)) * 3;
-            rectifiedRgb[dstIdx + 0] = rgb[srcIdx + 0];
-            rectifiedRgb[dstIdx + 1] = rgb[srcIdx + 1];
-            rectifiedRgb[dstIdx + 2] = rgb[srcIdx + 2];
-            rectifiedMask[static_cast<size_t>(nativeY) * static_cast<size_t>(nativeWidth) +
-                          static_cast<size_t>(nativeX)] = 1;
+    auto sampleRgb = [&](double srcX, double srcY, uint16_t out[3]) {
+        if (srcX < 0.0 || srcX > static_cast<double>(width - 1) ||
+            srcY < 0.0 || srcY > static_cast<double>(height - 1)) {
+            out[0] = out[1] = out[2] = 0;
+            return;
         }
-    }
 
+        const int x0 = static_cast<int>(std::floor(srcX));
+        const int y0 = static_cast<int>(std::floor(srcY));
+        const int x1 = std::min(x0 + 1, width - 1);
+        const int y1 = std::min(y0 + 1, height - 1);
+        const double fx = srcX - static_cast<double>(x0);
+        const double fy = srcY - static_cast<double>(y0);
+
+        auto isInsideDiamond = [&](int x, int y) {
+            if (y < 0 || y >= height || x < 0 || x >= width) {
+                return false;
+            }
+            const auto [start, end] = rowBounds(y);
+            return x >= start && x < end;
+        };
+        auto pixelAt = [&](int x, int y, int channel) -> double {
+            const size_t idx =
+                (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3
+                + static_cast<size_t>(channel);
+            return static_cast<double>(rgb[idx]);
+        };
+
+        for (int channel = 0; channel < 3; ++channel) {
+            double weightedSum = 0.0;
+            double weightSum = 0.0;
+            const struct {
+                int x;
+                int y;
+                double weight;
+            } taps[4] = {
+                {x0, y0, (1.0 - fx) * (1.0 - fy)},
+                {x1, y0, fx * (1.0 - fy)},
+                {x0, y1, (1.0 - fx) * fy},
+                {x1, y1, fx * fy}
+            };
+            for (const auto &tap : taps) {
+                if (tap.weight <= 0.0 || !isInsideDiamond(tap.x, tap.y)) {
+                    continue;
+                }
+                weightedSum += pixelAt(tap.x, tap.y, channel) * tap.weight;
+                weightSum += tap.weight;
+            }
+            out[channel] = weightSum > 0.0
+                ? static_cast<uint16_t>(std::clamp<int>(
+                    static_cast<int>(std::lround(weightedSum / weightSum)),
+                    0,
+                    65535))
+                : 0;
+        }
+    };
+
+    std::vector<uint16_t> nativeRgb(nativePixelCount * 3, 0);
+    constexpr double kSqrt2 = 1.4142135623730951;
     for (int y = 0; y < nativeHeight; ++y) {
         for (int x = 0; x < nativeWidth; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(x);
-            if (rectifiedMask[idx]) {
-                continue;
-            }
+            const double diagX = (static_cast<double>(x) + minNativeX) * kSqrt2;
+            const double diagY = (static_cast<double>(y) + minNativeY) * kSqrt2;
+            const double srcCol = (diagX + diagY) * 0.5;
+            const double srcRow = fujiWidth + (diagY - diagX) * 0.5;
 
-            uint32_t sum[3] = {0, 0, 0};
-            int count = 0;
-            const int nx[4] = {x - 1, x + 1, x, x};
-            const int ny[4] = {y, y, y - 1, y + 1};
-            for (int n = 0; n < 4; ++n) {
-                if (nx[n] < 0 || nx[n] >= nativeWidth || ny[n] < 0 || ny[n] >= nativeHeight) {
-                    continue;
-                }
-                const size_t neighborIdx =
-                    static_cast<size_t>(ny[n]) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(nx[n]);
-                if (!rectifiedMask[neighborIdx]) {
-                    continue;
-                }
-                sum[0] += rectifiedRgb[neighborIdx * 3 + 0];
-                sum[1] += rectifiedRgb[neighborIdx * 3 + 1];
-                sum[2] += rectifiedRgb[neighborIdx * 3 + 2];
-                ++count;
-            }
-            if (count > 0) {
-                rectifiedRgb[idx * 3 + 0] = static_cast<uint16_t>(sum[0] / static_cast<uint32_t>(count));
-                rectifiedRgb[idx * 3 + 1] = static_cast<uint16_t>(sum[1] / static_cast<uint32_t>(count));
-                rectifiedRgb[idx * 3 + 2] = static_cast<uint16_t>(sum[2] / static_cast<uint32_t>(count));
-                rectifiedMask[idx] = 1;
-            }
+            uint16_t sampled[3] = {0, 0, 0};
+            sampleRgb(srcCol, srcRow, sampled);
+
+            const size_t dstIdx =
+                (static_cast<size_t>(y) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(x)) * 3;
+            nativeRgb[dstIdx + 0] = sampled[0];
+            nativeRgb[dstIdx + 1] = sampled[1];
+            nativeRgb[dstIdx + 2] = sampled[2];
         }
     }
 
@@ -2059,7 +2093,7 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
     }
 
     QImage image;
-    if (!buildPreviewImageFromRgb(rectifiedRgb,
+    if (!buildPreviewImageFromRgb(nativeRgb,
                                   nativeWidth,
                                   nativeHeight,
                                   previewMetadata,
