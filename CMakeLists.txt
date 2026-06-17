@@ -78,6 +78,7 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/PreviewCanvas.cpp
+    src/PreviewFalseColorSuppression.cpp
     src/PreviewImageProcessing.cpp
     src/PreviewColorNormalization.cpp
     src/PreviewPixelCorrection.cpp
@@ -197,6 +198,19 @@ if(BUILD_TESTING)
   target_include_directories(preview_color_normalization_test PRIVATE src)
   target_link_libraries(preview_color_normalization_test PRIVATE Threads::Threads)
   add_test(NAME preview_color_normalization_test COMMAND preview_color_normalization_test)
+
+  add_executable(preview_false_color_probe
+    src/tests/PreviewFalseColorProbe.cpp
+    src/PreviewImageProcessing.cpp
+    src/PreviewFalseColorSuppression.cpp
+  )
+  set_target_properties(preview_false_color_probe PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(preview_false_color_probe PRIVATE src)
+  target_link_libraries(preview_false_color_probe PRIVATE Qt6::Gui Threads::Threads)
 endif()
 
 # Linux installation support

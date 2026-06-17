@@ -1,4 +1,5 @@
 #include "PreviewImageProcessing.h"
+#include "PreviewFalseColorSuppression.h"
 #include "ParallelProcessing.h"
 
 #include <algorithm>
@@ -167,6 +168,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
         }
     });
 
+    superccd::suppressPreviewFalseColor(displayImage);
     return displayImage;
 }
 
