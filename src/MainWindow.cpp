@@ -1332,7 +1332,7 @@ void MainWindow::onUpdatePreview()
         return;
     }
 
-    const bool shouldFitPreview = m_currentPreviewImage.isNull()
+    const bool shouldResetViewport = m_currentPreviewImage.isNull()
         || m_currentPreviewImage.size() != preview.size()
         || m_lastPreviewedInputPath != inputPath;
 
@@ -1346,20 +1346,7 @@ void MainWindow::onUpdatePreview()
     m_lastPreviewedInputPath = inputPath;
     m_previewWindow->setWindowTitle(
         tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
-    if (shouldFitPreview) {
-        const QSize viewportSize = m_previewScrollArea->viewport()->size();
-        if (viewportSize.width() > 0 && viewportSize.height() > 0) {
-            const double fitScale = std::min(static_cast<double>(viewportSize.width()) / static_cast<double>(preview.width()),
-                                             static_cast<double>(viewportSize.height()) / static_cast<double>(preview.height()));
-            const int fitZoom = std::clamp(static_cast<int>(std::floor(fitScale * 100.0)),
-                                           m_previewZoomSlider->minimum(),
-                                           m_previewZoomSlider->maximum());
-            const bool oldSignals = m_previewZoomSlider->blockSignals(true);
-            m_previewZoomSlider->setValue(fitZoom);
-            m_previewZoomSlider->blockSignals(oldSignals);
-        }
-    }
-    updatePreviewDisplay();
+    updatePreviewDisplay(!shouldResetViewport);
     showStatus(tr("Preview updated."));
     m_busy = false;
     updateControls(false);
@@ -1724,7 +1711,7 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
         adjustments);
 }
 
-void MainWindow::updatePreviewDisplay()
+void MainWindow::updatePreviewDisplay(bool preserveViewport)
 {
     if (m_currentPreviewImage.isNull()) {
         return;
@@ -1732,11 +1719,11 @@ void MainWindow::updatePreviewDisplay()
 
     const QSize oldContentSize = m_previewLabel->size();
     const QSize viewportSize = m_previewScrollArea->viewport()->size();
-    const double oldCenterX = oldContentSize.width() > 0
+    const double oldCenterX = preserveViewport && oldContentSize.width() > 0
         ? (static_cast<double>(m_previewScrollArea->horizontalScrollBar()->value()) + viewportSize.width() * 0.5)
             / static_cast<double>(oldContentSize.width())
         : 0.5;
-    const double oldCenterY = oldContentSize.height() > 0
+    const double oldCenterY = preserveViewport && oldContentSize.height() > 0
         ? (static_cast<double>(m_previewScrollArea->verticalScrollBar()->value()) + viewportSize.height() * 0.5)
             / static_cast<double>(oldContentSize.height())
         : 0.5;

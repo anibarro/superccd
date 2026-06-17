@@ -69,7 +69,7 @@ private slots:
 private:
     void updateControls(bool busy);
     QImage buildAdjustedPreviewImage16() const;
-    void updatePreviewDisplay();
+    void updatePreviewDisplay(bool preserveViewport = true);
     void updateSharpenedPreviewDisplay();
     void showStatus(const QString &message);
     ConversionSettings currentSettings() const;
