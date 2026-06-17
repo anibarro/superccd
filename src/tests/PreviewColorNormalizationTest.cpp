@@ -1,7 +1,6 @@
 #include "PreviewColorNormalization.h"
 
 #include <array>
-#include <cstdint>
 #include <cmath>
 #include <cstdio>
 #include <vector>

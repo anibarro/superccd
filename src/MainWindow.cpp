@@ -47,7 +47,6 @@
 #include <QStyledItemDelegate>
 #include <cmath>
 #include <cstdint>
-#include <vector>
 
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
@@ -651,6 +650,7 @@ MainWindow::MainWindow(QWidget *parent)
     leftContainer->setLayout(leftLayout);
     QWidget *rightContainer = new QWidget(this);
     rightContainer->setLayout(rightLayout);
+    rightContainer->setMinimumWidth(460);
     
     QSplitter *topSplitter = new QSplitter(Qt::Horizontal, this);
     topSplitter->addWidget(leftContainer);
@@ -658,8 +658,8 @@ MainWindow::MainWindow(QWidget *parent)
     
     // Set initial sizes with RAF list getting more space
     QList<int> splitterSizes;
-    splitterSizes.append(500);
-    splitterSizes.append(400);
+    splitterSizes.append(460);
+    splitterSizes.append(460);
     topSplitter->setSizes(splitterSizes);
     topSplitter->setStretchFactor(0, 2);  // RAF list gets more stretch
     topSplitter->setStretchFactor(1, 1);  // Controls gets less stretch
@@ -1191,6 +1191,7 @@ void MainWindow::onConvertCurrent()
         }
 
         m_currentPreviewImage = preview;
+        PreviewImageProcessing::suppressFalseColor16(m_currentPreviewImage);
         if (m_correctPreviewOutliersCheckBox->isChecked()) {
             PreviewPixelCorrection::suppressIsolatedLumaOutliers(
                 m_currentPreviewImage);
@@ -1336,6 +1337,7 @@ void MainWindow::onUpdatePreview()
         || m_lastPreviewedInputPath != inputPath;
 
     m_currentPreviewImage = preview;
+    PreviewImageProcessing::suppressFalseColor16(m_currentPreviewImage);
     if (m_correctPreviewOutliersCheckBox->isChecked()) {
         PreviewPixelCorrection::suppressIsolatedLumaOutliers(
             m_currentPreviewImage);
@@ -1435,7 +1437,7 @@ void MainWindow::onExportPreview()
         sizeComboBox->setCurrentIndex(0);
         sizeComboBox->setEnabled(false);
     } else {
-        sizeComboBox->addItem(tr("Full size"), static_cast<int>(PreviewExportSize::FullSize));
+        sizeComboBox->addItem(tr("12 MP"), static_cast<int>(PreviewExportSize::FullSize));
         if (std::min(m_currentPreviewImage.width(), m_currentPreviewImage.height()) > kPreviewExportSixMpShortSide) {
             sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
         }
@@ -1490,7 +1492,7 @@ void MainWindow::onExportPreview()
     const bool includeExif = includeExifCheckBox->isChecked();
     const QString exportSizeSuffix = exportSize == PreviewExportSize::SixMp
         ? QStringLiteral("_6MP")
-        : QStringLiteral("_full");
+        : QStringLiteral("_12MP");
     const QString extension = exportFormat == PreviewExportFormat::Tiff16
         ? QStringLiteral(".tif")
         : QStringLiteral(".jpg");

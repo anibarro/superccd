@@ -1957,134 +1957,93 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
     }
 
     const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
-    const int rectWidth = fujiWidth * 2 + 1;
-    const int rectHeight = (height - fujiWidth) * 2 + 1;
-    if (rectWidth <= 0 || rectHeight <= 0) {
-        error = QStringLiteral("Invalid Fuji preview geometry.");
-        return false;
-    }
-
     auto rowBounds = [&](int row) {
+        const int rectWidth = fujiWidth * 2 + 1;
+        const int rectHeight = (height - fujiWidth) * 2 + 1;
         const int start = std::abs(fujiWidth - row);
         const int end = std::min({width, rectHeight + fujiWidth - row, rectWidth - fujiWidth + row});
         return std::pair<int, int>(start, end);
     };
-    auto isValidSparseCoordinate = [&](int col, int row) {
-        if (row < 0 || row >= height || col < 0 || col >= width) {
-            return false;
-        }
+
+    int minNativeX = INT_MAX;
+    int minNativeY = INT_MAX;
+    int maxNativeX = -1;
+    int maxNativeY = -1;
+    for (int row = 0; row < height; ++row) {
         const auto [start, end] = rowBounds(row);
-        return col >= start && col < end;
-    };
-    auto sampleRgb = [&](int col, int row, int channel) -> double {
-        const size_t idx =
-            (static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col)) * 3 +
-            static_cast<size_t>(channel);
-        return rgb[idx];
-    };
-    auto bilinearSampleRgb = [&](double srcX, double srcY, int channel) -> double {
-        if (srcX < 0.0 || srcY < 0.0 ||
-            srcX > static_cast<double>(width - 1) ||
-            srcY > static_cast<double>(height - 1)) {
-            return 0.0;
+        for (int col = start; col < end; ++col) {
+            const int nativeX = (fujiWidth - row + col) / 2;
+            const int nativeY = (row + col - fujiWidth) / 2;
+            minNativeX = std::min(minNativeX, nativeX);
+            minNativeY = std::min(minNativeY, nativeY);
+            maxNativeX = std::max(maxNativeX, nativeX);
+            maxNativeY = std::max(maxNativeY, nativeY);
         }
+    }
+    if (minNativeX > maxNativeX || minNativeY > maxNativeY) {
+        error = QStringLiteral("Invalid native Fuji preview geometry.");
+        return false;
+    }
 
-        const int x0 = static_cast<int>(std::floor(srcX));
-        const int y0 = static_cast<int>(std::floor(srcY));
-        const int x1 = std::min(x0 + 1, width - 1);
-        const int y1 = std::min(y0 + 1, height - 1);
-        const double fx = srcX - static_cast<double>(x0);
-        const double fy = srcY - static_cast<double>(y0);
-
-        struct Corner {
-            int x;
-            int y;
-            double weight;
-        };
-        const Corner corners[4] = {
-            {x0, y0, (1.0 - fx) * (1.0 - fy)},
-            {x1, y0, fx * (1.0 - fy)},
-            {x0, y1, (1.0 - fx) * fy},
-            {x1, y1, fx * fy}
-        };
-
-        double weightedSum = 0.0;
-        double weightSum = 0.0;
-        for (const Corner &corner : corners) {
-            if (!isValidSparseCoordinate(corner.x, corner.y) || corner.weight <= 0.0) {
-                continue;
-            }
-            weightedSum += sampleRgb(corner.x, corner.y, channel) * corner.weight;
-            weightSum += corner.weight;
-        }
-        return weightSum > 0.0 ? (weightedSum / weightSum) : 0.0;
-    };
-    auto cubicWeight = [](double distance) -> double {
-        const double x = std::abs(distance);
-        if (x < 1.0) {
-            return ((1.5 * x - 2.5) * x * x) + 1.0;
-        }
-        if (x < 2.0) {
-            return (((-0.5 * x) + 2.5) * x - 4.0) * x + 2.0;
-        }
-        return 0.0;
-    };
-    auto bicubicSampleRgb = [&](double srcX, double srcY, int channel) -> double {
-        if (srcX < 0.0 || srcY < 0.0 ||
-            srcX > static_cast<double>(width - 1) ||
-            srcY > static_cast<double>(height - 1)) {
-            return 0.0;
-        }
-
-        const int xBase = static_cast<int>(std::floor(srcX));
-        const int yBase = static_cast<int>(std::floor(srcY));
-        double weightedSum = 0.0;
-        double weightSum = 0.0;
-        for (int dy = -1; dy <= 2; ++dy) {
-            const int sampleY = std::clamp(yBase + dy, 0, height - 1);
-            const double weightY = cubicWeight(srcY - static_cast<double>(sampleY));
-            if (weightY == 0.0) {
-                continue;
-            }
-            for (int dx = -1; dx <= 2; ++dx) {
-                const int sampleX = std::clamp(xBase + dx, 0, width - 1);
-                if (!isValidSparseCoordinate(sampleX, sampleY)) {
-                    continue;
-                }
-                const double weightX = cubicWeight(srcX - static_cast<double>(sampleX));
-                const double weight = weightX * weightY;
-                if (weight == 0.0) {
-                    continue;
-                }
-                weightedSum += sampleRgb(sampleX, sampleY, channel) * weight;
-                weightSum += weight;
-            }
-        }
-        if (weightSum > 0.0) {
-            return weightedSum / weightSum;
-        }
-        return bilinearSampleRgb(srcX, srcY, channel);
-    };
-
+    const int nativeWidth = maxNativeX - minNativeX + 1;
+    const int nativeHeight = maxNativeY - minNativeY + 1;
     std::vector<uint16_t> rectifiedRgb(
-        static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight) * 3,
+        static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight) * 3,
         0);
-    superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
-        for (int x = 0; x < rectWidth; ++x) {
-            const double srcX = (static_cast<double>(x) + static_cast<double>(y)) * 0.5;
-            const double srcY =
-                (static_cast<double>(y) - static_cast<double>(x)) * 0.5 + static_cast<double>(fujiWidth);
+    std::vector<uint8_t> rectifiedMask(
+        static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight),
+        0);
+
+    for (int row = 0; row < height; ++row) {
+        const auto [start, end] = rowBounds(row);
+        for (int col = start; col < end; ++col) {
+            const int nativeX = (fujiWidth - row + col) / 2 - minNativeX;
+            const int nativeY = (row + col - fujiWidth) / 2 - minNativeY;
+            const size_t srcIdx =
+                (static_cast<size_t>(row) * static_cast<size_t>(width) + static_cast<size_t>(col)) * 3;
             const size_t dstIdx =
-                (static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x)) * 3;
-            for (int channel = 0; channel < 3; ++channel) {
-                rectifiedRgb[dstIdx + static_cast<size_t>(channel)] =
-                    static_cast<uint16_t>(std::clamp<int>(
-                        static_cast<int>(std::lround(bicubicSampleRgb(srcX, srcY, channel))),
-                        0,
-                        65535));
+                (static_cast<size_t>(nativeY) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(nativeX)) * 3;
+            rectifiedRgb[dstIdx + 0] = rgb[srcIdx + 0];
+            rectifiedRgb[dstIdx + 1] = rgb[srcIdx + 1];
+            rectifiedRgb[dstIdx + 2] = rgb[srcIdx + 2];
+            rectifiedMask[static_cast<size_t>(nativeY) * static_cast<size_t>(nativeWidth) +
+                          static_cast<size_t>(nativeX)] = 1;
+        }
+    }
+
+    for (int y = 0; y < nativeHeight; ++y) {
+        for (int x = 0; x < nativeWidth; ++x) {
+            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(x);
+            if (rectifiedMask[idx]) {
+                continue;
+            }
+
+            uint32_t sum[3] = {0, 0, 0};
+            int count = 0;
+            const int nx[4] = {x - 1, x + 1, x, x};
+            const int ny[4] = {y, y, y - 1, y + 1};
+            for (int n = 0; n < 4; ++n) {
+                if (nx[n] < 0 || nx[n] >= nativeWidth || ny[n] < 0 || ny[n] >= nativeHeight) {
+                    continue;
+                }
+                const size_t neighborIdx =
+                    static_cast<size_t>(ny[n]) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(nx[n]);
+                if (!rectifiedMask[neighborIdx]) {
+                    continue;
+                }
+                sum[0] += rectifiedRgb[neighborIdx * 3 + 0];
+                sum[1] += rectifiedRgb[neighborIdx * 3 + 1];
+                sum[2] += rectifiedRgb[neighborIdx * 3 + 2];
+                ++count;
+            }
+            if (count > 0) {
+                rectifiedRgb[idx * 3 + 0] = static_cast<uint16_t>(sum[0] / static_cast<uint32_t>(count));
+                rectifiedRgb[idx * 3 + 1] = static_cast<uint16_t>(sum[1] / static_cast<uint32_t>(count));
+                rectifiedRgb[idx * 3 + 2] = static_cast<uint16_t>(sum[2] / static_cast<uint32_t>(count));
+                rectifiedMask[idx] = 1;
             }
         }
-    });
+    }
 
     SuperCCDMetadata previewMetadata = metadata;
     if (previewMetadata.hasBlackLevels) {
@@ -2101,8 +2060,8 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
 
     QImage image;
     if (!buildPreviewImageFromRgb(rectifiedRgb,
-                                  rectWidth,
-                                  rectHeight,
+                                  nativeWidth,
+                                  nativeHeight,
                                   previewMetadata,
                                   0,
                                   image,
@@ -3310,6 +3269,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       QImage &preview,
                                       QString &error)
 {
+    logProcessing("renderPreview: cfa=%dx%d fujiWidth=%d", m_cfaPreviewCache.width, m_cfaPreviewCache.height, m_cfaPreviewCache.metadata.fujiWidth);
     if (!ensure6MPCache(inputPath, m_cfaPreviewCache, error)) {
         return false;
     }
@@ -3329,6 +3289,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       mergeSummary);
 
     if (settings.previewMethod == PreviewMethod::Reconstruction) {
+        logProcessing("renderPreview: before Reconstruct buildPreviewImageFromCfa: preview=%dx%d", preview.width(), preview.height());
         return buildPreviewImageFromCfa(
             mergedSr,
             m_cfaPreviewCache.width,
@@ -3342,6 +3303,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
             error);
     }
 
+    logProcessing("renderPreview: before Amaze buildPreviewImageFromDngStyleCfa: preview=%dx%d", preview.width(), preview.height());
     return buildPreviewImageFromDngStyleCfa(mergedSr,
                                             m_cfaPreviewCache.width,
                                             m_cfaPreviewCache.height,

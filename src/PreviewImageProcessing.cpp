@@ -257,6 +257,105 @@ QImage PreviewImageProcessing::applyExportAdjustments16(
     return adjustedImage;
 }
 
+void PreviewImageProcessing::suppressFalseColor16(QImage &image)
+{
+    if (image.isNull() || image.width() < 2 || image.height() < 2) {
+        return;
+    }
+    if (image.format() != QImage::Format_RGBX64) {
+        image = image.convertToFormat(QImage::Format_RGBX64);
+    }
+
+    constexpr int radius = 3;
+    constexpr int diameter = radius * 2 + 1;
+    constexpr int filterArea = diameter * diameter;
+    const int width = image.width();
+    const int height = image.height();
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    std::vector<std::int32_t> horizontalDr(pixelCount);
+    std::vector<std::int32_t> horizontalDb(pixelCount);
+    uchar *imageBits = image.bits();
+    const qsizetype imageBytesPerLine = image.bytesPerLine();
+
+    // Blur only color differences so luma edges stay intact.
+    superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
+        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(
+            imageBits + static_cast<qsizetype>(y) * imageBytesPerLine);
+        int sumDr = 0;
+        int sumDb = 0;
+        for (int dx = -radius; dx <= radius; ++dx) {
+            const QRgba64 pixel = scanLine[std::clamp(dx, 0, width - 1)];
+            sumDr += static_cast<int>(pixel.red()) - static_cast<int>(pixel.green());
+            sumDb += static_cast<int>(pixel.blue()) - static_cast<int>(pixel.green());
+        }
+
+        const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width);
+        for (int x = 0; x < width; ++x) {
+            horizontalDr[rowOffset + static_cast<size_t>(x)] = sumDr;
+            horizontalDb[rowOffset + static_cast<size_t>(x)] = sumDb;
+            if (x + 1 >= width) {
+                continue;
+            }
+
+            const QRgba64 leaving = scanLine[std::clamp(x - radius, 0, width - 1)];
+            const QRgba64 entering = scanLine[std::clamp(x + radius + 1, 0, width - 1)];
+            sumDr += (static_cast<int>(entering.red()) - static_cast<int>(entering.green())) -
+                (static_cast<int>(leaving.red()) - static_cast<int>(leaving.green()));
+            sumDb += (static_cast<int>(entering.blue()) - static_cast<int>(entering.green())) -
+                (static_cast<int>(leaving.blue()) - static_cast<int>(leaving.green()));
+        }
+    });
+
+    superccd::parallel::forRanges(
+        0,
+        static_cast<size_t>(width),
+        64,
+        [&](size_t begin, size_t end, unsigned) {
+            for (size_t x = begin; x < end; ++x) {
+                int columnDr = 0;
+                int columnDb = 0;
+                for (int dy = -radius; dy <= radius; ++dy) {
+                    const int sourceY = std::clamp(dy, 0, height - 1);
+                    const size_t index =
+                        static_cast<size_t>(sourceY) * static_cast<size_t>(width) + x;
+                    columnDr += horizontalDr[index];
+                    columnDb += horizontalDb[index];
+                }
+
+                for (int y = 0; y < height; ++y) {
+                    QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(
+                        imageBits + static_cast<qsizetype>(y) * imageBytesPerLine);
+                    const QRgba64 source = scanLine[x];
+                    const double luma =
+                        (source.red() + 2.0 * source.green() + source.blue()) * 0.25;
+                    const double filteredDr = static_cast<double>(columnDr) / filterArea;
+                    const double filteredDb = static_cast<double>(columnDb) / filterArea;
+                    const double filteredG = luma - (filteredDr + filteredDb) * 0.25;
+                    scanLine[x] = QRgba64::fromRgba64(
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG + filteredDr)), 0, 65535)),
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG)), 0, 65535)),
+                        static_cast<quint16>(std::clamp(
+                            static_cast<int>(std::lround(filteredG + filteredDb)), 0, 65535)),
+                        65535);
+
+                    if (y + 1 >= height) {
+                        continue;
+                    }
+                    const int leavingY = std::clamp(y - radius, 0, height - 1);
+                    const int enteringY = std::clamp(y + radius + 1, 0, height - 1);
+                    const size_t leavingIndex =
+                        static_cast<size_t>(leavingY) * static_cast<size_t>(width) + x;
+                    const size_t enteringIndex =
+                        static_cast<size_t>(enteringY) * static_cast<size_t>(width) + x;
+                    columnDr += horizontalDr[enteringIndex] - horizontalDr[leavingIndex];
+                    columnDb += horizontalDb[enteringIndex] - horizontalDb[leavingIndex];
+                }
+            }
+        });
+}
+
 std::optional<PreviewWhiteBalanceEstimate>
 PreviewImageProcessing::estimateNeutralWhiteBalance(
     const QImage &source,
