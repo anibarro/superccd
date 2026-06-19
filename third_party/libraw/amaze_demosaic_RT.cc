@@ -89,13 +89,24 @@ void CLASS amaze_demosaic_RT() {
 #endif
 	 t1 = clock();
 	// %%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
-//#pragma omp parallel
-#if defined (LIBRAW_USE_OPENMP)
-#pragma omp parallel
-#endif
+	std::vector<float> amazeInputCfa(static_cast<std::size_t>(width) * static_cast<std::size_t>(height));
+	for (int inputRow=0; inputRow < height; ++inputRow)
+		for (int inputCol=0; inputCol < width; ++inputCol) {
+			int inputColor = FC(inputRow,inputCol);
+			int inputIndex = inputRow*width+inputCol;
+			amazeInputCfa[static_cast<std::size_t>(inputIndex)] = image[inputIndex][inputColor]/65535.0f;
+		}
 
+	struct AmazeTile {
+		int top;
+		int left;
+	};
+	std::vector<AmazeTile> amazeTiles;
+	for (int tileTop=winy-16; tileTop < winy+height; tileTop += TS-32)
+		for (int tileLeft=winx-16; tileLeft < winx+width; tileLeft += TS-32)
+			amazeTiles.push_back({tileTop, tileLeft});
 
-{
+	superccd::parallel::forRanges(0, amazeTiles.size(), 1, [&](std::size_t tileBegin, std::size_t tileEnd, unsigned) {
 	//position of top/left corner of the tile
 	int top, left;
 	// beginning of storage block for tile
@@ -217,12 +228,9 @@ void CLASS amaze_demosaic_RT() {
   omp_set_num_threads(4);
      omp_set_dynamic(9);
 */
-#if defined (LIBRAW_USE_OPENMP)
-	
-#pragma omp for schedule(dynamic) nowait
-#endif
-	for (top=winy-16; top < winy+height; top += TS-32)
-		for (left=winx-16; left < winx+width; left += TS-32) {
+	for (std::size_t tileIndex=tileBegin; tileIndex < tileEnd; ++tileIndex) {
+			top = amazeTiles[tileIndex].top;
+			left = amazeTiles[tileIndex].left;
 			//location of tile bottom edge
 			int bottom = MIN( top+TS,winy+height+16);
 			//location of tile right edge
@@ -316,7 +324,7 @@ void CLASS amaze_demosaic_RT() {
 					indx1=rr*TS+cc;
 					//rgb[indx1][c] = (rawData[row][col])/65535.0f;
 					indx=row*width+col;
-					rgb[indx1][c] = image[indx][c]/65535.0f;//for dcraw implementation
+					rgb[indx1][c] = amazeInputCfa[static_cast<std::size_t>(indx)];//for dcraw implementation
 
 					cfa[indx1] = rgb[indx1][c];
 				}
@@ -335,7 +343,7 @@ void CLASS amaze_demosaic_RT() {
 					for (cc=ccmin; cc<ccmax; cc++) {
 						c=FC(rr,cc);
 						//rgb[(rrmax+rr)*TS+cc][c] = (rawData[(winy+height-rr-2)][left+cc])/65535.0f;
-						rgb[(rrmax+rr)*TS+cc][c] = (image[(height-rr-2)*width+left+cc][c])/65535.0f;//for dcraw implementation
+						rgb[(rrmax+rr)*TS+cc][c] = amazeInputCfa[static_cast<std::size_t>((height-rr-2)*width+left+cc)];//for dcraw implementation
 						cfa[(rrmax+rr)*TS+cc] = rgb[(rrmax+rr)*TS+cc][c];
 					}
 			}
@@ -352,7 +360,7 @@ void CLASS amaze_demosaic_RT() {
 					for (cc=0; cc<16; cc++) {
 						c=FC(rr,cc);
 						//rgb[rr*TS+ccmax+cc][c] = (rawData[(top+rr)][(winx+width-cc-2)])/65535.0f;
-						rgb[rr*TS+ccmax+cc][c] = (image[(top+rr)*width+(width-cc-2)][c])/65535.0f;//for dcraw implementation
+						rgb[rr*TS+ccmax+cc][c] = amazeInputCfa[static_cast<std::size_t>((top+rr)*width+(width-cc-2))];//for dcraw implementation
 						cfa[rr*TS+ccmax+cc] = rgb[rr*TS+ccmax+cc][c];
 					}
 			}
@@ -372,7 +380,7 @@ void CLASS amaze_demosaic_RT() {
 					for (cc=0; cc<16; cc++) {
 						c=FC(rr,cc);
 						//rgb[(rrmax+rr)*TS+ccmax+cc][c] = (rawData[(winy+height-rr-2)][(winx+width-cc-2)])/65535.0f;
-						rgb[(rrmax+rr)*TS+ccmax+cc][c] = (image[(height-rr-2)*width+(width-cc-2)][c])/65535.0f;//for dcraw implementation
+						rgb[(rrmax+rr)*TS+ccmax+cc][c] = amazeInputCfa[static_cast<std::size_t>((height-rr-2)*width+(width-cc-2))];//for dcraw implementation
 						cfa[(rrmax+rr)*TS+ccmax+cc] = rgb[(rrmax+rr)*TS+ccmax+cc][c];
 					}
 			}
@@ -381,7 +389,7 @@ void CLASS amaze_demosaic_RT() {
 					for (cc=0; cc<16; cc++) {
 						c=FC(rr,cc);
 						//rgb[(rr)*TS+ccmax+cc][c] = (rawData[(winy+32-rr)][(winx+width-cc-2)])/65535.0f;
-						rgb[(rr)*TS+ccmax+cc][c] = (image[(32-rr)*width+(width-cc-2)][c])/65535.0f;//for dcraw implementation
+						rgb[(rr)*TS+ccmax+cc][c] = amazeInputCfa[static_cast<std::size_t>((32-rr)*width+(width-cc-2))];//for dcraw implementation
 						cfa[(rr)*TS+ccmax+cc] = rgb[(rr)*TS+ccmax+cc][c];
 					}
 			}
@@ -390,7 +398,7 @@ void CLASS amaze_demosaic_RT() {
 					for (cc=0; cc<16; cc++) {
 						c=FC(rr,cc);
 						//rgb[(rrmax+rr)*TS+cc][c] = (rawData[(winy+height-rr-2)][(winx+32-cc)])/65535.0f;
-						rgb[(rrmax+rr)*TS+cc][c] = (image[(height-rr-2)*width+(32-cc)][c])/65535.0f;//for dcraw implementation
+						rgb[(rrmax+rr)*TS+cc][c] = amazeInputCfa[static_cast<std::size_t>((height-rr-2)*width+(32-cc))];//for dcraw implementation
 						cfa[(rrmax+rr)*TS+cc] = rgb[(rrmax+rr)*TS+cc][c];
 					}
 			}
@@ -994,7 +1002,7 @@ void CLASS amaze_demosaic_RT() {
 
 	// clean up
 	free(buffer);
-}		
+	});		
 		t2 = clock();
 	dt = ((double)(t2-t1)) / CLOCKS_PER_SEC;
 #ifdef DCRAW_VERBOSE

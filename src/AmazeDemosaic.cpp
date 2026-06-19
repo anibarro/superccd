@@ -1,11 +1,14 @@
 #include "AmazeDemosaic.h"
+#include "ParallelProcessing.h"
 
 #include <libraw/libraw.h>
 
 #include <algorithm>
 #include <cmath>
+#include <cstddef>
 #include <cstdio>
 #include <ctime>
+#include <vector>
 
 namespace {
 

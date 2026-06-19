@@ -199,6 +199,19 @@ if(BUILD_TESTING)
   target_link_libraries(preview_color_normalization_test PRIVATE Threads::Threads)
   add_test(NAME preview_color_normalization_test COMMAND preview_color_normalization_test)
 
+  add_executable(amaze_demosaic_test
+    src/tests/AmazeDemosaicTest.cpp
+    src/AmazeDemosaic.cpp
+  )
+  set_target_properties(amaze_demosaic_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(amaze_demosaic_test PRIVATE src)
+  target_link_libraries(amaze_demosaic_test PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
+  add_test(NAME amaze_demosaic_test COMMAND amaze_demosaic_test)
+
 endif()
 
 # Linux installation support
@@ -206,4 +219,3 @@ if(LINUX)
   install(TARGETS superccd2dng RUNTIME DESTINATION bin)
   install(FILES "${CMAKE_SOURCE_DIR}/LICENSE" DESTINATION share/doc/superccd2dng RENAME copyright)
 endif()
-
