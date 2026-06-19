@@ -82,7 +82,7 @@ Saves the currently rendered preview as a `JPEG` or lossless 16-bit RGB `TIFF`.
 - exports the same preview adjustments currently shown in the app, including highlight compression and sharpening
 - requires the selected RAF file to have an up-to-date preview first
 
-The preview source is rendered internally at 16-bit precision. Preview exports apply adjustments to that 16-bit source, and TIFF preserves the resulting 16-bit RGB values without JPEG compression. For responsive controls, the on-screen image is first scaled to the selected zoom and then adjusted with fast 8-bit lookup tables.
+The preview source is rendered internally at 16-bit precision. Preview exports apply adjustments to that 16-bit source, and TIFF preserves the resulting 16-bit RGB values without JPEG compression. For responsive controls, the on-screen image is first scaled to the selected zoom and then adjusted with fast 8-bit lookup tables, so the live Preview can show more visible banding and lower apparent quality than the final `JPEG` or `TIFF` export.
 
 Important behavior:
 
@@ -321,7 +321,7 @@ According to RawPedia, dynamic rules are evaluated from top to bottom, all match
 ## Known Limitations
 
 - The application is specialized for Fujifilm S3 Pro RAF files.
-- The GUI preview is approximate and optimized for interaction, not for final judging.
+- The GUI preview is approximate and optimized for interaction, so it can show more visible banding and lower apparent quality than the final `JPEG` or `TIFF` export.
 - The repository still contains experimental code paths that are not part of the recommended workflow.
 
 ## Troubleshooting
