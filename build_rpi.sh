@@ -230,18 +230,65 @@ build_deb_package() {
     local package_name="superccd2dng_${version}_arm64.deb"
     local dist_dir="$DIST_DIR"
     local deb_dir="$dist_dir/deb-package"
+    local binary_path
+
+    generate_runtime_deps() {
+        local binary="$1"
+        local deps=""
+        local package_list=""
+
+        if command -v dpkg-shlibdeps >/dev/null 2>&1; then
+            deps=$(dpkg-shlibdeps -O "$binary" 2>/dev/null | sed -n 's/^shlibs:Depends=//p')
+        fi
+
+        if [ -n "$deps" ]; then
+            printf '%s, qt6-wayland\n' "$deps"
+            return 0
+        fi
+
+        printf '%b\n' "${YELLOW}[WARN]${NC} dpkg-shlibdeps unavailable or failed; falling back to ldd/dpkg-query for runtime dependencies" >&2
+
+        if ! command -v ldd >/dev/null 2>&1 || ! command -v dpkg-query >/dev/null 2>&1; then
+            return 1
+        fi
+
+        package_list=$(
+            ldd "$binary" 2>/dev/null | awk '/=> \// { print $3 }' | while read -r lib; do
+                realpath "$lib"
+            done | sort -u | while read -r resolved; do
+                dpkg-query -S "$resolved" 2>/dev/null
+            done | cut -d: -f1 | sort -u | paste -sd ',' - | sed 's/,/, /g'
+        )
+
+        if [ -z "$package_list" ]; then
+            return 1
+        fi
+
+        printf '%s, qt6-wayland\n' "$package_list"
+        return 0
+    }
 
     cd "$BUILD_DIR"
     cmake --install . --prefix "$dist_dir"
 
+    rm -f "$dist_dir/$package_name"
     rm -rf "$deb_dir"
     mkdir -p "$deb_dir/DEBIAN"
     mkdir -p "$deb_dir/usr/bin"
     mkdir -p "$deb_dir/usr/share/applications"
     mkdir -p "$deb_dir/usr/share/doc/superccd2dng"
+    mkdir -p "$deb_dir/usr/share/icons/hicolor/256x256/apps"
 
     cp "$dist_dir/bin/superccd2dng" "$deb_dir/usr/bin/" 2>/dev/null || \
     cp "$BUILD_DIR/superccd2dng" "$deb_dir/usr/bin/"
+
+    local runtime_deps
+    binary_path="$deb_dir/usr/bin/superccd2dng"
+    runtime_deps=$(generate_runtime_deps "$binary_path")
+    if [ -z "$runtime_deps" ]; then
+        error "Unable to determine runtime dependencies for the .deb package. Install dpkg-dev or inspect the ldd output for missing system packages."
+        exit 1
+    fi
 
     cat > "$deb_dir/DEBIAN/control" << EOF
 Package: superccd2dng
@@ -249,7 +296,7 @@ Version: ${version}
 Section: graphics
 Priority: optional
 Architecture: arm64
-Depends: qt6-base, qt6-wayland, libraw23, libtiff6
+Depends: ${runtime_deps}
 Maintainer: Eduardo Anibarro <anibarro@example.com>
 Description: Fujifilm S3 Pro RAF to DNG converter
  A desktop application for converting Fujifilm FinePix S3 Pro .RAF files
@@ -269,6 +316,8 @@ Categories=Graphics;Photography;
 MimeType=image/x-raf;
 EOF
 
+    cp "$PROJECT_DIR/resources/icons/app_icon_256.png" \
+       "$deb_dir/usr/share/icons/hicolor/256x256/apps/superccd2dng.png"
     cp "$PROJECT_DIR/LICENSE" "$deb_dir/usr/share/doc/superccd2dng/copyright"
     echo "superccd2dng (${version}) stable; urgency=low" > "$deb_dir/usr/share/doc/superccd2dng/changelog"
     echo "" >> "$deb_dir/usr/share/doc/superccd2dng/changelog"
@@ -353,8 +402,8 @@ install_dependencies() {
         "libtiff-dev"
         "libgl1-mesa-dev"
         "libwayland-dev"
+        "dpkg-dev"
         "debhelper"
-        "comainfo"
     )
     
     for package in "${packages[@]}"; do

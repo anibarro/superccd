@@ -23,7 +23,7 @@ sudo apt update
 # Install required dependencies
 sudo apt install cmake build-essential qt6-base-dev qt6-wayland \
   libraw-dev libtiff-dev libgl1-mesa-dev libwayland-dev \
-  debhelper comainfo
+  debhelper dpkg-dev
 ```
 
 ### 2. Build the Project
@@ -63,10 +63,17 @@ The folder and zip include the app binary, bundled Qt plugins, required shared l
 ### 5. Install the Package
 
 ```bash
-# Install the .deb package
-sudo dpkg -i dist-rpi/superccd2dng_*.deb
+# Install the .deb package with automatic dependency resolution
+sudo apt install ./dist-rpi/superccd2dng_*.deb
+```
 
-# Or use apt for automatic dependency resolution
+If `apt` reports `superccd2dng : Depends: qt6-base but it is not installable`, the `.deb` was built with older packaging metadata. Rebuild it with the current `build_rpi.sh package` so the package dependencies are generated from the actual linked Qt 6 libraries on your Raspberry Pi OS version.
+
+If a package build fails partway through, delete any stale package before retrying so `apt` does not keep installing the previous broken artifact:
+
+```bash
+rm -f dist-rpi/superccd2dng_*.deb
+./build_rpi.sh package
 sudo apt install ./dist-rpi/superccd2dng_*.deb
 ```
 
@@ -316,18 +323,15 @@ The self-contained zip package includes:
 The .deb package includes:
 - `/usr/bin/superccd2dng` - The executable
 - `/usr/share/applications/superccd2dng.desktop` - Desktop entry
+- `/usr/share/icons/hicolor/256x256/apps/superccd2dng.png` - Application icon
 - `/usr/share/doc/superccd2dng/copyright` - License information
 - `/usr/share/doc/superccd2dng/changelog` - Version history
 
 ### Dependencies
 
-The package depends on:
-- `qt6-base`
-- `qt6-wayland`
-- `libraw19`
-- `libtiff6`
+The `.deb` package dependencies are generated automatically from the built executable. On Raspberry Pi OS Bookworm, this typically resolves to the Qt 6 runtime libraries and plugins plus `libraw` and `libtiff`.
 
-These will be automatically installed when using `apt install`.
+These will be installed automatically when using `apt install ./dist-rpi/superccd2dng_*.deb`.
 
 ## Uninstalling
 

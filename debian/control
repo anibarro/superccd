@@ -7,7 +7,7 @@ Standards-Version: 4.6.0
 
 Package: superccd2dng
 Architecture: arm64
-Depends: qt6-base (>= 6.4), qt6-wayland, libraw19 (>= 0.20), libtiff6 (>= 4.3), ${misc:Depends}
+Depends: ${shlibs:Depends}, ${misc:Depends}, qt6-wayland
 Description: Fujifilm S3 Pro RAF to DNG converter
  A desktop application for converting Fujifilm FinePix S3 Pro .RAF files
  into editable DNG files, with a focus on the Super CCD SR II sensor's
