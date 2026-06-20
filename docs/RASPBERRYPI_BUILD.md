@@ -6,7 +6,7 @@ This document describes how to build SuperCCD2DNG for Raspberry Pi 500+ and othe
 
 - **Raspberry Pi 500+** or other ARM64 Raspberry Pi (Pi 4, Pi 400, Compute Module 4+)
 - **Raspberry Pi OS Bookworm or later** (with Wayland support)
-- **16GB+ RAM** recommended for compilation
+- **4GB RAM** recommended for compilation
 - **CMake 3.16 or later**
 - **Qt 6.x** with Widgets and Wayland modules
 - **LibRaw** for reading Fujifilm RAF files
