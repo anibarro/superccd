@@ -229,25 +229,30 @@ package() {
     
     local app_name="SuperCCD2DNG"
     local app_bundle="$PROJECT_DIR/dist-macos/${app_name}.app"
+    local built_bundle="$BUILD_DIR/superccd2dng.app"
     local version
     version="$(get_version)"
     
-    # Create app bundle structure
-    mkdir -p "$app_bundle/Contents/MacOS"
-    mkdir -p "$app_bundle/Contents/Resources"
+    # Replace any previous package so stale bundle metadata and frameworks do not linger.
+    rm -rf "$app_bundle"
     
-    # Copy executable from the .app bundle (for macOS bundle builds)
-    if [ -f "$BUILD_DIR/superccd2dng.app/Contents/MacOS/superccd2dng" ]; then
-        cp "$BUILD_DIR/superccd2dng.app/Contents/MacOS/superccd2dng" "$app_bundle/Contents/MacOS/"
+    # Reuse the CMake-generated .app bundle when available so Info.plist and resources
+    # stay aligned with the actual macOS target metadata.
+    if [ -d "$built_bundle" ]; then
+        mkdir -p "$PROJECT_DIR/dist-macos"
+        cp -R "$built_bundle" "$app_bundle"
     elif [ -f "$BUILD_DIR/superccd2dng" ]; then
+        mkdir -p "$app_bundle/Contents/MacOS"
+        mkdir -p "$app_bundle/Contents/Resources"
         cp "$BUILD_DIR/superccd2dng" "$app_bundle/Contents/MacOS/"
     else
         error "Executable not found in build directory"
         exit 1
     fi
     
-    # Create Info.plist
-    cat > "$app_bundle/Contents/Info.plist" << EOF
+    # Ensure the fallback bundle layout still has a valid Info.plist.
+    if [ ! -f "$app_bundle/Contents/Info.plist" ]; then
+        cat > "$app_bundle/Contents/Info.plist" << EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -290,26 +295,114 @@ package() {
 </dict>
 </plist>
 EOF
+    fi
     
-    # Copy icon file (.icns) if exists
-    if [ -f "$PROJECT_DIR/resources/icons/app_icon.icns" ]; then
+    # Preserve the built bundle's icon when present, but also repopulate it for the fallback path.
+    if [ ! -f "$app_bundle/Contents/Resources/app_icon.icns" ] \
+        && [ -f "$PROJECT_DIR/resources/icons/app_icon.icns" ]; then
         cp "$PROJECT_DIR/resources/icons/app_icon.icns" "$app_bundle/Contents/Resources/"
     fi
     
     # Deploy Qt frameworks
     info "Deploying Qt frameworks..."
+    local macdeployqt_args=("$app_bundle" -verbose=1 -no-codesign -no-plugins)
+    if [ -d "/opt/homebrew/lib" ]; then
+        macdeployqt_args+=(-libpath="/opt/homebrew/lib")
+    fi
+    if [ -d "/usr/local/lib" ]; then
+        macdeployqt_args+=(-libpath="/usr/local/lib")
+    fi
+
     if command -v macdeployqt &> /dev/null; then
-        macdeployqt "$app_bundle" -verbose=1 || warn "macdeployqt failed. You may need to manually configure Qt."
+        macdeployqt "${macdeployqt_args[@]}" || warn "macdeployqt failed. You may need to manually configure Qt."
     elif [ -f "/opt/homebrew/opt/qt@6/bin/macdeployqt" ]; then
-        "/opt/homebrew/opt/qt@6/bin/macdeployqt" "$app_bundle" -verbose=1 || warn "macdeployqt failed."
+        "/opt/homebrew/opt/qt@6/bin/macdeployqt" "${macdeployqt_args[@]}" || warn "macdeployqt failed."
     else
         warn "macdeployqt not found. Qt frameworks may not be properly deployed."
     fi
+
+    local qt_plugin_dir=""
+    local qt_plugin_candidates=(
+        "/opt/homebrew/share/qt/plugins"
+        "/usr/local/share/qt/plugins"
+        "/opt/homebrew/opt/qtbase/share/qt/plugins"
+        "/usr/local/opt/qtbase/share/qt/plugins"
+    )
+    for candidate in "${qt_plugin_candidates[@]}"; do
+        if [ -d "$candidate" ]; then
+            qt_plugin_dir="$candidate"
+            break
+        fi
+    done
+
+    if [ -n "$qt_plugin_dir" ]; then
+        info "Copying required Qt plugins..."
+        local plugin
+        for plugin in \
+            "platforms/libqcocoa.dylib" \
+            "styles/libqmacstyle.dylib" \
+            "imageformats/libqjpeg.dylib"
+        do
+            if [ -f "$qt_plugin_dir/$plugin" ]; then
+                mkdir -p "$app_bundle/Contents/PlugIns/$(dirname "$plugin")"
+                cp "$qt_plugin_dir/$plugin" "$app_bundle/Contents/PlugIns/$plugin"
+            else
+                warn "Qt plugin not found: $qt_plugin_dir/$plugin"
+            fi
+        done
+
+        if [ -f "/opt/homebrew/opt/jpeg-turbo/lib/libjpeg.8.dylib" ]; then
+            cp "/opt/homebrew/opt/jpeg-turbo/lib/libjpeg.8.dylib" \
+               "$app_bundle/Contents/Frameworks/libjpeg.8.dylib"
+            install_name_tool -change \
+                "/opt/homebrew/opt/jpeg-turbo/lib/libjpeg.8.dylib" \
+                "@executable_path/../Frameworks/libjpeg.8.dylib" \
+                "$app_bundle/Contents/PlugIns/imageformats/libqjpeg.dylib"
+        elif [ -f "/usr/local/opt/jpeg-turbo/lib/libjpeg.8.dylib" ]; then
+            cp "/usr/local/opt/jpeg-turbo/lib/libjpeg.8.dylib" \
+               "$app_bundle/Contents/Frameworks/libjpeg.8.dylib"
+            install_name_tool -change \
+                "/usr/local/opt/jpeg-turbo/lib/libjpeg.8.dylib" \
+                "@executable_path/../Frameworks/libjpeg.8.dylib" \
+                "$app_bundle/Contents/PlugIns/imageformats/libqjpeg.dylib"
+        fi
+
+        local plugin_file
+        for plugin_file in "$app_bundle"/Contents/PlugIns/*/*.dylib; do
+            [ -e "$plugin_file" ] || continue
+            install_name_tool -change \
+                "@rpath/QtCore.framework/Versions/A/QtCore" \
+                "@executable_path/../Frameworks/QtCore.framework/Versions/A/QtCore" \
+                "$plugin_file" 2>/dev/null || true
+            install_name_tool -change \
+                "@rpath/QtGui.framework/Versions/A/QtGui" \
+                "@executable_path/../Frameworks/QtGui.framework/Versions/A/QtGui" \
+                "$plugin_file" 2>/dev/null || true
+            install_name_tool -change \
+                "@rpath/QtWidgets.framework/Versions/A/QtWidgets" \
+                "@executable_path/../Frameworks/QtWidgets.framework/Versions/A/QtWidgets" \
+                "$plugin_file" 2>/dev/null || true
+        done
+    else
+        warn "Qt plugin directory not found. The packaged app may not launch on a clean Mac."
+    fi
+
+    # macdeployqt can leave the outer bundle signature stale after rewriting
+    # libraries and plugins, especially with Homebrew Qt layouts. Re-sign the
+    # finished bundle ad-hoc so the packaged app is internally consistent.
+    info "Refreshing app bundle signature..."
+    codesign --force --deep --sign - "$app_bundle"
+
+    # Keep the release archive free of local Finder/provenance metadata. The app
+    # icon is provided by Info.plist and app_icon.icns, not extended attributes.
+    xattr -cr "$app_bundle" 2>/dev/null || true
     
-    # Create zip package
+    # Create zip package. Preserve framework symlinks without carrying local
+    # extended attributes that can affect Finder's bundle presentation.
     local zip_name="superccd2dng-macos-${version:-unknown}.zip"
     cd "$PROJECT_DIR/dist-macos"
-    zip -r "$zip_name" "${app_name}.app"
+    rm -f "$zip_name"
+    zip -y -r "$zip_name" "${app_name}.app"
     
     info "Package created: $PROJECT_DIR/dist-macos/$zip_name"
 }

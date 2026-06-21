@@ -31,6 +31,12 @@
 #include <memory>
 #include <mutex>
 
+#ifdef __APPLE__
+#include <CoreFoundation/CoreFoundation.h>
+#include <CoreGraphics/CoreGraphics.h>
+#include <ImageIO/ImageIO.h>
+#endif
+
 namespace {
 struct PairStats {
     uint64_t count = 0;
@@ -92,6 +98,211 @@ void populateBasicMetadata(LibRaw &raw, SuperCCDMetadata &metadata)
         metadata.dateTime = QString::fromLatin1(dateBuf);
     }
 }
+
+#ifdef __APPLE__
+CFStringRef createCFString(const QString &value)
+{
+    return CFStringCreateWithCharacters(kCFAllocatorDefault,
+                                        reinterpret_cast<const UniChar *>(value.utf16()),
+                                        static_cast<CFIndex>(value.size()));
+}
+
+CFURLRef createFileUrl(const QString &path)
+{
+    const QByteArray utf8Path = QFile::encodeName(path);
+    return CFURLCreateFromFileSystemRepresentation(kCFAllocatorDefault,
+                                                   reinterpret_cast<const UInt8 *>(utf8Path.constData()),
+                                                   static_cast<CFIndex>(utf8Path.size()),
+                                                   false);
+}
+
+void setDictionaryString(CFMutableDictionaryRef dictionary, const CFStringRef key, const QString &value)
+{
+    const QString trimmed = value.trimmed();
+    if (!dictionary || trimmed.isEmpty()) {
+        return;
+    }
+    CFStringRef text = createCFString(trimmed);
+    if (!text) {
+        return;
+    }
+    CFDictionarySetValue(dictionary, key, text);
+    CFRelease(text);
+}
+
+void setDictionaryDouble(CFMutableDictionaryRef dictionary, const CFStringRef key, double value)
+{
+    if (!dictionary || value <= 0.0) {
+        return;
+    }
+    CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberDoubleType, &value);
+    if (!number) {
+        return;
+    }
+    CFDictionarySetValue(dictionary, key, number);
+    CFRelease(number);
+}
+
+void setDictionaryInt(CFMutableDictionaryRef dictionary, const CFStringRef key, int value)
+{
+    if (!dictionary || value <= 0) {
+        return;
+    }
+    CFNumberRef number = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &value);
+    if (!number) {
+        return;
+    }
+    CFDictionarySetValue(dictionary, key, number);
+    CFRelease(number);
+}
+
+bool writeImageMetadataWithImageIO(const QString &outputPath,
+                                   const SuperCCDMetadata &metadata,
+                                   QString *error)
+{
+    const QString suffix = QFileInfo(outputPath).suffix().toLower();
+    const bool isJpeg = (suffix == QStringLiteral("jpg") || suffix == QStringLiteral("jpeg"));
+    const bool isTiff = (suffix == QStringLiteral("tif") || suffix == QStringLiteral("tiff"));
+    if (!isJpeg && !isTiff) {
+        return false;
+    }
+
+    CFURLRef sourceUrl = createFileUrl(outputPath);
+    if (!sourceUrl) {
+        if (error) *error = QStringLiteral("Could not create ImageIO source URL.");
+        return false;
+    }
+
+    CGImageSourceRef source = CGImageSourceCreateWithURL(sourceUrl, nullptr);
+    if (!source) {
+        CFRelease(sourceUrl);
+        if (error) *error = QStringLiteral("Could not open image for ImageIO metadata update.");
+        return false;
+    }
+
+    CFTypeRef sourceType = CGImageSourceGetType(source);
+    if (!sourceType) {
+        CFRelease(source);
+        CFRelease(sourceUrl);
+        if (error) *error = QStringLiteral("Could not determine image type.");
+        return false;
+    }
+
+    CFDictionaryRef existingProperties = CGImageSourceCopyPropertiesAtIndex(source, 0, nullptr);
+    CFMutableDictionaryRef properties = existingProperties
+        ? CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, existingProperties)
+        : CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                    0,
+                                    &kCFTypeDictionaryKeyCallBacks,
+                                    &kCFTypeDictionaryValueCallBacks);
+
+    CFDictionaryRef existingExif = existingProperties
+        ? static_cast<CFDictionaryRef>(CFDictionaryGetValue(existingProperties, kCGImagePropertyExifDictionary))
+        : nullptr;
+    CFMutableDictionaryRef exifDictionary = existingExif
+        ? CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, existingExif)
+        : CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                    0,
+                                    &kCFTypeDictionaryKeyCallBacks,
+                                    &kCFTypeDictionaryValueCallBacks);
+
+    CFDictionaryRef existingTiff = existingProperties
+        ? static_cast<CFDictionaryRef>(CFDictionaryGetValue(existingProperties, kCGImagePropertyTIFFDictionary))
+        : nullptr;
+    CFMutableDictionaryRef tiffDictionary = existingTiff
+        ? CFDictionaryCreateMutableCopy(kCFAllocatorDefault, 0, existingTiff)
+        : CFDictionaryCreateMutable(kCFAllocatorDefault,
+                                    0,
+                                    &kCFTypeDictionaryKeyCallBacks,
+                                    &kCFTypeDictionaryValueCallBacks);
+
+    setDictionaryString(tiffDictionary, kCGImagePropertyTIFFMake, metadata.make);
+    setDictionaryString(tiffDictionary, kCGImagePropertyTIFFModel, metadata.model);
+    setDictionaryString(tiffDictionary, kCGImagePropertyTIFFSoftware, metadata.software);
+    setDictionaryString(tiffDictionary, kCGImagePropertyTIFFDateTime, metadata.dateTime);
+
+    setDictionaryString(exifDictionary, kCGImagePropertyExifLensModel, metadata.lensModel);
+    setDictionaryDouble(exifDictionary, kCGImagePropertyExifFocalLength, metadata.focalLength);
+    setDictionaryDouble(exifDictionary, kCGImagePropertyExifFNumber, metadata.aperture);
+    setDictionaryDouble(exifDictionary, kCGImagePropertyExifExposureTime, metadata.shutter);
+    setDictionaryString(exifDictionary, kCGImagePropertyExifDateTimeOriginal, metadata.dateTime);
+    setDictionaryString(exifDictionary, kCGImagePropertyExifDateTimeDigitized, metadata.dateTime);
+
+    if (metadata.iso > 0) {
+        CFMutableArrayRef isoArray = CFArrayCreateMutable(kCFAllocatorDefault, 1, &kCFTypeArrayCallBacks);
+        if (isoArray) {
+            CFNumberRef isoNumber = CFNumberCreate(kCFAllocatorDefault, kCFNumberIntType, &metadata.iso);
+            if (isoNumber) {
+                CFArrayAppendValue(isoArray, isoNumber);
+                CFDictionarySetValue(exifDictionary, kCGImagePropertyExifISOSpeedRatings, isoArray);
+                CFRelease(isoNumber);
+            }
+            CFRelease(isoArray);
+        }
+        setDictionaryInt(exifDictionary, kCGImagePropertyExifISOSpeed, metadata.iso);
+        setDictionaryInt(exifDictionary, kCGImagePropertyExifSensitivityType, 3);
+    }
+
+    CFDictionarySetValue(properties, kCGImagePropertyExifDictionary, exifDictionary);
+    CFDictionarySetValue(properties, kCGImagePropertyTIFFDictionary, tiffDictionary);
+
+    const QString tempPath = outputPath + QStringLiteral(".metadata_tmp");
+    QFile::remove(tempPath);
+    CFURLRef destinationUrl = createFileUrl(tempPath);
+    if (!destinationUrl) {
+        if (error) *error = QStringLiteral("Could not create ImageIO destination URL.");
+        CFRelease(tiffDictionary);
+        CFRelease(exifDictionary);
+        CFRelease(properties);
+        if (existingProperties) CFRelease(existingProperties);
+        CFRelease(source);
+        CFRelease(sourceUrl);
+        return false;
+    }
+
+    CGImageDestinationRef destination = CGImageDestinationCreateWithURL(destinationUrl,
+                                                                        static_cast<CFStringRef>(sourceType),
+                                                                        1,
+                                                                        nullptr);
+    if (!destination) {
+        if (error) *error = QStringLiteral("Could not create ImageIO destination.");
+        CFRelease(destinationUrl);
+        CFRelease(tiffDictionary);
+        CFRelease(exifDictionary);
+        CFRelease(properties);
+        if (existingProperties) CFRelease(existingProperties);
+        CFRelease(source);
+        CFRelease(sourceUrl);
+        return false;
+    }
+
+    CGImageDestinationAddImageFromSource(destination, source, 0, properties);
+    const bool finalized = CGImageDestinationFinalize(destination);
+
+    CFRelease(destination);
+    CFRelease(destinationUrl);
+    CFRelease(tiffDictionary);
+    CFRelease(exifDictionary);
+    CFRelease(properties);
+    if (existingProperties) CFRelease(existingProperties);
+    CFRelease(source);
+    CFRelease(sourceUrl);
+
+    if (!finalized) {
+        QFile::remove(tempPath);
+        if (error) *error = QStringLiteral("ImageIO could not finalize metadata update.");
+        return false;
+    }
+
+    if (!QFile::remove(outputPath) || !QFile::rename(tempPath, outputPath)) {
+        QFile::remove(tempPath);
+        if (error) *error = QStringLiteral("Could not replace image after metadata update.");
+        return false;
+    }
+
+    return true;
+}
+#endif
 
 void logProcessing(const char *format, ...)
 {
@@ -2914,6 +3125,29 @@ bool SuperCCDProcessor::copyExifMetadata(const QString &inputPath,
                                          const QString &outputPath,
                                          QString *error)
 {
+#ifdef __APPLE__
+    const QString suffix = QFileInfo(outputPath).suffix().toLower();
+    if (suffix == QStringLiteral("jpg") || suffix == QStringLiteral("jpeg") ||
+        suffix == QStringLiteral("tif") || suffix == QStringLiteral("tiff")) {
+        SuperCCDMetadata metadata;
+        QString metadataError;
+        if (readMetadata(inputPath, metadata, &metadataError)) {
+            QString nativeError;
+            if (writeImageMetadataWithImageIO(outputPath, metadata, &nativeError)) {
+                return true;
+            }
+            logProcessing("copyExifMetadata: ImageIO metadata write failed for %s -> %s ('%s')",
+                          inputPath.toUtf8().constData(),
+                          outputPath.toUtf8().constData(),
+                          nativeError.left(200).toUtf8().constData());
+        } else {
+            logProcessing("copyExifMetadata: readMetadata failed before ImageIO metadata write for %s ('%s')",
+                          inputPath.toUtf8().constData(),
+                          metadataError.left(200).toUtf8().constData());
+        }
+    }
+#endif
+
     const QString exifTool = findExifToolExecutable();
     if (exifTool.isEmpty()) {
         if (error) {
@@ -2922,8 +3156,8 @@ bool SuperCCDProcessor::copyExifMetadata(const QString &inputPath,
         return false;
     }
 
-    const QStringList arguments = {
-        QStringLiteral("-overwrite_original"),
+    const QStringList copyArguments = {
+        QStringLiteral("-overwrite_original_in_place"),
         QStringLiteral("-m"),
         QStringLiteral("-tagsFromFile"),
         inputPath,
@@ -2941,24 +3175,83 @@ bool SuperCCDProcessor::copyExifMetadata(const QString &inputPath,
     };
 
     QProcess process;
-    process.start(exifTool, arguments);
+    process.start(exifTool, copyArguments);
     if (!process.waitForFinished(15000) ||
         process.exitStatus() != QProcess::NormalExit ||
         process.exitCode() != 0) {
-        const QString stderrText = QString::fromUtf8(process.readAllStandardError()).trimmed();
-        const QString stdoutText = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
-        logProcessing("copyExifMetadata: exiftool failed for %s -> %s (code=%d, stderr='%s', stdout='%s')",
+        const QString firstStderrText = QString::fromUtf8(process.readAllStandardError()).trimmed();
+        const QString firstStdoutText = QString::fromUtf8(process.readAllStandardOutput()).trimmed();
+        logProcessing("copyExifMetadata: exiftool tag copy failed for %s -> %s (code=%d, stderr='%s', stdout='%s')",
                       inputPath.toUtf8().constData(),
                       outputPath.toUtf8().constData(),
                       process.exitCode(),
-                      stderrText.left(200).toUtf8().constData(),
-                      stdoutText.left(200).toUtf8().constData());
-        if (error) {
-            *error = stderrText.isEmpty()
-                ? QStringLiteral("exiftool failed with exit code %1").arg(process.exitCode())
-                : stderrText;
+                      firstStderrText.left(200).toUtf8().constData(),
+                      firstStdoutText.left(200).toUtf8().constData());
+
+        SuperCCDMetadata metadata;
+        QString metadataError;
+        if (!readMetadata(inputPath, metadata, &metadataError)) {
+            if (error) {
+                *error = firstStderrText.isEmpty()
+                    ? QStringLiteral("exiftool failed with exit code %1").arg(process.exitCode())
+                    : firstStderrText;
+            }
+            return false;
         }
-        return false;
+
+        QStringList fallbackArguments = {
+            QStringLiteral("-overwrite_original_in_place"),
+            QStringLiteral("-m")
+        };
+
+        auto appendStringTag = [&fallbackArguments](const QString &tag, const QString &value) {
+            const QString trimmed = value.trimmed();
+            if (!trimmed.isEmpty()) {
+                fallbackArguments.append(tag + QStringLiteral("=") + trimmed);
+            }
+        };
+        auto appendNumericTag = [&fallbackArguments](const QString &tag, double value) {
+            if (value > 0.0) {
+                fallbackArguments.append(tag + QStringLiteral("=") + QString::number(value, 'g', 12));
+            }
+        };
+
+        appendStringTag(QStringLiteral("-EXIF:Make"), metadata.make);
+        appendStringTag(QStringLiteral("-EXIF:Model"), metadata.model);
+        appendStringTag(QStringLiteral("-EXIF:LensModel"), metadata.lensModel);
+        appendNumericTag(QStringLiteral("-EXIF:FocalLength"), metadata.focalLength);
+        appendNumericTag(QStringLiteral("-EXIF:FNumber"), metadata.aperture);
+        appendNumericTag(QStringLiteral("-EXIF:ExposureTime"), metadata.shutter);
+        if (metadata.iso > 0) {
+            fallbackArguments.append(QStringLiteral("-EXIF:ISO=") + QString::number(metadata.iso));
+        }
+        appendStringTag(QStringLiteral("-EXIF:DateTimeOriginal"), metadata.dateTime);
+        appendStringTag(QStringLiteral("-EXIF:CreateDate"), metadata.dateTime);
+        appendStringTag(QStringLiteral("-EXIF:ModifyDate"), metadata.dateTime);
+        fallbackArguments.append(outputPath);
+
+        QProcess fallbackProcess;
+        fallbackProcess.start(exifTool, fallbackArguments);
+        if (!fallbackProcess.waitForFinished(15000) ||
+            fallbackProcess.exitStatus() != QProcess::NormalExit ||
+            fallbackProcess.exitCode() != 0) {
+            const QString fallbackStderrText = QString::fromUtf8(fallbackProcess.readAllStandardError()).trimmed();
+            const QString fallbackStdoutText = QString::fromUtf8(fallbackProcess.readAllStandardOutput()).trimmed();
+            logProcessing("copyExifMetadata: exiftool metadata fallback failed for %s -> %s (code=%d, stderr='%s', stdout='%s')",
+                          inputPath.toUtf8().constData(),
+                          outputPath.toUtf8().constData(),
+                          fallbackProcess.exitCode(),
+                          fallbackStderrText.left(200).toUtf8().constData(),
+                          fallbackStdoutText.left(200).toUtf8().constData());
+            if (error) {
+                *error = fallbackStderrText.isEmpty()
+                    ? (firstStderrText.isEmpty()
+                        ? QStringLiteral("exiftool failed with exit code %1").arg(fallbackProcess.exitCode())
+                        : firstStderrText)
+                    : fallbackStderrText;
+            }
+            return false;
+        }
     }
 
     return true;

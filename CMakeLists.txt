@@ -133,6 +133,17 @@ target_include_directories(superccd2dng PRIVATE src)
 target_link_libraries(superccd2dng PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
 target_compile_definitions(superccd2dng PRIVATE APP_VERSION_STRING="${PROJECT_VERSION}")
 
+if(APPLE)
+  find_library(COREFOUNDATION_FRAMEWORK CoreFoundation REQUIRED)
+  find_library(COREGRAPHICS_FRAMEWORK CoreGraphics REQUIRED)
+  find_library(IMAGEIO_FRAMEWORK ImageIO REQUIRED)
+  target_link_libraries(superccd2dng PRIVATE
+    ${COREFOUNDATION_FRAMEWORK}
+    ${COREGRAPHICS_FRAMEWORK}
+    ${IMAGEIO_FRAMEWORK}
+  )
+endif()
+
 if(DNG_SDK_LIBRARY)
   target_link_libraries(superccd2dng PRIVATE ${DNG_SDK_LIBRARY})
 endif()

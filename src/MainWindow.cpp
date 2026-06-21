@@ -1511,10 +1511,21 @@ void MainWindow::onExportPreview()
         exportImage,
         m_previewSharpeningSlider->value());
 
+    SuperCCDMetadata exportMetadata;
+    const SuperCCDMetadata *exportMetadataPtr = nullptr;
+    if (includeExif && exportFormat == PreviewExportFormat::Tiff16) {
+        QString metadataReadError;
+        if (!SuperCCDProcessor::readMetadata(inputPath, exportMetadata, &metadataReadError)) {
+            showStatus(tr("Could not read EXIF metadata from source RAF: %1").arg(metadataReadError));
+            return;
+        }
+        exportMetadataPtr = &exportMetadata;
+    }
+
     const int quality = qualitySpinBox->value();
     if (exportFormat == PreviewExportFormat::Tiff16) {
         QString tiffError;
-        if (!DngWriter::writeRgbTiff16(outputPath, exportImage, tiffError)) {
+        if (!DngWriter::writeRgbTiff16(outputPath, exportImage, exportMetadataPtr, tiffError)) {
             QFile::remove(outputPath);
             showStatus(tr("Could not save 16-bit preview TIFF: %1").arg(tiffError));
             return;

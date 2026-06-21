@@ -606,6 +606,7 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
 
 bool writeRgbTiff16WithLibTiff(const QString &outputPath,
                                const QImage &image,
+                               const SuperCCDMetadata *metadata,
                                QString &error)
 {
     const QImage rgbImage = image.convertToFormat(QImage::Format_RGBX64);
@@ -626,7 +627,30 @@ bool writeRgbTiff16WithLibTiff(const QString &outputPath,
     TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, static_cast<uint16_t>(SAMPLEFORMAT_UINT));
     TIFFSetField(tif, TIFFTAG_ORIENTATION, static_cast<uint16_t>(ORIENTATION_TOPLEFT));
     TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
-    TIFFSetField(tif, TIFFTAG_SOFTWARE, "superccd2dng");
+
+    QByteArray makeBytes;
+    QByteArray modelBytes;
+    QByteArray softwareBytes = QByteArrayLiteral("superccd2dng");
+    QByteArray dateTimeBytes;
+    QByteArray lensModelBytes;
+    if (metadata) {
+        makeBytes = metadata->make.toUtf8();
+        modelBytes = metadata->model.toUtf8();
+        if (!metadata->software.trimmed().isEmpty()) {
+            softwareBytes = metadata->software.toUtf8();
+        }
+        dateTimeBytes = metadata->dateTime.toLatin1();
+        lensModelBytes = metadata->lensModel.trimmed().toUtf8();
+        writeCommonCaptureMetadata(tif,
+                                   *metadata,
+                                   makeBytes,
+                                   modelBytes,
+                                   softwareBytes,
+                                   dateTimeBytes,
+                                   lensModelBytes);
+    } else {
+        TIFFSetField(tif, TIFFTAG_SOFTWARE, softwareBytes.constData());
+    }
 
     std::vector<uint16_t> rowBuffer(static_cast<size_t>(rgbImage.width()) * 3);
     for (int y = 0; y < rgbImage.height(); ++y) {
@@ -726,6 +750,7 @@ bool DngWriter::writeLinearDng(const QString &outputPath,
 
 bool DngWriter::writeRgbTiff16(const QString &outputPath,
                                const QImage &image,
+                               const SuperCCDMetadata *metadata,
                                QString &error)
 {
     if (image.isNull()) {
@@ -734,9 +759,10 @@ bool DngWriter::writeRgbTiff16(const QString &outputPath,
     }
 
 #ifdef HAVE_LIBTIFF
-    return writeRgbTiff16WithLibTiff(outputPath, image, error);
+    return writeRgbTiff16WithLibTiff(outputPath, image, metadata, error);
 #else
     Q_UNUSED(outputPath)
+    Q_UNUSED(metadata)
     error = QStringLiteral("16-bit TIFF export requires LibTIFF support.");
     return false;
 #endif

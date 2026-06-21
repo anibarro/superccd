@@ -27,6 +27,7 @@ public:
 
     static bool writeRgbTiff16(const QString &outputPath,
                                const QImage &image,
+                               const SuperCCDMetadata *metadata,
                                QString &error);
 };
 
