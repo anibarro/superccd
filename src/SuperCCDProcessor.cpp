@@ -2598,13 +2598,13 @@ bool readSelectedShotLinearPlanes12MP(const QString &inputPath,
         return false;
     }
 
-    populateBasicMetadata(raw, metadata);
-
     result = raw.unpack();
     if (result != LIBRAW_SUCCESS) {
         error = QString::fromUtf8(libraw_strerror(result));
         return false;
     }
+
+    populateBasicMetadata(raw, metadata);
 
     result = raw.raw2image();
     if (result != LIBRAW_SUCCESS) {
@@ -3113,6 +3113,15 @@ bool SuperCCDProcessor::readMetadata(const QString &inputPath,
         if (error) {
             *error = QString::fromUtf8(libraw_strerror(result));
         }
+        return false;
+    }
+
+    const int unpackResult = raw.unpack();
+    if (unpackResult != LIBRAW_SUCCESS) {
+        if (error) {
+            *error = QString::fromUtf8(libraw_strerror(unpackResult));
+        }
+        raw.recycle();
         return false;
     }
 
@@ -3844,6 +3853,8 @@ bool SuperCCDProcessor::readSelectedShotCfa(const QString &inputPath,
         error = QString::fromUtf8(libraw_strerror(result));
         return false;
     }
+
+    populateBasicMetadata(raw, metadata);
 
     if (raw.imgdata.rawdata.raw_image == nullptr) {
         error = QStringLiteral("Unable to access native raw image buffer.");

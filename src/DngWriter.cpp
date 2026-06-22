@@ -4,9 +4,14 @@
 
 #include "DngWriter.h"
 
+#include <QFile>
+
+#include <algorithm>
 #include <cstring>
 #include <cstdarg>
 #include <cstdio>
+#include <cinttypes>
+#include <numeric>
 
 #ifdef HAVE_LIBTIFF
 #include <tiffio.h>
@@ -66,7 +71,7 @@ namespace {
 #define TIFFTAG_EXPOSURETIME 33434
 #endif
 #ifndef TIFFTAG_ISOSPEEDRATINGS
-#define TIFFTAG_ISOSPEEDRATINGS 37393
+#define TIFFTAG_ISOSPEEDRATINGS 34855
 #endif
 #ifndef TIFFTAG_FOCALLENGTH
 #define TIFFTAG_FOCALLENGTH 37386
@@ -80,11 +85,20 @@ namespace {
 #ifndef TIFFTAG_LENSMODEL
 #define TIFFTAG_LENSMODEL 42036
 #endif
-#ifndef TIFFTAG_EXPOSURETIME
-#define TIFFTAG_EXPOSURETIME 33434
+#ifndef TIFFTAG_EXIFIFD
+#define TIFFTAG_EXIFIFD 34665
 #endif
-#ifndef TIFFTAG_ISOSPEEDRATINGS
-#define TIFFTAG_ISOSPEEDRATINGS 37393
+#ifndef TIFFTAG_EXIFVERSION
+#define TIFFTAG_EXIFVERSION 36864
+#endif
+#ifndef TIFFTAG_FLASHPIXVERSION
+#define TIFFTAG_FLASHPIXVERSION 40960
+#endif
+#ifndef TIFFTAG_COLORSPACE
+#define TIFFTAG_COLORSPACE 40961
+#endif
+#ifndef EXIFCOLORSPACE_UNCALIBRATED
+#define EXIFCOLORSPACE_UNCALIBRATED 65535
 #endif
 #ifndef TIFFTAG_PHOTOMETRIC
 #define TIFFTAG_PHOTOMETRIC 262
@@ -164,6 +178,9 @@ static const TIFFFieldInfo dngFieldInfo[] = {
     { TIFFTAG_DATETIMEORIGINAL, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("DateTimeOriginal") },
     { TIFFTAG_DATETIMEDIGITIZED, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("DateTimeDigitized") },
     { TIFFTAG_LENSMODEL, TIFF_VARIABLE2, TIFF_VARIABLE2, TIFF_ASCII, FIELD_CUSTOM, 1, 1, const_cast<char *>("LensModel") },
+    { TIFFTAG_EXIFVERSION, 4, 4, TIFF_UNDEFINED, FIELD_CUSTOM, 1, 0, const_cast<char *>("ExifVersion") },
+    { TIFFTAG_FLASHPIXVERSION, 4, 4, TIFF_UNDEFINED, FIELD_CUSTOM, 1, 0, const_cast<char *>("FlashPixVersion") },
+    { TIFFTAG_COLORSPACE, 1, 1, TIFF_SHORT, FIELD_CUSTOM, 1, 0, const_cast<char *>("ColorSpace") },
 };
 
 static const TIFFField *findTiffField(TIFF *tif, uint32_t tag, TIFFDataType type)
@@ -255,14 +272,20 @@ static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
 
 static void setSingleRationalField(TIFF *tif, uint32_t tag, float value)
 {
-    // RATIONAL is two unsigned 32-bit integers: (numerator, denominator)
-    // For example, 0.004s (1/250) -> (1, 250), 2.5s -> (5, 2)
+    // RATIONAL is stored as an unsigned numerator/denominator pair.
     if (value > 0.0f) {
-        float inv = 1.0f / value;
-        int denom = static_cast<int>(inv + 0.5f);
-        if (denom < 1) denom = 1;
-        if (denom > 1000000) denom = 1000000;
-        TIFFSetField(tif, tag, 1, denom);
+        const uint32_t scale = 10000;
+        uint32_t numerator = static_cast<uint32_t>(value * static_cast<float>(scale) + 0.5f);
+        uint32_t denominator = scale;
+        const uint32_t divisor = std::gcd(numerator, denominator);
+        if (divisor > 1) {
+            numerator /= divisor;
+            denominator /= divisor;
+        }
+        if (numerator == 0) {
+            numerator = 1;
+        }
+        TIFFSetField(tif, tag, numerator, denominator);
     } else {
         TIFFSetField(tif, tag, 0, 1);
     }
@@ -279,35 +302,11 @@ static void writeCommonCaptureMetadata(TIFF *tif,
     TIFFSetField(tif, TIFFTAG_MAKE, makeBytes.constData());
     TIFFSetField(tif, TIFFTAG_MODEL, modelBytes.constData());
     TIFFSetField(tif, TIFFTAG_SOFTWARE, softwareBytes.constData());
+    Q_UNUSED(metadata);
+    Q_UNUSED(lensModelBytes);
 
     if (!metadata.dateTime.isEmpty()) {
         TIFFSetField(tif, TIFFTAG_DATETIME, dateTimeBytes.constData());
-        setAsciiField(tif, TIFFTAG_DATETIMEORIGINAL, dateTimeBytes);
-        setAsciiField(tif, TIFFTAG_DATETIMEDIGITIZED, dateTimeBytes);
-    }
-
-    if (metadata.aperture > 0.0) {
-        const float fNumber = static_cast<float>(metadata.aperture);
-        logProcessing("writing FNumber tag: %.2f", fNumber);
-        setSingleRationalField(tif, TIFFTAG_FNUMBER, fNumber);
-    }
-    if (metadata.shutter > 0.0) {
-        const float exposureTime = static_cast<float>(metadata.shutter);
-        logProcessing("writing ExposureTime tag: %.6f", exposureTime);
-        setSingleRationalField(tif, TIFFTAG_EXPOSURETIME, exposureTime);
-    }
-    if (metadata.iso > 0) {
-        const uint16_t iso = static_cast<uint16_t>(metadata.iso);
-        logProcessing("writing ISOSpeedRatings tag: %u", iso);
-        TIFFSetField(tif, TIFFTAG_ISOSPEEDRATINGS, 1, &iso);
-    }
-    if (metadata.focalLength > 0.0) {
-        const float focalLength = static_cast<float>(metadata.focalLength);
-        logProcessing("writing FocalLength tag: %.2f", focalLength);
-        setSingleRationalField(tif, TIFFTAG_FOCALLENGTH, focalLength);
-    }
-    if (!metadata.lensModel.trimmed().isEmpty()) {
-        setAsciiField(tif, TIFFTAG_LENSMODEL, lensModelBytes);
     }
 }
 
@@ -319,10 +318,6 @@ static bool writeReducedPreviewDirectory(TIFF *tif, const QImage &thumbnail)
 
     QImage rgbThumb = thumbnail.convertToFormat(QImage::Format_RGB888);
     if (rgbThumb.isNull()) {
-        return false;
-    }
-
-    if (!TIFFWriteDirectory(tif)) {
         return false;
     }
 
@@ -347,6 +342,292 @@ static bool writeReducedPreviewDirectory(TIFF *tif, const QImage &thumbnail)
     }
 
     return TIFFWriteDirectory(tif) == 1;
+}
+
+struct ExifEntry
+{
+    uint16_t tag = 0;
+    uint16_t type = 0;
+    uint32_t count = 0;
+    QByteArray value;
+};
+
+static uint16_t readUint16(const QByteArray &data, int offset, bool littleEndian)
+{
+    const unsigned char *p =
+        reinterpret_cast<const unsigned char *>(data.constData() + offset);
+    if (littleEndian) {
+        return static_cast<uint16_t>(p[0] | (p[1] << 8));
+    }
+    return static_cast<uint16_t>((p[0] << 8) | p[1]);
+}
+
+static uint32_t readUint32(const QByteArray &data, int offset, bool littleEndian)
+{
+    const unsigned char *p =
+        reinterpret_cast<const unsigned char *>(data.constData() + offset);
+    if (littleEndian) {
+        return static_cast<uint32_t>(p[0]) |
+               (static_cast<uint32_t>(p[1]) << 8) |
+               (static_cast<uint32_t>(p[2]) << 16) |
+               (static_cast<uint32_t>(p[3]) << 24);
+    }
+    return (static_cast<uint32_t>(p[0]) << 24) |
+           (static_cast<uint32_t>(p[1]) << 16) |
+           (static_cast<uint32_t>(p[2]) << 8) |
+           static_cast<uint32_t>(p[3]);
+}
+
+static void writeUint16(QByteArray &data, int offset, uint16_t value, bool littleEndian)
+{
+    if (littleEndian) {
+        data[offset] = static_cast<char>(value & 0xFF);
+        data[offset + 1] = static_cast<char>((value >> 8) & 0xFF);
+    } else {
+        data[offset] = static_cast<char>((value >> 8) & 0xFF);
+        data[offset + 1] = static_cast<char>(value & 0xFF);
+    }
+}
+
+static void writeUint32(QByteArray &data, int offset, uint32_t value, bool littleEndian)
+{
+    if (littleEndian) {
+        data[offset] = static_cast<char>(value & 0xFF);
+        data[offset + 1] = static_cast<char>((value >> 8) & 0xFF);
+        data[offset + 2] = static_cast<char>((value >> 16) & 0xFF);
+        data[offset + 3] = static_cast<char>((value >> 24) & 0xFF);
+    } else {
+        data[offset] = static_cast<char>((value >> 24) & 0xFF);
+        data[offset + 1] = static_cast<char>((value >> 16) & 0xFF);
+        data[offset + 2] = static_cast<char>((value >> 8) & 0xFF);
+        data[offset + 3] = static_cast<char>(value & 0xFF);
+    }
+}
+
+static void appendUint16(QByteArray &data, uint16_t value, bool littleEndian)
+{
+    const int offset = data.size();
+    data.resize(offset + 2);
+    writeUint16(data, offset, value, littleEndian);
+}
+
+static void appendUint32(QByteArray &data, uint32_t value, bool littleEndian)
+{
+    const int offset = data.size();
+    data.resize(offset + 4);
+    writeUint32(data, offset, value, littleEndian);
+}
+
+static QByteArray makeAsciiValue(const QString &text)
+{
+    QByteArray bytes = text.trimmed().toUtf8();
+    if (bytes.isEmpty()) {
+        return QByteArray();
+    }
+    bytes.append('\0');
+    return bytes;
+}
+
+static QByteArray makeShortValue(uint16_t value, bool littleEndian)
+{
+    QByteArray bytes(2, '\0');
+    writeUint16(bytes, 0, value, littleEndian);
+    return bytes;
+}
+
+static QByteArray makeRationalValue(double value, bool littleEndian)
+{
+    if (!(value > 0.0)) {
+        return QByteArray();
+    }
+
+    uint32_t numerator = static_cast<uint32_t>(value * 10000.0 + 0.5);
+    uint32_t denominator = 10000;
+    const uint32_t divisor = std::gcd(numerator, denominator);
+    if (divisor > 1) {
+        numerator /= divisor;
+        denominator /= divisor;
+    }
+    if (numerator == 0) {
+        numerator = 1;
+    }
+
+    QByteArray bytes(8, '\0');
+    writeUint32(bytes, 0, numerator, littleEndian);
+    writeUint32(bytes, 4, denominator, littleEndian);
+    return bytes;
+}
+
+static bool patchExifDirectoryInPlace(const QString &outputPath,
+                                      const SuperCCDMetadata &metadata,
+                                      QString *error)
+{
+    QFile file(outputPath);
+    if (!file.open(QIODevice::ReadWrite)) {
+        if (error) {
+            *error = QStringLiteral("Could not reopen DNG to patch EXIF metadata.");
+        }
+        return false;
+    }
+
+    QByteArray data = file.readAll();
+    if (data.size() < 16) {
+        if (error) {
+            *error = QStringLiteral("DNG file too small for EXIF patching.");
+        }
+        return false;
+    }
+
+    const bool littleEndian =
+        (static_cast<unsigned char>(data[0]) == 'I' &&
+         static_cast<unsigned char>(data[1]) == 'I');
+    const bool bigEndian =
+        (static_cast<unsigned char>(data[0]) == 'M' &&
+         static_cast<unsigned char>(data[1]) == 'M');
+    if (!littleEndian && !bigEndian) {
+        if (error) {
+            *error = QStringLiteral("Unrecognized TIFF byte order in DNG.");
+        }
+        return false;
+    }
+
+    const uint16_t tiffVersion = readUint16(data, 2, littleEndian);
+    if (tiffVersion != 42) {
+        if (error) {
+            *error = QStringLiteral("BigTIFF/custom TIFF variants are not supported by the EXIF patcher.");
+        }
+        return false;
+    }
+
+    const uint32_t firstIfdOffset = readUint32(data, 4, littleEndian);
+    if (firstIfdOffset == 0 || firstIfdOffset + 2 > static_cast<uint32_t>(data.size())) {
+        if (error) {
+            *error = QStringLiteral("Invalid first IFD offset in DNG.");
+        }
+        return false;
+    }
+
+    const uint16_t entryCount = readUint16(data, static_cast<int>(firstIfdOffset), littleEndian);
+    const int entriesStart = static_cast<int>(firstIfdOffset) + 2;
+    const int entriesEnd = entriesStart + static_cast<int>(entryCount) * 12;
+    if (entriesEnd + 4 > data.size()) {
+        if (error) {
+            *error = QStringLiteral("Primary IFD is truncated in DNG.");
+        }
+        return false;
+    }
+
+    int exifValueFieldOffset = -1;
+    for (uint16_t i = 0; i < entryCount; ++i) {
+        const int entryOffset = entriesStart + static_cast<int>(i) * 12;
+        const uint16_t tag = readUint16(data, entryOffset, littleEndian);
+        if (tag == TIFFTAG_EXIFIFD) {
+            exifValueFieldOffset = entryOffset + 8;
+            break;
+        }
+    }
+
+    if (exifValueFieldOffset < 0) {
+        if (error) {
+            *error = QStringLiteral("Primary DNG directory does not contain an EXIFIFD placeholder.");
+        }
+        return false;
+    }
+
+    std::vector<ExifEntry> entries;
+    entries.push_back({TIFFTAG_EXIFVERSION, TIFF_UNDEFINED, 4, QByteArray("0231", 4)});
+    entries.push_back({TIFFTAG_FLASHPIXVERSION, TIFF_UNDEFINED, 4, QByteArray("0100", 4)});
+    entries.push_back({TIFFTAG_COLORSPACE, TIFF_SHORT, 1,
+                       makeShortValue(EXIFCOLORSPACE_UNCALIBRATED, littleEndian)});
+
+    const QByteArray dateTimeValue = makeAsciiValue(metadata.dateTime);
+    if (!dateTimeValue.isEmpty()) {
+        entries.push_back({TIFFTAG_DATETIMEORIGINAL, TIFF_ASCII,
+                           static_cast<uint32_t>(dateTimeValue.size()), dateTimeValue});
+        entries.push_back({TIFFTAG_DATETIMEDIGITIZED, TIFF_ASCII,
+                           static_cast<uint32_t>(dateTimeValue.size()), dateTimeValue});
+    }
+
+    const QByteArray exposureTimeValue = makeRationalValue(metadata.shutter, littleEndian);
+    if (!exposureTimeValue.isEmpty()) {
+        entries.push_back({TIFFTAG_EXPOSURETIME, TIFF_RATIONAL, 1, exposureTimeValue});
+    }
+
+    const QByteArray fNumberValue = makeRationalValue(metadata.aperture, littleEndian);
+    if (!fNumberValue.isEmpty()) {
+        entries.push_back({TIFFTAG_FNUMBER, TIFF_RATIONAL, 1, fNumberValue});
+    }
+
+    if (metadata.iso > 0 && metadata.iso <= 65535) {
+        entries.push_back({TIFFTAG_ISOSPEEDRATINGS, TIFF_SHORT, 1,
+                           makeShortValue(static_cast<uint16_t>(metadata.iso), littleEndian)});
+    }
+
+    const QByteArray focalLengthValue = makeRationalValue(metadata.focalLength, littleEndian);
+    if (!focalLengthValue.isEmpty()) {
+        entries.push_back({TIFFTAG_FOCALLENGTH, TIFF_RATIONAL, 1, focalLengthValue});
+    }
+
+    const QByteArray lensModelValue = makeAsciiValue(metadata.lensModel);
+    if (!lensModelValue.isEmpty()) {
+        entries.push_back({TIFFTAG_LENSMODEL, TIFF_ASCII,
+                           static_cast<uint32_t>(lensModelValue.size()), lensModelValue});
+    }
+
+    std::sort(entries.begin(),
+              entries.end(),
+              [](const ExifEntry &a, const ExifEntry &b) { return a.tag < b.tag; });
+
+    QByteArray exifIfd;
+    appendUint16(exifIfd, static_cast<uint16_t>(entries.size()), littleEndian);
+
+    QByteArray extraData;
+    const uint32_t exifIfdOffset = static_cast<uint32_t>(data.size());
+    const uint32_t baseDataOffset =
+        exifIfdOffset + 2 + static_cast<uint32_t>(entries.size()) * 12 + 4;
+    uint32_t nextDataOffset = baseDataOffset;
+
+    for (const ExifEntry &entry : entries) {
+        appendUint16(exifIfd, entry.tag, littleEndian);
+        appendUint16(exifIfd, entry.type, littleEndian);
+        appendUint32(exifIfd, entry.count, littleEndian);
+
+        if (entry.value.size() <= 4) {
+            QByteArray inlineValue = entry.value;
+            inlineValue.resize(4);
+            exifIfd.append(inlineValue);
+        } else {
+            appendUint32(exifIfd, nextDataOffset, littleEndian);
+            extraData.append(entry.value);
+            if (extraData.size() & 1) {
+                extraData.append('\0');
+            }
+            nextDataOffset = baseDataOffset + static_cast<uint32_t>(extraData.size());
+        }
+    }
+
+    appendUint32(exifIfd, 0, littleEndian);
+    exifIfd.append(extraData);
+
+    data.append(exifIfd);
+    writeUint32(data, exifValueFieldOffset, exifIfdOffset, littleEndian);
+
+    if (!file.resize(0)) {
+        if (error) {
+            *error = QStringLiteral("Could not resize DNG while patching EXIF metadata.");
+        }
+        return false;
+    }
+    file.seek(0);
+    if (file.write(data) != data.size()) {
+        if (error) {
+            *error = QStringLiteral("Could not write patched EXIF metadata to DNG.");
+        }
+        return false;
+    }
+    file.close();
+    logProcessing("EXIF directory patched at offset %" PRIu32, exifIfdOffset);
+    return true;
 }
 
 
@@ -394,6 +675,7 @@ bool writeDngWithLibTiff(const QString &outputPath,
     TIFFSetField(tif, TIFFTAG_COMPRESSION, (uint16_t)COMPRESSION_NONE);
     TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, (uint16_t)SAMPLEFORMAT_UINT);
     TIFFSetField(tif, TIFFTAG_ORIENTATION, (uint16_t)ORIENTATION_TOPLEFT);
+    TIFFSetField(tif, TIFFTAG_EXIFIFD, static_cast<uint32_t>(8));
 
     // 3. SCANLINE SIZE: Now that tags are set, LibTIFF can calculate this correctly
     scanlineSize = TIFFScanlineSize(tif);
@@ -508,6 +790,12 @@ bool writeDngWithLibTiff(const QString &outputPath,
         }
     }
 
+    if (!TIFFWriteDirectory(tif)) {
+        TIFFClose(tif);
+        error = QStringLiteral("Failed to finalize primary DNG directory.");
+        return false;
+    }
+
     if (!writeReducedPreviewDirectory(tif, metadata.embeddedThumbnail)) {
         TIFFClose(tif);
         error = QStringLiteral("Failed to write embedded preview image.");
@@ -515,6 +803,9 @@ bool writeDngWithLibTiff(const QString &outputPath,
     }
 
     TIFFClose(tif);
+    if (!patchExifDirectoryInPlace(outputPath, metadata, &error)) {
+        return false;
+    }
     logProcessing("DNG write completed: %s (%dx%d)", outputPath.toUtf8().constData(), width, height);
     return true;
 
@@ -563,6 +854,7 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
     TIFFSetField(tif, TIFFTAG_SAMPLEFORMAT, static_cast<uint16_t>(SAMPLEFORMAT_UINT));
     TIFFSetField(tif, TIFFTAG_ORIENTATION, static_cast<uint16_t>(ORIENTATION_TOPLEFT));
     TIFFSetField(tif, TIFFTAG_ROWSPERSTRIP, TIFFDefaultStripSize(tif, 0));
+    TIFFSetField(tif, TIFFTAG_EXIFIFD, static_cast<uint32_t>(8));
 
     if (!TIFFMergeFieldInfo(tif, dngFieldInfo, static_cast<uint32_t>(sizeof(dngFieldInfo) / sizeof(dngFieldInfo[0])))) {
         logProcessing("TIFFMergeFieldInfo returned 0 (tags already registered)");
@@ -593,6 +885,12 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
         }
     }
 
+    if (!TIFFWriteDirectory(tif)) {
+        TIFFClose(tif);
+        error = QStringLiteral("Failed to finalize primary DNG directory.");
+        return false;
+    }
+
     if (!writeReducedPreviewDirectory(tif, metadata.embeddedThumbnail)) {
         TIFFClose(tif);
         error = QStringLiteral("Failed to write embedded preview image.");
@@ -600,6 +898,9 @@ bool writeLinearDngWithLibTiff(const QString &outputPath,
     }
 
     TIFFClose(tif);
+    if (!patchExifDirectoryInPlace(outputPath, metadata, &error)) {
+        return false;
+    }
     logProcessing("Linear DNG write completed: %s (%dx%d)", outputPath.toUtf8().constData(), width, height);
     return true;
 }
