@@ -4,7 +4,7 @@ This document describes how to build SuperCCD2DNG for macOS on Apple Silicon (M1
 
 ## Requirements
 
-- **macOS 11.0 (Big Sur) or later** (required for Apple Silicon native support)
+- **macOS 26.0 or later** for the default Homebrew-linked build target
 - **CMake 3.16 or later**
 - **Qt 6.x** with Widgets module
 - **LibRaw** for reading Fujifilm RAF files
@@ -66,7 +66,7 @@ cmake .. \
     -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES=arm64 \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
     -DQt6_DIR="/opt/homebrew/opt/qt@6/lib/cmake/Qt6" \
     -DLIBRAW_ROOT="/opt/homebrew/opt/libraw" \
     -DTIFF_ROOT="/opt/homebrew/opt/libtiff"
@@ -121,7 +121,7 @@ cmake .. \
     -G "Unix Makefiles" \
     -DCMAKE_BUILD_TYPE=Release \
     -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64" \
-    -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+    -DCMAKE_OSX_DEPLOYMENT_TARGET=26.0 \
     -DQt6_DIR="/opt/homebrew/opt/qt@6/lib/cmake/Qt6"
 cmake --build . --config Release --parallel
 ```

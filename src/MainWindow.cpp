@@ -32,6 +32,8 @@
 #include <QSlider>
 #include <QSettings>
 #include <QSplitter>
+#include <QStyle>
+#include <QStyleOptionGroupBox>
 #include <QStringList>
 #include <QTimer>
 #include <QWheelEvent>
@@ -251,6 +253,23 @@ QString formatLensSummary(const SuperCCDMetadata &metadata)
         parts.append(metadata.lensModel.trimmed());
     }
     return parts.join(QStringLiteral("  "));
+}
+
+int collapsedGroupBoxHeight(const QGroupBox *groupBox)
+{
+    if (!groupBox) {
+        return 0;
+    }
+
+    QStyleOptionGroupBox option;
+    option.initFrom(groupBox);
+    option.text = groupBox->title();
+    option.lineWidth = groupBox->style()->pixelMetric(QStyle::PM_DefaultFrameWidth, &option, groupBox);
+    option.subControls = QStyle::SC_GroupBoxFrame | QStyle::SC_GroupBoxLabel | QStyle::SC_GroupBoxCheckBox;
+
+    const QSize collapsedSize =
+        groupBox->style()->sizeFromContents(QStyle::CT_GroupBox, &option, QSize(0, 0), groupBox);
+    return std::max(collapsedSize.height(), groupBox->fontMetrics().height() + 14);
 }
 
 QWidget *createFileListRow(const QString &displayName,
@@ -654,14 +673,8 @@ MainWindow::MainWindow(QWidget *parent)
     transitionLayout->addRow(transitionCurveLabel, m_transitionCurveWidget);
 
     // When the user toggles the Transition Settings group's checkbox, hide
-    // (or show) the group's children so it collapses vertically and stops
-    // taking up space when not needed. Persist the choice across sessions.
-    //
-    // QGroupBox's vertical size hint on macOS reserves space for the title
-    // plus the platform frame padding even after all child widgets are
-    // hidden, so we explicitly drive the geometry recomputation via
-    // updateGeometry() + invalidate()/activate() on the parent layout. This
-    // makes the group collapse to the title row instead of an empty box.
+    // (or show) the group's children and clamp the collapsed height so the
+    // title bar stays visible without leaving a large empty frame behind.
     auto setTransitionChildrenVisible = [transitionGroup](bool visible) {
         // Walk every item in the form layout (rows can contain either a
         // widget or a nested layout holding the actual widgets).
@@ -682,13 +695,12 @@ MainWindow::MainWindow(QWidget *parent)
         }
     };
 
-    connect(transitionGroup, &QGroupBox::toggled, this, [transitionGroup,
-                                                         setTransitionChildrenVisible](bool checked) {
-        appSettings().setValue(QStringLiteral("ui/transitionGroupExpanded"), checked);
-        setTransitionChildrenVisible(checked);
-        // Invalidate the group box's geometry so the parent layout recomputes
-        // its vertical extent. Without this, the previous size hint can be
-        // cached and the group keeps its old height on macOS.
+    auto updateTransitionGroupHeight = [transitionGroup](bool expanded) {
+        if (expanded) {
+            transitionGroup->setMaximumHeight(QWIDGETSIZE_MAX);
+        } else {
+            transitionGroup->setMaximumHeight(collapsedGroupBoxHeight(transitionGroup));
+        }
         transitionGroup->updateGeometry();
         if (QWidget *parent = transitionGroup->parentWidget()) {
             if (QLayout *parentLayout = parent->layout()) {
@@ -696,9 +708,17 @@ MainWindow::MainWindow(QWidget *parent)
                 parentLayout->activate();
             }
         }
+    };
+
+    connect(transitionGroup, &QGroupBox::toggled, this, [setTransitionChildrenVisible,
+                                                         updateTransitionGroupHeight](bool checked) {
+        appSettings().setValue(QStringLiteral("ui/transitionGroupExpanded"), checked);
+        setTransitionChildrenVisible(checked);
+        updateTransitionGroupHeight(checked);
     });
 
     // Apply the initial state (which may have been restored from settings).
+    updateTransitionGroupHeight(transitionGroup->isChecked());
     if (!transitionGroup->isChecked()) {
         setTransitionChildrenVisible(false);
     }

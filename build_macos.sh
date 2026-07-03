@@ -11,6 +11,7 @@ CMAKE_GENERATOR="Unix Makefiles"
 
 # Default to Release build
 BUILD_TYPE="${BUILD_TYPE:-Release}"
+MACOS_DEPLOYMENT_TARGET="${MACOS_DEPLOYMENT_TARGET:-26.0}"
 
 # Colors for output
 RED='\033[0;31m'
@@ -200,7 +201,7 @@ configure() {
         -G "$CMAKE_GENERATOR" \
         -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
         -DCMAKE_OSX_ARCHITECTURES="$arch" \
-        -DCMAKE_OSX_DEPLOYMENT_TARGET=11.0 \
+        -DCMAKE_OSX_DEPLOYMENT_TARGET="$MACOS_DEPLOYMENT_TARGET" \
         -DQt6_DIR="$Qt6_DIR" \
         -DLIBRAW_ROOT="$libraw_root" \
         -DLIBRAW_INCLUDE_DIR="$libraw_include_dir" \
@@ -274,7 +275,7 @@ package() {
     <key>CFBundleIconFile</key>
     <string>app_icon</string>
     <key>LSMinimumSystemVersion</key>
-    <string>11.0</string>
+    <string>${MACOS_DEPLOYMENT_TARGET}</string>
     <key>NSHighResolutionCapable</key>
     <true/>
     <key>NSPrincipalClass</key>

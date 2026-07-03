@@ -5,7 +5,8 @@
 set(CMAKE_OSX_ARCHITECTURES "arm64" CACHE STRING "Target architecture" FORCE)
 
 # Minimum macOS version for Apple Silicon
-set(CMAKE_OSX_DEPLOYMENT_TARGET "11.0" CACHE STRING "Minimum macOS version" FORCE)
+set(MACOS_DEPLOYMENT_TARGET "26.0" CACHE STRING "Minimum macOS version" FORCE)
+set(CMAKE_OSX_DEPLOYMENT_TARGET "${MACOS_DEPLOYMENT_TARGET}" CACHE STRING "Minimum macOS version" FORCE)
 
 # Use proper Apple Silicon SDK
 set(CMAKE_OSX_SYSROOT "" CACHE PATH "Sysroot" FORCE)
