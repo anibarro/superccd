@@ -224,6 +224,18 @@ if(BUILD_TESTING)
   target_link_libraries(amaze_demosaic_test PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
   add_test(NAME amaze_demosaic_test COMMAND amaze_demosaic_test)
 
+  add_executable(merge_start_test
+    src/tests/MergeStartTest.cpp
+  )
+  set_target_properties(merge_start_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(merge_start_test PRIVATE src)
+  target_link_libraries(merge_start_test PRIVATE Qt6::Core)
+  add_test(NAME merge_start_test COMMAND merge_start_test)
+
 endif()
 
 # Linux installation support

@@ -1254,42 +1254,52 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                 const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
                 double blendStart = 0.95;
                 double blendEnd = 1.02;
+                // blendScale fades the final blendT to 0 in the very
+                // last fraction of the Merge start slider (start in
+                // [0.9985, 1.0]). Without this, moving the slider from
+                // 99 to 100 is a binary jump from "all clipped pixels
+                // get R" to "no clipped pixels get R". With it, the
+                // amount of R blended into the brightest pixels
+                // gradually decreases from 100% (at start = 0.9985) to
+                // 0% (at start = 1.0).
+                double blendScale = 1.0;
                 if (!sDrivenHighlightsOnly) {
                     // Map the slider 0..1 onto a usable width 0..0.4.
                     // The 0.4 cap means even at the maximum the end of
                     // the transition is start + 0.4 (so start must be
                     // <= 0.6 for end to reach 1.0; otherwise end clamps
                     // at 1.0).
-                    //
-                    // The very last fraction of the Merge start slider
-                    // is a smooth fade-out zone: the width shrinks to
-                    // zero with a smoothstep curve, so start = 1.0
-                    // truly means "no merge at all" (pure S) while
-                    // start = 0.9985 keeps the full slider width. The
-                    // ceiling matches the slider's fine-control zone in
-                    // MainWindow.cpp so the slider has useful resolution
-                    // across the entire 80..100 range.
                     constexpr double kMergeStartFullWidthCeiling = 0.9985;
                     constexpr double kMaxWidth = 0.40;
-                    double widthDecay = 1.0;
                     if (start > kMergeStartFullWidthCeiling) {
                         const double u = (start - kMergeStartFullWidthCeiling)
                                          / (1.0 - kMergeStartFullWidthCeiling);
-                        // smoothstep: 0 at start=0.99, 1 at start=1.0
+                        // smoothstep: 0 at start=0.9985, 1 at start=1.0
                         const double smoothU = u * u * (3.0 - 2.0 * u);
-                        widthDecay = 1.0 - smoothU;
+                        blendScale = 1.0 - smoothU;
                     }
-                    const double width = kMaxWidth * delayWidth * widthDecay;
-                    if (width < 1e-6) {
-                        // Defensive: a 0 width here means "no merge
-                        // at all" -> pure S for every pixel.
+                    if (blendScale < 1e-6) {
+                        // Defensive: a 0 scale means "no merge at all"
+                        // -> pure S for every pixel.
                         blendStart = 1.0;
                         blendEnd = 1.0;
                     } else {
-                        // Clamp blendStart slightly below 1.0 so the
-                        // window always has a positive width.
-                        blendStart = std::clamp(start, 0.0, 0.999);
-                        blendEnd = std::clamp(blendStart + width, blendStart + 0.002, 1.0);
+                        const double width = kMaxWidth * delayWidth;
+                        // Clamp blendStart to [0, 1.0). Then the window
+                        // is [blendStart, min(1.0, blendStart + width)].
+                        // We never use std::clamp with lo > hi here, so
+                        // the result is always well-defined and blendEnd
+                        // is always <= 1.0 (so the blend reaches 1.0 at
+                        // S=1.0, i.e. clipped highlights become pure R).
+                        blendStart = std::clamp(start, 0.0, 1.0);
+                        const double requestedEnd = blendStart + width;
+                        blendEnd = std::min(requestedEnd, 1.0);
+                        // Ensure a tiny minimum window so the math is
+                        // stable (avoid div-by-zero on blendEnd - blendStart).
+                        if (blendEnd - blendStart < 1e-6) {
+                            blendStart = 1.0;
+                            blendEnd = 1.0;
+                        }
                     }
                 }
 
@@ -1301,11 +1311,18 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                 }
 
                 if (normalizedS >= blendEnd) {
+                    // Apply the fade-out scale here too: in the very
+                    // last fraction of the Merge start slider the R
+                    // contribution is gradually reduced to 0, so the
+                    // transition from "full R recovery" to "no R at
+                    // all" is smooth.
+                    const double rBlend = scaledR * blendScale
+                                          + scaledS * (1.0 - blendScale);
                     merged[i] = static_cast<uint16_t>(
-                        std::clamp<int>(static_cast<int>(scaledR + 0.5), 0, 65535));
-                    desired[i] = scaledR;
+                        std::clamp<int>(static_cast<int>(rBlend + 0.5), 0, 65535));
+                    desired[i] = rBlend;
                     localReplacedCount++;
-                    localMaxDesired = std::max(localMaxDesired, scaledR);
+                    localMaxDesired = std::max(localMaxDesired, rBlend);
                     continue;
                 }
 
@@ -1317,9 +1334,15 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                 // line), smoothness=1 -> k~exp(2.0)~7.4 (sharp ~90deg).
                 constexpr double kEaseInGamma = 2.0;
                 const double easeInT = std::pow(std::max(t, 0.0), std::exp(kEaseInGamma * smoothness));
-                const double blendT = sDrivenHighlightsOnly
+                const double baseBlendT = sDrivenHighlightsOnly
                                         ? smoothT
                                         : easeInT;
+                // Apply the fade-out scale: in the very last fraction
+                // of the Merge start slider (start in [0.9985, 1.0])
+                // the blend is gradually reduced to 0, so the
+                // transition from "full R recovery" to "no R at all"
+                // is smooth instead of a binary jump.
+                const double blendT = baseBlendT * blendScale;
                 const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
                 desired[i] = mergedValue;
                 merged[i] = static_cast<uint16_t>(

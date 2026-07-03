@@ -18,37 +18,43 @@ double blendTAt(double normalizedS, double start, double delay, double smoothnes
     const double delayClamped = std::clamp(delay, 0.0, 1.0);
     const double smoothnessClamped = std::clamp(smoothness, 0.0, 1.0);
 
-    // blendStart / blendEnd derived from the slider parameters.
-    // Mirrors the logic in SuperCCDProcessor.cpp so the graph matches
-    // the actual conversion behavior. The ceiling matches the
-    // slider's fine-control zone in MainWindow.cpp.
+    // blendStart / blendEnd and blendScale mirror the logic in
+    // SuperCCDProcessor.cpp so the graph matches the actual
+    // conversion behavior. The ceiling matches the slider's
+    // fine-control zone in MainWindow.cpp.
     constexpr double kMergeStartFullWidthCeiling = 0.9985;
     constexpr double kMaxWidth = 0.40;
-    double widthDecay = 1.0;
+    double blendScale = 1.0;
     if (startClamped > kMergeStartFullWidthCeiling) {
         const double u = (startClamped - kMergeStartFullWidthCeiling)
                          / (1.0 - kMergeStartFullWidthCeiling);
         const double s = u * u * (3.0 - 2.0 * u);
-        widthDecay = 1.0 - s;
+        blendScale = 1.0 - s;
     }
-    const double width = kMaxWidth * delayClamped * widthDecay;
     double blendStart;
     double blendEnd;
-    if (width < 1e-6) {
-        // Defensive: a 0 width here means "no merge at all" -> curve
+    if (blendScale < 1e-6) {
+        // Defensive: a 0 scale means "no merge at all" -> curve
         // stays at 0 across the whole S range.
         blendStart = 1.0;
         blendEnd = 1.0;
     } else {
-        blendStart = std::clamp(startClamped, 0.0, 0.999);
-        blendEnd = std::clamp(blendStart + width, blendStart + 0.002, 1.0);
+        const double width = kMaxWidth * delayClamped;
+        // Clamp blendStart to [0, 1.0) and cap blendEnd at 1.0 without
+        // using std::clamp with lo > hi.
+        blendStart = std::clamp(startClamped, 0.0, 1.0);
+        blendEnd = std::min(blendStart + width, 1.0);
+        if (blendEnd - blendStart < 1e-6) {
+            blendStart = 1.0;
+            blendEnd = 1.0;
+        }
     }
 
     if (normalizedS <= blendStart) {
         return 0.0;
     }
     if (normalizedS >= blendEnd) {
-        return 1.0;
+        return blendScale;
     }
 
     const double t = (normalizedS - blendStart) / (blendEnd - blendStart);
@@ -56,7 +62,9 @@ double blendTAt(double normalizedS, double start, double delay, double smoothnes
     // k = exp(GAMMA * smoothness). smoothness=0 -> k=1 (straight line),
     // smoothness=1 -> k~exp(2.0)~7.4 (sharp ~90deg).
     constexpr double kEaseInGamma = 2.0;
-    return std::pow(std::max(t, 0.0), std::exp(kEaseInGamma * smoothnessClamped));
+    const double baseBlendT = std::pow(std::max(t, 0.0),
+                                       std::exp(kEaseInGamma * smoothnessClamped));
+    return baseBlendT * blendScale;
 }
 } // namespace
 
