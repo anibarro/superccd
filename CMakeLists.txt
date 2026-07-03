@@ -82,6 +82,7 @@ set(SOURCES
     src/PreviewImageProcessing.cpp
     src/PreviewColorNormalization.cpp
     src/PreviewPixelCorrection.cpp
+    src/TransitionCurveWidget.cpp
     src/CfaPlaneAlignment.cpp
     src/SuperCCDProcessor.cpp
     src/DngWriter.cpp

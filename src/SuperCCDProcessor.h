@@ -23,7 +23,13 @@ struct ConversionSettings {
     int previewMaxSize = 960;
     int previewRotation = 0;
     double rHeadroomScale = 1.0;
-    double rTransitionDelay = 0.0;
+    // S-brightness at which the S->R merge starts, in normalized S (0..1).
+    // Pixels darker than this are pure S.
+    double rTransitionStart = 0.75;
+    // Width of the S->R transition in normalized S units (0..~0.4). The
+    // end of the merge (blendEnd) is clamp(blendStart + width, 0, 1.0) so
+    // the slider stays meaningful across its full range.
+    double rTransitionDelay = 0.20;
     double rTransitionSmoothness = 0.65;
     double linearChromaSuppression = 1.0;
     bool correctPreviewOutliers = false;

@@ -1174,6 +1174,7 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                                        int width,
                                        int height,
                                        double rHeadroomScale,
+                                       double rTransitionStart,
                                        double rTransitionDelay,
                                        double rTransitionSmoothness,
                                        bool sDrivenHighlightsOnly,
@@ -1245,15 +1246,51 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                 } else {
                     scaledR = static_cast<double>(rProjected) * gains[channel];
                 }
-                const double delay = std::clamp(rTransitionDelay, 0.0, 1.0);
+                const double start = std::clamp(rTransitionStart, 0.0, 1.0);
+                // "Delay" is now the width of the S->R transition in
+                // normalized S units. Cap it so the end never leaves the
+                // valid [0, 1] S-brightness range.
+                const double delayWidth = std::clamp(rTransitionDelay, 0.0, 1.0);
                 const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
                 double blendStart = 0.95;
                 double blendEnd = 1.02;
                 if (!sDrivenHighlightsOnly) {
-                    const double shoulderEnd = 0.90 + 0.14 * delay;
-                    const double shoulderWidth = 0.10 + 0.44 * smoothness;
-                    blendEnd = std::clamp(shoulderEnd, 0.75, 1.05);
-                    blendStart = std::clamp(blendEnd - shoulderWidth, 0.0, blendEnd - 0.002);
+                    // Map the slider 0..1 onto a usable width 0..0.4.
+                    // The 0.4 cap means even at the maximum the end of
+                    // the transition is start + 0.4 (so start must be
+                    // <= 0.6 for end to reach 1.0; otherwise end clamps
+                    // at 1.0).
+                    //
+                    // The very last fraction of the Merge start slider
+                    // is a smooth fade-out zone: the width shrinks to
+                    // zero with a smoothstep curve, so start = 1.0
+                    // truly means "no merge at all" (pure S) while
+                    // start = 0.9985 keeps the full slider width. The
+                    // ceiling matches the slider's fine-control zone in
+                    // MainWindow.cpp so the slider has useful resolution
+                    // across the entire 80..100 range.
+                    constexpr double kMergeStartFullWidthCeiling = 0.9985;
+                    constexpr double kMaxWidth = 0.40;
+                    double widthDecay = 1.0;
+                    if (start > kMergeStartFullWidthCeiling) {
+                        const double u = (start - kMergeStartFullWidthCeiling)
+                                         / (1.0 - kMergeStartFullWidthCeiling);
+                        // smoothstep: 0 at start=0.99, 1 at start=1.0
+                        const double smoothU = u * u * (3.0 - 2.0 * u);
+                        widthDecay = 1.0 - smoothU;
+                    }
+                    const double width = kMaxWidth * delayWidth * widthDecay;
+                    if (width < 1e-6) {
+                        // Defensive: a 0 width here means "no merge
+                        // at all" -> pure S for every pixel.
+                        blendStart = 1.0;
+                        blendEnd = 1.0;
+                    } else {
+                        // Clamp blendStart slightly below 1.0 so the
+                        // window always has a positive width.
+                        blendStart = std::clamp(start, 0.0, 0.999);
+                        blendEnd = std::clamp(blendStart + width, blendStart + 0.002, 1.0);
+                    }
                 }
 
                 if (normalizedS <= blendStart) {
@@ -1273,16 +1310,16 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                 }
 
                 const double t = (normalizedS - blendStart) / (blendEnd - blendStart);
-                const double delayHold = sDrivenHighlightsOnly ? 0.0 : (0.75 * delay);
-                const double delayedT = (t <= delayHold)
-                                          ? 0.0
-                                          : ((t - delayHold) / std::max(1e-6, 1.0 - delayHold));
-                const double smoothT = delayedT * delayedT * (3.0 - 2.0 * delayedT);
-                const double earlyT = std::pow(delayedT, 0.60);
+                // t == 0 at the merge start, t == 1 at the R-only end.
+                const double smoothT = t * t * (3.0 - 2.0 * t);
+                // Ease-in / exponential shape: blendT = t ^ k, with
+                // k = exp(GAMMA * smoothness). smoothness=0 -> k=1 (straight
+                // line), smoothness=1 -> k~exp(2.0)~7.4 (sharp ~90deg).
+                constexpr double kEaseInGamma = 2.0;
+                const double easeInT = std::pow(std::max(t, 0.0), std::exp(kEaseInGamma * smoothness));
                 const double blendT = sDrivenHighlightsOnly
                                         ? smoothT
-                                        : ((1.0 - smoothness) * delayedT
-                                           + smoothness * (0.35 * smoothT + 0.65 * earlyT));
+                                        : easeInT;
                 const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
                 desired[i] = mergedValue;
                 merged[i] = static_cast<uint16_t>(
@@ -1324,9 +1361,10 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
         *appliedOutputScale = outputScale;
     }
 
-    logLabel = QStringLiteral("%1userScale=%2 delay=%3 smoothness=%4 maxDesired=%5 outputScale=%6 highlightsOnly=%7 blended=%8 replaced=%9")
+    logLabel = QStringLiteral("%1userScale=%2 start=%3 width=%4 smoothness=%5 maxDesired=%6 outputScale=%7 highlightsOnly=%8 blended=%9 replaced=%10")
                    .arg(gainSummary)
                    .arg(rHeadroomScale, 0, 'f', 3)
+                   .arg(rTransitionStart, 0, 'f', 3)
                    .arg(rTransitionDelay, 0, 'f', 3)
                    .arg(rTransitionSmoothness, 0, 'f', 3)
                    .arg(maxDesired, 0, 'f', 2)
@@ -3483,6 +3521,7 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                                      m_cfaPreviewCache.width,
                                      m_cfaPreviewCache.height,
                                      settings.rHeadroomScale,
+                                     settings.rTransitionStart,
                                      settings.rTransitionDelay,
                                      settings.rTransitionSmoothness,
                                      false,
@@ -3618,6 +3657,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       m_cfaPreviewCache.width,
                                       m_cfaPreviewCache.height,
                                       settings.rHeadroomScale,
+                                      settings.rTransitionStart,
                                       settings.rTransitionDelay,
                                       settings.rTransitionSmoothness,
                                       false,

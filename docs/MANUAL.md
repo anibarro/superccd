@@ -202,23 +202,56 @@ You can drag RAF files directly onto the file list to add them. The application 
 
 These controls affect the exported `6MP Raw CFA` result.
 
-### R handoff delay
+### Merge start
 
-Moves the point where `R` starts taking over later in highlights.
+The `S` brightness (as a percentage of the channel white point) at which the
+`S -> R` merge begins. Pixels darker than this are kept as pure `S`.
 
 Use it when:
 
-- `R` is too noisy at high ISO
-- you want to let `S` clip a little more before handing off
+- you want to push the merge later (higher value) so `S` is preserved
+  longer into the highlights
+- you want to bring `R` in earlier (lower value) to recover highlights sooner
 
-### R transition smoothness
+The slider range is 0 to 100, but it is **non-linear**: positions 0..80
+map linearly to start = 0..0.9985, and positions 80..100 use a smoothstep
+curve that lets you reach start = 1.0 (no merge at all, pure `S`) with
+fine control. The last 20% of the slider travel covers the last 0.15% of
+S brightness — this is the range where the most useful fine-tuning lives,
+because in practice the merge window either covers the clipped highlights
+or it doesn't, and the meaningful change is concentrated in a very thin
+slice at the top of the brightness range.
 
-Controls how wide and gradual the `S -> R` transition is.
+### Transition width
+
+The width of the `S -> R` transition in `S` brightness units.
+
+Use it when:
+
+- `R` is too noisy at high ISO and you want a shorter, sharper handoff
+- you want a longer, gentler blend between `S` and `R`
+
+The slider range is 1 to 100. 1 is the narrowest transition the UI allows
+(a small but non-zero blend region, so the merge curve is always visible
+in the graph). 100 is the widest transition the algorithm allows. The end
+of the transition is always clamped to stay within the valid `S` brightness
+range, so the slider stays meaningful across its full range.
+
+The transition width and the merge start work together smoothly. As the
+merge start approaches 100% the window simply narrows toward the top of
+the S brightness range; there is no abrupt cutoff.
+
+### Smoothness
+
+Eases the shape of the merge inside the transition width.
 
 Use it when:
 
 - the highlight transition looks too abrupt
 - you want a more natural rolloff
+
+0 produces a straight line. 100 produces a sharp exponential ramp that
+approaches a 90 degree shoulder (ease-in shape).
 
 The current defaults are intentionally tuned around a stable working result. Do not expect them to behave like generic HDR sliders.
 
@@ -249,8 +282,9 @@ Stores the current GUI values with `QSettings` so they load next time.
 
 Saved values include:
 
-- `R handoff delay`
-- `R transition smoothness`
+- `Merge start`
+- `Transition width`
+- `Smoothness`
 - preview exposure
 - preview white balance
 - preview tint
@@ -394,10 +428,19 @@ To display the installed program version without opening the GUI, use:
 
 The short form `superccd2dng.exe -v` is also supported.
 
-### What does the R handoff delay do?
+### What does the Merge start do?
 
-This controls where in the highlight range the R (shadow) sensor starts being blended with the S (highlight) sensor. Higher values let S clip more before R takes over. Lower values bring R in earlier.
+This controls the S brightness at which the R (shadow) sensor starts being
+blended with the S (highlight) sensor. Higher values let S clip more
+before R takes over. Lower values bring R in earlier.
 
-### What does the R transition smoothness do?
+### What does the Transition width do?
+
+This controls how wide the S to R transition is, measured in S brightness
+units. The slider has a minimum of 1 so there is always a real (if narrow)
+merge region; the end of the transition is always clamped to stay within
+the valid S brightness range.
+
+### What does the Smoothness do?
 
 This controls how gradual the S to R transition is. Higher values create a smoother, more gradual blend. Lower values create a sharper transition.

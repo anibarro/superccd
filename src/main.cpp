@@ -202,8 +202,12 @@ int main(int argc, char *argv[])
                 settings.exportMode = ExportMode::Linear12MPExperimental;
             } else if (std::strncmp(argv[i], "--linear-chroma=", 16) == 0) {
                 settings.linearChromaSuppression = std::clamp(std::atof(argv[i] + 16), 0.0, 1.0);
+            } else if (std::strncmp(argv[i], "--start=", 8) == 0) {
+                settings.rTransitionStart = std::clamp(std::atof(argv[i] + 8), 0.0, 1.0);
             } else if (std::strncmp(argv[i], "--delay=", 8) == 0) {
-                settings.rTransitionDelay = std::clamp(std::atof(argv[i] + 8), 0.0, 1.0);
+                // Minimum 0.01 keeps the merge curve visible (the UI
+                // slider enforces the same minimum).
+                settings.rTransitionDelay = std::clamp(std::atof(argv[i] + 8), 0.01, 1.0);
             } else if (std::strncmp(argv[i], "--smoothness=", 12) == 0) {
                 settings.rTransitionSmoothness = std::clamp(std::atof(argv[i] + 12), 0.0, 1.0);
             }

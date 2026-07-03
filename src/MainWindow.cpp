@@ -3,6 +3,7 @@
 #include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
 #include "PreviewPixelCorrection.h"
+#include "TransitionCurveWidget.h"
 
 #include <QAction>
 #include <QBoxLayout>
@@ -51,6 +52,11 @@
 namespace {
 constexpr int kDefaultDelaySliderValue = 50;
 constexpr int kDefaultSmoothnessSliderValue = 50;
+// Default slider position for Merge start. The slider is non-linear:
+// 0..80 maps linearly to start=0..0.99 and 80..100 is a smoothstep
+// from 0.99 to 1.0. Position 60 corresponds to start ~= 0.7425, so
+// the visible default is roughly the original 75% behavior.
+constexpr int kDefaultStartSliderValue = 60;
 constexpr int kDefaultPreviewExposureSliderValue = 0;
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
@@ -75,6 +81,60 @@ enum class PreviewExportFormat {
     Jpeg = 0,
     Tiff16 = 1
 };
+
+// --- Merge start slider mapping -------------------------------------------
+// The Merge start slider (0..100) is a non-linear control over the actual
+// S-brightness start (0..1): the first 80% of the slider is linear
+// (0..0.9985) and the last 20% is a smoothstep that lets the user reach
+// pure S (start = 1.0) with fine control. The fine zone is intentionally
+// narrow because the useful adjustments live in the very top fraction of
+// the S brightness range -- in practice the difference between start =
+// 0.99 and start = 1.0 is far too coarse to be useful on a 100-step
+// slider, so the linear zone is pushed almost all the way to 1.0 and the
+// fine zone covers only the last 0.15%.
+namespace {
+constexpr double kMergeStartSliderLinearCeiling = 80.0;
+constexpr double kMergeStartLinearMax = 0.9985;
+
+double mergeStartFromSlider(int sliderValue)
+{
+    const double s = std::clamp(static_cast<double>(sliderValue), 0.0, 100.0);
+    if (s <= kMergeStartSliderLinearCeiling) {
+        return s * (kMergeStartLinearMax / kMergeStartSliderLinearCeiling);
+    }
+    const double u = (s - kMergeStartSliderLinearCeiling)
+                     / (100.0 - kMergeStartSliderLinearCeiling);
+    return kMergeStartLinearMax + (1.0 - kMergeStartLinearMax) * (u * u * (3.0 - 2.0 * u));
+}
+
+int sliderFromMergeStart(double start)
+{
+    const double st = std::clamp(start, 0.0, 1.0);
+    if (st <= kMergeStartLinearMax) {
+        return static_cast<int>(std::lround(
+            st * (kMergeStartSliderLinearCeiling / kMergeStartLinearMax)));
+    }
+    // Invert the smoothstep on the last 20%: solve 3u^2 - 2u^3 = s
+    // (where s = (start - 0.99) / 0.01) using Newton's method.
+    const double s = (st - kMergeStartLinearMax) / (1.0 - kMergeStartLinearMax);
+    double u = 0.5;
+    for (int i = 0; i < 50; ++i) {
+        const double f = 3.0 * u * u - 2.0 * u * u * u - s;
+        const double fp = 6.0 * u - 6.0 * u * u;
+        if (std::abs(fp) < 1e-12) {
+            break;
+        }
+        const double next = u - f / fp;
+        u = std::clamp(next, 0.0, 1.0);
+        if (std::abs(next - u) < 1e-9) {
+            break;
+        }
+    }
+    const double slider = kMergeStartSliderLinearCeiling
+                          + (100.0 - kMergeStartSliderLinearCeiling) * u;
+    return static_cast<int>(std::lround(std::clamp(slider, 0.0, 100.0)));
+}
+} // namespace
 
 double shadowRangeMask(double linear, double shadowRange)
 {
@@ -290,6 +350,7 @@ MainWindow::MainWindow(QWidget *parent)
     : QMainWindow(parent)
     , m_fileList(new QListWidget(this))
     , m_outputFolder(new QLineEdit(this))
+    , m_rTransitionStartSlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionDelaySlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionSmoothnessSlider(new QSlider(Qt::Horizontal, this))
     , m_previewZoomSlider(new QSlider(Qt::Horizontal, this))
@@ -327,8 +388,10 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
     , m_previewSharpeningTimer(new QTimer(this))
+    , m_rTransitionStartSpinBox(new QSpinBox(this))
     , m_rTransitionDelaySpinBox(new QSpinBox(this))
     , m_rTransitionSmoothnessSpinBox(new QSpinBox(this))
+    , m_transitionCurveWidget(new TransitionCurveWidget(this))
     , m_previewZoomSpinBox(new QSpinBox(this))
     , m_previewExposureSpinBox(new QDoubleSpinBox(this))
     , m_previewWhiteBalanceSpinBox(new QSpinBox(this))
@@ -361,11 +424,28 @@ MainWindow::MainWindow(QWidget *parent)
     QLabel *warmupNoteLabel = new QLabel(
         tr("Note: the first preview or conversion for a RAF file is slower because the app has to decode and cache the raw data."),
         this);
-
-    m_rTransitionDelaySlider->setRange(0, 100);
+    m_rTransitionStartSlider->setRange(0, 100);
+    m_rTransitionStartSlider->setValue(kDefaultStartSliderValue);
+    m_rTransitionStartSlider->setToolTip(
+        tr("S brightness (as a percentage of the channel white point) at which the S->R merge begins. "
+           "Pixels darker than this are pure S.\n\n"
+           "The slider is non-linear: 0..80 maps to start=0..0.9985 linearly, "
+           "and 80..100 is a smoothstep that lets you reach start=1.0 (pure S, no R detail) "
+           "with fine control. Position 100 means no merge at all."));
+    // Transition width slider minimum is 1 (not 0) so the merge curve
+    // is always visible and there's always a real transition region.
+    m_rTransitionDelaySlider->setRange(1, 100);
     m_rTransitionDelaySlider->setValue(kDefaultDelaySliderValue);
+    m_rTransitionDelaySlider->setToolTip(
+        tr("Width of the S->R transition in S-brightness units. 1 = the narrowest "
+           "transition the UI allows, 100 = the widest transition the algorithm "
+           "allows (0.40 of the S range). The end of the transition is clamped so "
+           "it never exceeds the maximum S brightness."));
     m_rTransitionSmoothnessSlider->setRange(0, 100);
     m_rTransitionSmoothnessSlider->setValue(kDefaultSmoothnessSliderValue);
+    m_rTransitionSmoothnessSlider->setToolTip(
+        tr("Eases the shape of the merge: 0 = a straight line, 100 = a sharp "
+           "exponential ramp that approaches a 90 degree shoulder."));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
     m_previewExposureSlider->setRange(-30, 40);
@@ -448,8 +528,18 @@ MainWindow::MainWindow(QWidget *parent)
     warmupNoteLabel->setStyleSheet(QStringLiteral("color:#808080;"));
 
     // Configure spinboxes to work with sliders
-    // Delay spinbox: 0 to 100 (represents 0.00 to 1.00)
-    m_rTransitionDelaySpinBox->setRange(0, 100);
+    // Start spinbox: 0 to 100 (slider position, NOT the actual start
+    // value: the slider is non-linear, see slider tooltip for details).
+    m_rTransitionStartSpinBox->setRange(0, 100);
+    m_rTransitionStartSpinBox->setValue(kDefaultStartSliderValue);
+    m_rTransitionStartSpinBox->setSingleStep(1);
+    m_rTransitionStartSpinBox->setSuffix(QStringLiteral("%"));
+    m_rTransitionStartSpinBox->setToolTip(
+        tr("Slider position (0-100), not the actual S brightness. "
+           "The mapping is non-linear: 0..80 = start 0..0.9985, "
+           "80..100 = start 0.9985..1.0 (smoothstep)."));
+    // Delay spinbox: 1 to 100 (matches the slider minimum)
+    m_rTransitionDelaySpinBox->setRange(1, 100);
     m_rTransitionDelaySpinBox->setValue(kDefaultDelaySliderValue);
     m_rTransitionDelaySpinBox->setSingleStep(1);
     
@@ -537,16 +627,27 @@ MainWindow::MainWindow(QWidget *parent)
     // Transition controls group box
     QGroupBox *transitionGroup = new QGroupBox(tr("Transition Settings"), this);
     QFormLayout *transitionLayout = new QFormLayout(transitionGroup);
-    
+
+    QHBoxLayout *startLayout = new QHBoxLayout;
+    startLayout->addWidget(m_rTransitionStartSlider, 1);
+    startLayout->addWidget(m_rTransitionStartSpinBox, 0);
+    transitionLayout->addRow(tr("Merge start:"), startLayout);
+
     QHBoxLayout *delayLayout = new QHBoxLayout;
     delayLayout->addWidget(m_rTransitionDelaySlider, 1);
     delayLayout->addWidget(m_rTransitionDelaySpinBox, 0);
-    transitionLayout->addRow(tr("Handoff delay:"), delayLayout);
-    
+    transitionLayout->addRow(tr("Transition width:"), delayLayout);
+
     QHBoxLayout *smoothnessLayout = new QHBoxLayout;
     smoothnessLayout->addWidget(m_rTransitionSmoothnessSlider, 1);
     smoothnessLayout->addWidget(m_rTransitionSmoothnessSpinBox, 0);
     transitionLayout->addRow(tr("Smoothness:"), smoothnessLayout);
+
+    // Visual representation of the S->R merging curve. It updates live as
+    // the user drags the Merge start / Transition width / Smoothness
+    // sliders above.
+    QLabel *transitionCurveLabel = new QLabel(tr("Merge curve:"), this);
+    transitionLayout->addRow(transitionCurveLabel, m_transitionCurveWidget);
 
     // Preview controls group box (wrapped in scrollable area)
     QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
@@ -699,12 +800,43 @@ MainWindow::MainWindow(QWidget *parent)
             &QTimer::timeout,
             this,
             &MainWindow::updateSharpenedPreviewDisplay);
-    connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int) {
+    // The preview is expensive to render, so only queue an auto-preview
+    // update once the user has finished dragging the slider. The curve
+    // widget and the spinbox still update live via the valueChanged
+    // connections below.
+    connect(m_rTransitionStartSlider, &QSlider::sliderReleased, this, [this]() {
         queueAutoPreview();
+    });
+    connect(m_rTransitionDelaySlider, &QSlider::sliderReleased, this, [this]() {
+        queueAutoPreview();
+    });
+    connect(m_rTransitionSmoothnessSlider, &QSlider::sliderReleased, this, [this]() {
+        queueAutoPreview();
+    });
+    // Keep the visual merge curve in sync with the sliders.
+    connect(m_rTransitionStartSlider, &QSlider::valueChanged, this, [this](int) {
+        m_transitionCurveWidget->setParameters(
+            mergeStartFromSlider(m_rTransitionStartSlider->value()),
+            m_rTransitionDelaySlider->value() / 100.0,
+            m_rTransitionSmoothnessSlider->value() / 100.0);
+    });
+    connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int) {
+        m_transitionCurveWidget->setParameters(
+            mergeStartFromSlider(m_rTransitionStartSlider->value()),
+            m_rTransitionDelaySlider->value() / 100.0,
+            m_rTransitionSmoothnessSlider->value() / 100.0);
     });
     connect(m_rTransitionSmoothnessSlider, &QSlider::valueChanged, this, [this](int) {
-        queueAutoPreview();
+        m_transitionCurveWidget->setParameters(
+            mergeStartFromSlider(m_rTransitionStartSlider->value()),
+            m_rTransitionDelaySlider->value() / 100.0,
+            m_rTransitionSmoothnessSlider->value() / 100.0);
     });
+    // Prime the curve with the initial slider values.
+    m_transitionCurveWidget->setParameters(
+        mergeStartFromSlider(m_rTransitionStartSlider->value()),
+        m_rTransitionDelaySlider->value() / 100.0,
+        m_rTransitionSmoothnessSlider->value() / 100.0);
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewZoomChanged);
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
@@ -744,6 +876,9 @@ MainWindow::MainWindow(QWidget *parent)
 
     // Bidirectional connections between spinboxes and sliders
     // When slider changes, update spinbox
+    connect(m_rTransitionStartSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_rTransitionStartSpinBox->setValue(value);
+    });
     connect(m_rTransitionDelaySlider, &QSlider::valueChanged, this, [this](int value) {
         m_rTransitionDelaySpinBox->setValue(value);
     });
@@ -785,6 +920,12 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     // When spinbox changes, update slider (no auto preview for preview adjustments)
+    connect(m_rTransitionStartSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_rTransitionStartSlider->value() != value) {
+            m_rTransitionStartSlider->setValue(value);
+            queueAutoPreview();
+        }
+    });
     connect(m_rTransitionDelaySpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         if (m_rTransitionDelaySlider->value() != value) {
             m_rTransitionDelaySlider->setValue(value);
@@ -1559,6 +1700,8 @@ void MainWindow::updateControls(bool busy)
 {
     m_fileList->setEnabled(!busy);
     m_outputFolder->setEnabled(!busy);
+    m_rTransitionStartSlider->setEnabled(!busy);
+    m_rTransitionStartSpinBox->setEnabled(!busy);
     m_rTransitionDelaySlider->setEnabled(!busy);
     m_rTransitionDelaySpinBox->setEnabled(!busy);
     m_rTransitionSmoothnessSlider->setEnabled(!busy);
@@ -1848,29 +1991,38 @@ bool MainWindow::hasCurrentPreview() const
 
 void MainWindow::applyParameterSettings(const ConversionSettings &settings)
 {
+    const bool oldStartSignals = m_rTransitionStartSlider->blockSignals(true);
     const bool oldDelaySignals = m_rTransitionDelaySlider->blockSignals(true);
     const bool oldSmoothnessSignals = m_rTransitionSmoothnessSlider->blockSignals(true);
+    const bool oldStartSpinSignals = m_rTransitionStartSpinBox->blockSignals(true);
     const bool oldDelaySpinSignals = m_rTransitionDelaySpinBox->blockSignals(true);
     const bool oldSmoothnessSpinSignals =
         m_rTransitionSmoothnessSpinBox->blockSignals(true);
     const bool oldCorrectionSignals =
         m_correctPreviewOutliersCheckBox->blockSignals(true);
+    // Map the actual start (0..1) back to the slider position so the
+    // non-linear control is reflected when loading saved settings.
+    const int startValue = sliderFromMergeStart(settings.rTransitionStart);
     const int delayValue =
         std::clamp(static_cast<int>(settings.rTransitionDelay * 100.0 + 0.5),
-                   0,
+                   1,  // minimum 1: never collapse the merge window
                    100);
     const int smoothnessValue =
         std::clamp(static_cast<int>(settings.rTransitionSmoothness * 100.0 + 0.5),
                    0,
                    100);
+    m_rTransitionStartSlider->setValue(startValue);
+    m_rTransitionStartSpinBox->setValue(startValue);
     m_rTransitionDelaySlider->setValue(delayValue);
     m_rTransitionDelaySpinBox->setValue(delayValue);
     m_rTransitionSmoothnessSlider->setValue(smoothnessValue);
     m_rTransitionSmoothnessSpinBox->setValue(smoothnessValue);
     m_correctPreviewOutliersCheckBox->setChecked(
         settings.correctPreviewOutliers);
+    m_rTransitionStartSlider->blockSignals(oldStartSignals);
     m_rTransitionDelaySlider->blockSignals(oldDelaySignals);
     m_rTransitionSmoothnessSlider->blockSignals(oldSmoothnessSignals);
+    m_rTransitionStartSpinBox->blockSignals(oldStartSpinSignals);
     m_rTransitionDelaySpinBox->blockSignals(oldDelaySpinSignals);
     m_rTransitionSmoothnessSpinBox->blockSignals(oldSmoothnessSpinSignals);
     m_correctPreviewOutliersCheckBox->blockSignals(oldCorrectionSignals);
@@ -1881,6 +2033,7 @@ void MainWindow::loadSavedDefaults()
     QSettings settingsStore = appSettings();
     ConversionSettings defaults;
     defaults.exportMode = ExportMode::RawCfa6MP;
+    defaults.rTransitionStart = settingsStore.value(QStringLiteral("defaults/rTransitionStart"), 0.75).toDouble();
     defaults.rTransitionDelay = settingsStore.value(QStringLiteral("defaults/rTransitionDelay"), 0.5).toDouble();
     defaults.rTransitionSmoothness = settingsStore.value(QStringLiteral("defaults/rTransitionSmoothness"), 0.5).toDouble();
     defaults.correctPreviewOutliers =
@@ -1966,6 +2119,7 @@ void MainWindow::saveCurrentDefaults() const
 {
     QSettings settingsStore = appSettings();
     const ConversionSettings settings = currentSettings();
+    settingsStore.setValue(QStringLiteral("defaults/rTransitionStart"), settings.rTransitionStart);
     settingsStore.setValue(QStringLiteral("defaults/rTransitionDelay"), settings.rTransitionDelay);
     settingsStore.setValue(QStringLiteral("defaults/rTransitionSmoothness"), settings.rTransitionSmoothness);
     settingsStore.setValue(
@@ -1998,6 +2152,7 @@ void MainWindow::onResetDefaults()
 {
     ConversionSettings defaults;
     defaults.exportMode = ExportMode::RawCfa6MP;
+    defaults.rTransitionStart = 0.75;
     defaults.rTransitionDelay = 0.5;
     defaults.rTransitionSmoothness = 0.5;
     defaults.correctPreviewOutliers = false;
@@ -2044,6 +2199,7 @@ ConversionSettings MainWindow::currentSettings() const
     settings.exportMode = ExportMode::RawCfa6MP;
     settings.previewMethod = currentPreviewMethod();
     settings.previewMaxSize = 0;
+    settings.rTransitionStart = mergeStartFromSlider(m_rTransitionStartSlider->value());
     settings.rTransitionDelay = static_cast<double>(m_rTransitionDelaySlider->value()) / 100.0;
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
     settings.previewRotation = m_previewRotationCombo->currentData().toInt();

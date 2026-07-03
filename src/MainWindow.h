@@ -23,6 +23,7 @@ class QWidget;
 class QSpinBox;
 class QDoubleSpinBox;
 class PreviewCanvas;
+class TransitionCurveWidget;
 
 #include "SuperCCDProcessor.h"
 
@@ -87,6 +88,7 @@ private:
 
     QListWidget *m_fileList;
     QLineEdit *m_outputFolder;
+    QSlider *m_rTransitionStartSlider;
     QSlider *m_rTransitionDelaySlider;
     QSlider *m_rTransitionSmoothnessSlider;
     QSlider *m_previewZoomSlider;
@@ -123,8 +125,10 @@ private:
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;
     QTimer *m_previewSharpeningTimer;
+    QSpinBox *m_rTransitionStartSpinBox;
     QSpinBox *m_rTransitionDelaySpinBox;
     QSpinBox *m_rTransitionSmoothnessSpinBox;
+    TransitionCurveWidget *m_transitionCurveWidget;
     QSpinBox *m_previewZoomSpinBox;
     QDoubleSpinBox *m_previewExposureSpinBox;
     QSpinBox *m_previewWhiteBalanceSpinBox;
