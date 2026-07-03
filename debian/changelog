@@ -1,3 +1,17 @@
+superccd2dng (1.4.1) stable; urgency=low
+
+  * Add a Transition Curve graph widget that visualizes the live S->R merge
+  * Make the Transition Settings group collapsible and persist its expanded state
+  * Refine the merge slider mapping at the top of the S brightness range and add a dedicated MergeStartTest
+  * Rework the DNG writer to emit a proper EXIF IFD and use the standard EXIF ISO speed ratings tag (34855)
+  * Write DNG exposure times as true TIFF RATIONAL fractions and fix aperture, focal length, and ColorSpace handling
+  * Share the macOS DNG metadata path with Windows so the EXIF IFD is populated on macOS exports
+  * Parallelize the AMaZE preview demosaic and add an AmazeDemosaic test
+  * Fix the AMaZE preview export size and clean up macOS build warnings
+  * Update Raspberry Pi install instructions and refresh generated .deb packaging metadata
+
+ -- Eduardo Anibarro <anibarro@example.com>  Fri, 03 Jul 2026 19:30:00 +0200
+
 superccd2dng (1.4.0) stable; urgency=low
 
   * Add preview shadow recovery and shadow-range controls

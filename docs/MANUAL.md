@@ -58,6 +58,11 @@ The main file is:
 
 - `*_sr_merged.dng`
 
+The merged and per-plane DNG files now carry a populated EXIF IFD with the
+camera capture metadata (EXIF version, color space, capture date/time,
+ISO, shutter, aperture, focal length) so raw editors and other tools can
+read the original capture information from the file.
+
 ## Preview Controls
 
 The image preview opens in a separate window from the RAF list and settings.
@@ -166,6 +171,29 @@ Preview-only tint adjustment for green channel balance.
 - positive values shift toward green
 - affects preview display and JPEG/TIFF preview exports, not DNG output
 
+### Preview Shadows
+
+Preview-only shadow recovery control.
+
+- range: 0 to 100 (default 0)
+- lifts the dark tones of the rendered preview without affecting highlights
+- applied in both the live preview display path and the exported preview
+  path, so `JPEG` and `16-bit TIFF` preview exports match the on-screen
+  tonal lift
+- does not affect DNG export
+
+### Preview Shadow range
+
+Preview-only control for the width of the shadow range that the
+`Preview Shadows` slider affects.
+
+- range: 0 to 100 (default 100)
+- lower values restrict the recovery to the deepest shadows, higher values
+  extend it further into the midtones
+- applied alongside `Preview Shadows` for the live preview and the exported
+  preview files
+- does not affect DNG export
+
 ### White Balance Picker
 
 The checkable white balance picker sets the preview white balance and tint from
@@ -186,6 +214,23 @@ Rotates the preview display for orientation checking.
 - does not affect export
 - useful for checking image orientation before opening in RawTherapee
 
+### Preview Method
+
+Selects the preview rendering path used to display the merged 6 MP preview
+and the AMaZE preview.
+
+- `Reconstruction` is the established preview path. It uses the existing
+  reconstruction-based render of the merged S/R CFA and supports the full
+  preview / preview export workflow at `12 MP` and `6 MP`.
+- `Amaze debayer` demosaics the merged S/R CFA through the AMaZE
+  algorithm for a different detail / color tradeoff during evaluation.
+  This method renders the preview at the native 6 MP geometry and limits
+  the preview export to the supported `6 MP` output.
+
+The selected method is stored in defaults and restored on startup. It only
+affects preview rendering and preview exports; it does not change the
+`6MP Raw CFA DNG` conversion path.
+
 ### Preview zoom
 
 Controls the displayed preview scale.
@@ -201,6 +246,10 @@ You can drag RAF files directly onto the file list to add them. The application 
 ## Merge Controls
 
 These controls affect the exported `6MP Raw CFA` result.
+
+The `Transition Settings` group is collapsible. Click the group title to
+hide or show the curve graph and the merge sliders. The collapsed/expanded
+state is remembered between sessions.
 
 ### Merge start
 
@@ -255,6 +304,25 @@ approaches a 90 degree shoulder (ease-in shape).
 
 The current defaults are intentionally tuned around a stable working result. Do not expect them to behave like generic HDR sliders.
 
+### Transition Curve
+
+A small graph drawn above the merge sliders that visualizes the live
+`S -> R` merge curve used by the export pipeline.
+
+- The horizontal axis is the normalized `S` brightness (0..1).
+- The vertical axis is the `R` blend weight (0..1) actually applied to
+  each `S` value.
+- The graph is recomputed from the current `Merge start`, `Transition width`
+  and `Smoothness` values and matches the exact math used by
+  `SuperCCDProcessor`, so what you see is what gets written into the
+  exported CFA DNG.
+- A red marker on the `S` axis shows the current `Merge start` position
+  to make it easy to see how close the merge window is to clipping.
+
+Use it to find the right operating point for the merge sliders, especially
+near the top of the `S` brightness range where the non-linear slider
+mapping makes small changes meaningful.
+
 ### Export S/R Planes
 
 When enabled, exports individual S and R plane DNG files alongside the merged result.
@@ -288,6 +356,9 @@ Saved values include:
 - preview exposure
 - preview white balance
 - preview tint
+- preview shadows
+- preview shadow range
+- preview method
 - preview rotation
 - auto-preview state
 

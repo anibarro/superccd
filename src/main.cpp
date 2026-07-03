@@ -24,7 +24,7 @@
 // APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
 // If not defined (e.g., standalone compilation), use a default
 #ifndef APP_VERSION_STRING
-#define APP_VERSION_STRING "1.4.0"
+#define APP_VERSION_STRING "1.4.1"
 #endif
 
 static char error_log_path[4096] = "last_error.log";
