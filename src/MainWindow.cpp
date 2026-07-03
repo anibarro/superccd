@@ -656,6 +656,12 @@ MainWindow::MainWindow(QWidget *parent)
     // When the user toggles the Transition Settings group's checkbox, hide
     // (or show) the group's children so it collapses vertically and stops
     // taking up space when not needed. Persist the choice across sessions.
+    //
+    // QGroupBox's vertical size hint on macOS reserves space for the title
+    // plus the platform frame padding even after all child widgets are
+    // hidden, so we explicitly drive the geometry recomputation via
+    // updateGeometry() + invalidate()/activate() on the parent layout. This
+    // makes the group collapse to the title row instead of an empty box.
     auto setTransitionChildrenVisible = [transitionGroup](bool visible) {
         // Walk every item in the form layout (rows can contain either a
         // widget or a nested layout holding the actual widgets).
@@ -675,10 +681,23 @@ MainWindow::MainWindow(QWidget *parent)
             }
         }
     };
-    connect(transitionGroup, &QGroupBox::toggled, this, [setTransitionChildrenVisible](bool checked) {
+
+    connect(transitionGroup, &QGroupBox::toggled, this, [transitionGroup,
+                                                         setTransitionChildrenVisible](bool checked) {
         appSettings().setValue(QStringLiteral("ui/transitionGroupExpanded"), checked);
         setTransitionChildrenVisible(checked);
+        // Invalidate the group box's geometry so the parent layout recomputes
+        // its vertical extent. Without this, the previous size hint can be
+        // cached and the group keeps its old height on macOS.
+        transitionGroup->updateGeometry();
+        if (QWidget *parent = transitionGroup->parentWidget()) {
+            if (QLayout *parentLayout = parent->layout()) {
+                parentLayout->invalidate();
+                parentLayout->activate();
+            }
+        }
     });
+
     // Apply the initial state (which may have been restored from settings).
     if (!transitionGroup->isChecked()) {
         setTransitionChildrenVisible(false);
@@ -758,8 +777,10 @@ MainWindow::MainWindow(QWidget *parent)
     previewScrollArea->setMinimumHeight(60);  // About 2 slider rows tall
     previewScrollArea->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Expanding);
 
-    // Make transition group fixed size - it should never grow vertically
-    transitionGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Fixed);
+    // Make transition group prefer its natural size horizontally, but allow
+    // it to shrink vertically (so it can fully collapse when toggled off
+    // instead of keeping the platform's empty frame area).
+    transitionGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
     QFormLayout *optionsLayout = new QFormLayout;
     optionsLayout->addRow(tr("Output folder:"), m_outputFolder);
