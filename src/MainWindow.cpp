@@ -624,8 +624,12 @@ MainWindow::MainWindow(QWidget *parent)
     leftLayout->addWidget(m_fileList, 1);
     leftLayout->addLayout(convertButtonsLayout);
 
-    // Transition controls group box
+    // Transition controls group box (collapsible via the group's built-in checkable title)
     QGroupBox *transitionGroup = new QGroupBox(tr("Transition Settings"), this);
+    transitionGroup->setCheckable(true);
+    const bool transitionExpandedDefault = true;
+    transitionGroup->setChecked(appSettings().value(
+        QStringLiteral("ui/transitionGroupExpanded"), transitionExpandedDefault).toBool());
     QFormLayout *transitionLayout = new QFormLayout(transitionGroup);
 
     QHBoxLayout *startLayout = new QHBoxLayout;
@@ -648,6 +652,37 @@ MainWindow::MainWindow(QWidget *parent)
     // sliders above.
     QLabel *transitionCurveLabel = new QLabel(tr("Merge curve:"), this);
     transitionLayout->addRow(transitionCurveLabel, m_transitionCurveWidget);
+
+    // When the user toggles the Transition Settings group's checkbox, hide
+    // (or show) the group's children so it collapses vertically and stops
+    // taking up space when not needed. Persist the choice across sessions.
+    auto setTransitionChildrenVisible = [transitionGroup](bool visible) {
+        // Walk every item in the form layout (rows can contain either a
+        // widget or a nested layout holding the actual widgets).
+        for (int i = 0; i < transitionGroup->layout()->count(); ++i) {
+            QLayoutItem *item = transitionGroup->layout()->itemAt(i);
+            if (!item) {
+                continue;
+            }
+            if (QWidget *widget = item->widget()) {
+                widget->setVisible(visible);
+            } else if (QLayout *nested = item->layout()) {
+                for (int j = 0; j < nested->count(); ++j) {
+                    if (QWidget *inner = nested->itemAt(j)->widget()) {
+                        inner->setVisible(visible);
+                    }
+                }
+            }
+        }
+    };
+    connect(transitionGroup, &QGroupBox::toggled, this, [setTransitionChildrenVisible](bool checked) {
+        appSettings().setValue(QStringLiteral("ui/transitionGroupExpanded"), checked);
+        setTransitionChildrenVisible(checked);
+    });
+    // Apply the initial state (which may have been restored from settings).
+    if (!transitionGroup->isChecked()) {
+        setTransitionChildrenVisible(false);
+    }
 
     // Preview controls group box (wrapped in scrollable area)
     QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
