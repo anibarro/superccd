@@ -157,10 +157,6 @@ Performance note:
 - an individual LibRaw decode can still contain a short single-core phase
 - repeated previews on the same file are faster
 
-Latest release:
-
-- `v1.3.1` adds camera and exposure metadata to RAF list entries and tightens the thumbnail row layout with a compact `3:2` presentation
-
 ## Command Line
 
 Convert a RAF file:
