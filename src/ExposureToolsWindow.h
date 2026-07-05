@@ -12,13 +12,12 @@ class QSpinBox;
 class QTabWidget;
 class HistogramWidget;
 class WaveformWidget;
-class VectorscopeWidget;
 
 // A detached top-level window that hosts the exposure analysis tools
-// (Histogram, RGB + Luma Waveform, Vectorscope with skin-tone guide).
-// Each tool lives in its own tab. A checkbox at the bottom of the
-// window toggles between metering the full preview image and metering
-// only the sub-rect currently visible in the preview window.
+// (Histogram, RGB + Luma Waveform). Each tool lives in its own tab. A
+// checkbox at the bottom of the window toggles between metering the
+// full preview image and metering only the sub-rect currently visible
+// in the preview window.
 class ExposureToolsWindow : public QWidget
 {
     Q_OBJECT
@@ -42,13 +41,11 @@ private:
     QTabWidget *m_tabWidget;
     HistogramWidget *m_histogram;
     WaveformWidget *m_waveform;
-    VectorscopeWidget *m_vectorscope;
     QCheckBox *m_meterVisibleCheckBox;
     QComboBox *m_waveformModeCombo;
     QSlider *m_waveformTransparencySlider;
     QSpinBox *m_waveformTransparencySpinBox;
-    QSlider *m_vectorscopeTransparencySlider;
-    QSpinBox *m_vectorscopeTransparencySpinBox;
+    QComboBox *m_histogramModeCombo;
 };
 
 #endif // EXPOSURETOOLSWINDOW_H

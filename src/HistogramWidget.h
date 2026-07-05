@@ -13,6 +13,14 @@ class HistogramWidget : public QWidget
     Q_OBJECT
 
 public:
+    // Visualization layout, mirroring WaveformWidget.
+    enum Mode {
+        AllChannels,   // single plot with R+G+B+luma overlaid
+        RgbSplit,      // three side-by-side plots, one per RGB channel
+        LumaOnly,      // single plot with the luma channel only
+    };
+    Q_ENUM(Mode)
+
     explicit HistogramWidget(QWidget *parent = nullptr);
 
     // Provide a new source image. A null/empty image clears the histogram.
@@ -20,6 +28,9 @@ public:
     // coordinates; when non-empty, only that sub-rect is sampled.
     void setSourceImage(const QImage &image, const QRect &visibleRect = QRect());
     void clearSourceImage();
+
+    void setMode(Mode mode);
+    Mode mode() const { return m_mode; }
 
     QSize sizeHint() const override;
     QSize minimumSizeHint() const override;
@@ -32,6 +43,16 @@ private:
     void recompute();
     double peak() const;
     double bucket(int channel, int bin) const;
+    // Renders the given channel indices into a sub-rectangle of the widget.
+    // channelColors[i] is the drawing color for channelIndices[i].
+    void renderChannels(QPainter &painter,
+                        const QRect &subRect,
+                        const int *channelIndices,
+                        const QColor *channelColors,
+                        int channelCount,
+                        const QColor &gridColor,
+                        const QColor &axisColor,
+                        const QColor &textColor);
 
     QImage m_sourceImage;
     QRect m_visibleRect;
@@ -41,6 +62,7 @@ private:
     // Per-channel histogram with logarithmic compression. Channel order:
     // 0 = red, 1 = green, 2 = blue, 3 = luma.
     double m_hist[4][256];
+    Mode m_mode = AllChannels;
 };
 
 #endif // HISTOGRAMWIDGET_H

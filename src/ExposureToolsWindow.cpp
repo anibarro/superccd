@@ -2,7 +2,6 @@
 
 #include "HistogramWidget.h"
 #include "WaveformWidget.h"
-#include "VectorscopeWidget.h"
 
 #include <QCheckBox>
 #include <QComboBox>
@@ -23,7 +22,6 @@ ExposureToolsWindow::ExposureToolsWindow(QWidget *parent)
     m_tabWidget = new QTabWidget(this);
     m_histogram = new HistogramWidget(this);
     m_waveform = new WaveformWidget(this);
-    m_vectorscope = new VectorscopeWidget(this);
 
     // Waveform tab: a small toolbar above the waveform widget with a
     // "Waveform mode" dropdown. Default is "RGB split".
@@ -93,52 +91,41 @@ ExposureToolsWindow::ExposureToolsWindow(QWidget *parent)
     QWidget *waveformTab = new QWidget(this);
     waveformTab->setLayout(waveformTabLayout);
 
-    // Vectorscope tab: a small toolbar with a "Transparency" slider,
-    // mirroring the waveform tab's transparency control.
-    m_vectorscopeTransparencySlider = new QSlider(Qt::Horizontal, this);
-    m_vectorscopeTransparencySlider->setRange(0, 100);
-    m_vectorscopeTransparencySlider->setValue(0);
-    m_vectorscopeTransparencySlider->setToolTip(
-        tr("How transparent the vectorscope dots are. 0 = fully opaque, "
-           "100 = fully transparent."));
-    m_vectorscopeTransparencySpinBox = new QSpinBox(this);
-    m_vectorscopeTransparencySpinBox->setRange(0, 100);
-    m_vectorscopeTransparencySpinBox->setValue(0);
-    m_vectorscopeTransparencySpinBox->setSuffix(tr("%"));
-    m_vectorscopeTransparencySpinBox->setToolTip(
-        m_vectorscopeTransparencySlider->toolTip());
-    QLabel *vectorscopeTransparencyLabel = new QLabel(tr("Transparency:"), this);
-    connect(m_vectorscopeTransparencySlider, &QSlider::valueChanged,
-            this, [this](int value) {
-                if (m_vectorscopeTransparencySpinBox->value() != value) {
-                    m_vectorscopeTransparencySpinBox->setValue(value);
-                }
-                m_vectorscope->setTransparency(value / 100.0);
+    // Histogram tab: a small toolbar with a "Histogram mode" dropdown
+    // mirroring the waveform's mode selector.
+    m_histogramModeCombo = new QComboBox(this);
+    m_histogramModeCombo->addItem(tr("All"),
+                                  static_cast<int>(HistogramWidget::AllChannels));
+    m_histogramModeCombo->addItem(tr("RGB split"),
+                                  static_cast<int>(HistogramWidget::RgbSplit));
+    m_histogramModeCombo->addItem(tr("Luma"),
+                                  static_cast<int>(HistogramWidget::LumaOnly));
+    m_histogramModeCombo->setCurrentIndex(
+        m_histogramModeCombo->findData(
+            static_cast<int>(HistogramWidget::AllChannels)));
+    m_histogram->setMode(HistogramWidget::AllChannels);
+    connect(m_histogramModeCombo,
+            QOverload<int>::of(&QComboBox::currentIndexChanged), this,
+            [this](int index) {
+                const int modeValue = m_histogramModeCombo->itemData(index).toInt();
+                m_histogram->setMode(
+                    static_cast<HistogramWidget::Mode>(modeValue));
             });
-    connect(m_vectorscopeTransparencySpinBox,
-            QOverload<int>::of(&QSpinBox::valueChanged), this,
-            [this](int value) {
-                if (m_vectorscopeTransparencySlider->value() != value) {
-                    m_vectorscopeTransparencySlider->setValue(value);
-                }
-                m_vectorscope->setTransparency(value / 100.0);
-            });
-    QHBoxLayout *vectorscopeToolbar = new QHBoxLayout;
-    vectorscopeToolbar->setContentsMargins(0, 0, 0, 0);
-    vectorscopeToolbar->addStretch(1);
-    vectorscopeToolbar->addWidget(vectorscopeTransparencyLabel);
-    vectorscopeToolbar->addWidget(m_vectorscopeTransparencySlider, 2);
-    vectorscopeToolbar->addWidget(m_vectorscopeTransparencySpinBox, 0);
-    QVBoxLayout *vectorscopeTabLayout = new QVBoxLayout;
-    vectorscopeTabLayout->setContentsMargins(6, 6, 6, 6);
-    vectorscopeTabLayout->addLayout(vectorscopeToolbar);
-    vectorscopeTabLayout->addWidget(m_vectorscope, 1);
-    QWidget *vectorscopeTab = new QWidget(this);
-    vectorscopeTab->setLayout(vectorscopeTabLayout);
+    QLabel *histogramModeLabel = new QLabel(tr("Histogram mode:"), this);
+    QHBoxLayout *histogramToolbar = new QHBoxLayout;
+    histogramToolbar->setContentsMargins(0, 0, 0, 0);
+    histogramToolbar->addWidget(histogramModeLabel);
+    histogramToolbar->addWidget(m_histogramModeCombo, 1);
+    histogramToolbar->addStretch(2);
+    QVBoxLayout *histogramTabLayout = new QVBoxLayout;
+    histogramTabLayout->setContentsMargins(6, 6, 6, 6);
+    histogramTabLayout->addLayout(histogramToolbar);
+    histogramTabLayout->addWidget(m_histogram, 1);
+    QWidget *histogramTab = new QWidget(this);
+    histogramTab->setLayout(histogramTabLayout);
 
-    m_tabWidget->addTab(m_histogram, tr("Histogram"));
+    m_tabWidget->addTab(histogramTab, tr("Histogram"));
     m_tabWidget->addTab(waveformTab, tr("Waveform"));
-    m_tabWidget->addTab(vectorscopeTab, tr("Vectorscope"));
 
     m_meterVisibleCheckBox = new QCheckBox(
         tr("Meter visible area only"), this);
@@ -157,7 +144,6 @@ void ExposureToolsWindow::setSourceImage(const QImage &image, const QRect &visib
     const QRect rect = metersVisibleAreaOnly() ? visibleRect : QRect();
     m_histogram->setSourceImage(image, rect);
     m_waveform->setSourceImage(image, rect);
-    m_vectorscope->setSourceImage(image, rect);
 }
 
 bool ExposureToolsWindow::metersVisibleAreaOnly() const

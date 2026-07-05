@@ -38,6 +38,13 @@ void HistogramWidget::setSourceImage(const QImage &image, const QRect &visibleRe
     update();
 }
 
+void HistogramWidget::setMode(Mode mode)
+{
+    if (m_mode == mode) return;
+    m_mode = mode;
+    update();
+}
+
 void HistogramWidget::clearSourceImage()
 {
     m_sourceImage = QImage();
@@ -146,48 +153,33 @@ void HistogramWidget::resizeEvent(QResizeEvent * /*event*/)
     update();
 }
 
-void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
+void HistogramWidget::renderChannels(QPainter &painter,
+                                     const QRect &subRect,
+                                     const int *channelIndices,
+                                     const QColor *channelColors,
+                                     int channelCount,
+                                     const QColor &gridColor,
+                                     const QColor &axisColor,
+                                     const QColor &textColor)
 {
-    QPainter painter(this);
-    painter.setRenderHint(QPainter::Antialiasing, false);
-
-    const QRect rect = this->rect();
-    const QColor background(32, 32, 32);
-    const QColor gridColor(60, 60, 60);
-    const QColor axisColor(140, 140, 140);
-    const QColor textColor(200, 200, 200);
-
-    painter.fillRect(rect, background);
-
-    // Leave a tiny margin for tick labels.
-    const int marginLeft = 26;
-    const int marginRight = 8;
-    const int marginTop = 8;
-    const int marginBottom = 18;
-    const QRect plotRect = rect.adjusted(marginLeft, marginTop, -marginRight, -marginBottom);
-    if (plotRect.width() <= 2 || plotRect.height() <= 2) {
+    if (subRect.width() <= 2 || subRect.height() <= 2) {
         return;
     }
 
     // Plot border.
     painter.setPen(QPen(gridColor, 1));
     painter.setBrush(Qt::NoBrush);
-    painter.drawRect(plotRect);
+    painter.drawRect(subRect);
 
     // Vertical quarter lines for visual reference.
     painter.setPen(QPen(QColor(50, 50, 50), 1, Qt::DotLine));
     for (int i = 1; i < 4; ++i) {
-        const int x = plotRect.left() + static_cast<int>(i * plotRect.width() / 4.0);
-        painter.drawLine(x, plotRect.top(), x, plotRect.bottom());
+        const int x = subRect.left()
+            + static_cast<int>(i * subRect.width() / 4.0);
+        painter.drawLine(x, subRect.top(), x, subRect.bottom());
     }
 
     const double scale = peak();
-    const QColor channelColors[3] = {
-        QColor(220, 80, 80),
-        QColor(80, 200, 100),
-        QColor(80, 130, 230),
-    };
-    const QColor lumaColor(220, 220, 220);
 
     // Per-pixel alpha uses a square-root curve over (count / reference)
     // so the dynamic range of bin counts is compressed gracefully: even a
@@ -200,7 +192,7 @@ void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
     // src-over alpha-compositing formula (in straight alpha space). The
     // earlier premultiplied format + additive math produced wrong
     // colors when alpha was anything but 255.
-    QImage overlay(plotRect.size(), QImage::Format_ARGB32);
+    QImage overlay(subRect.size(), QImage::Format_ARGB32);
     overlay.fill(Qt::transparent);
 
     auto drawBinColumn = [&](int channel, const QColor &color) {
@@ -213,8 +205,8 @@ void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
         // bin's column height was a different integer, so adjacent bins
         // had different top edges and the difference was visible as a
         // hard horizontal stripe).
-        const int plotHeight = plotRect.height();
-        const int plotWidth = plotRect.width();
+        const int plotHeight = subRect.height();
+        const int plotWidth = subRect.width();
         const int columnBottom = plotHeight - 1;
         for (int localX = 0; localX < plotWidth; ++localX) {
             const double binF = (static_cast<double>(localX) * 255.0)
@@ -235,11 +227,6 @@ void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
             if (alpha <= 0) {
                 continue;
             }
-            // Column height is the fractional part of (frac * plotHeight).
-            // Two adjacent pixels with slightly different binF (and thus
-            // slightly different counts) will have slightly different
-            // column heights, so the top edge of the histogram varies
-            // smoothly from pixel to pixel.
             const double columnHeightF = frac * plotHeight;
             const int columnHeightCeil = static_cast<int>(
                 std::ceil(columnHeightF));
@@ -251,18 +238,11 @@ void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
                 if (localY < 0 || localY >= plotHeight) {
                     continue;
                 }
-                // Alpha at this pixel: full strength up to the
-                // floor(columnHeightF) mark, then linearly fades to 0
-                // across the partial top row. This is what makes the
-                // top edge of the histogram smooth instead of stepped.
                 double perPixelAlpha = static_cast<double>(alpha);
                 if (dy + 1 > columnHeightF) {
-                    // We're in the partial top row.
                     const double partial = columnHeightF - dy;
                     perPixelAlpha = perPixelAlpha * std::max(0.0, partial);
                 } else {
-                    // Standard column-body fade (the original "denser
-                    // bins are more opaque at the bottom" effect).
                     perPixelAlpha = perPixelAlpha
                         * (1.0 - static_cast<double>(dy)
                                 / columnHeightCeil * 0.6);
@@ -298,113 +278,130 @@ void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
         }
     };
 
-    // RGB channels (additive blending so overlap stays distinct).
-    for (int c = 0; c < 3; ++c) {
-        drawBinColumn(c, channelColors[c]);
+    // Draw all the requested channels.
+    for (int c = 0; c < channelCount; ++c) {
+        drawBinColumn(channelIndices[c], channelColors[c]);
     }
-    // Luma on top in white.
-    drawBinColumn(3, lumaColor);
 
-    painter.drawImage(plotRect.topLeft(), overlay);
+    painter.drawImage(subRect.topLeft(), overlay);
 
-    // Overexposure / underexposure indicators: a vertical bar at the right
-    // (or left) edge whose height is proportional to the *percentage of
-    // the image* that's clipped to 255 (or crushed to 0). The reference
-    // here is the total number of sampled pixels, not the bin peak, so
-    // the bar reads as "X% of the image is clipped" regardless of how
-    // the rest of the histogram is distributed. The bar saturates at
-    // ~5% (a common "you've lost a lot of detail" threshold).
-    auto maxBinCount = [&](int channel, int bin) {
-        double v = 0.0;
-        for (int c = 0; c < (channel < 0 ? 3 : channel + 1); ++c) {
-            if (channel >= 0 && c != channel) {
-                continue;
-            }
-            v = std::max(v, bucket(c, bin));
+    // Tick labels (only when the sub-plot is wide enough to fit them
+    // without crowding — i.e. the main AllChannels/LumaOnly plot).
+    if (subRect.width() >= 80) {
+        QFont smallFont = painter.font();
+        smallFont.setPointSizeF(std::max(7.0, smallFont.pointSizeF() - 1.0));
+        painter.setFont(smallFont);
+        const QFontMetrics fm(smallFont);
+        painter.setPen(QPen(axisColor, 1));
+        const QString xLabels[] = {QStringLiteral("0"), QStringLiteral("64"),
+                                   QStringLiteral("128"),
+                                   QStringLiteral("192"),
+                                   QStringLiteral("255")};
+        const double xFracs[] = {0.0, 0.25, 0.5, 0.75, 1.0};
+        for (int i = 0; i < 5; ++i) {
+            const int x = subRect.left()
+                + static_cast<int>(xFracs[i] * subRect.width());
+            const QRect textRect(x - 16, subRect.bottom() + 2, 32, fm.height());
+            painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop,
+                             xLabels[i]);
         }
-        return v;
+        painter.setPen(QPen(textColor, 1));
+        const QRect xTitleRect(subRect.left(),
+                               subRect.bottom() + fm.height() + 1,
+                               subRect.width(), fm.height());
+        painter.drawText(xTitleRect, Qt::AlignHCenter | Qt::AlignTop,
+                         tr("Brightness"));
+    }
+}
+
+void HistogramWidget::paintEvent(QPaintEvent * /*event*/)
+{
+    QPainter painter(this);
+    painter.setRenderHint(QPainter::Antialiasing, false);
+
+    const QRect rect = this->rect();
+    const QColor background(32, 32, 32);
+    const QColor gridColor(60, 60, 60);
+    const QColor axisColor(140, 140, 140);
+    const QColor textColor(200, 200, 200);
+
+    painter.fillRect(rect, background);
+
+    const QColor channelColors[3] = {
+        QColor(220, 80, 80),
+        QColor(80, 200, 100),
+        QColor(80, 130, 230),
     };
-    double totalSamples = 0.0;
-    for (int c = 0; c < 4; ++c) {
-        for (int i = 0; i < 256; ++i) {
-            totalSamples += m_hist[c][i];
+    const QColor lumaColor(220, 220, 220);
+
+    if (m_mode == RgbSplit) {
+        // Three side-by-side plots, one per RGB channel.
+        const int marginLeft = 18;
+        const int marginRight = 8;
+        const int marginTop = 22; // room for the per-plot label
+        const int marginBottom = 18;
+        const int gap = 6;
+
+        const int totalPlotWidth = rect.width() - marginLeft - marginRight
+            - 2 * gap;
+        if (totalPlotWidth <= 30) {
+            return;
         }
-    }
-    totalSamples = std::max(1.0, totalSamples / 4.0); // average over channels
-    // 5% of the image clipped => bar reaches the top of the plot.
-    constexpr double kClipSaturationFraction = 0.05;
-    const double clipFrac = maxBinCount(2, 255) / totalSamples
-                            / kClipSaturationFraction;
-    const double crushFrac = maxBinCount(0, 0) / totalSamples
-                             / kClipSaturationFraction;
-    constexpr int kIndicatorWidth = 6;
-    constexpr int kIndicatorMargin = 1;
-    if (clipFrac > 0.0) {
-        const int barH = std::clamp(
-            static_cast<int>(std::min(1.0, clipFrac) * plotRect.height()),
-            kIndicatorWidth, plotRect.height() - 2 * kIndicatorMargin);
-        const QRect clipBar(plotRect.right() - kIndicatorWidth - kIndicatorMargin,
-                            plotRect.bottom() - barH - kIndicatorMargin,
-                            kIndicatorWidth, barH);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(255, 70, 70, 230));
-        painter.drawRect(clipBar);
-    }
-    if (crushFrac > 0.0) {
-        const int barH = std::clamp(
-            static_cast<int>(std::min(1.0, crushFrac) * plotRect.height()),
-            kIndicatorWidth, plotRect.height() - 2 * kIndicatorMargin);
-        const QRect crushBar(plotRect.left() + kIndicatorMargin,
-                             plotRect.bottom() - barH - kIndicatorMargin,
-                             kIndicatorWidth, barH);
-        painter.setPen(Qt::NoPen);
-        painter.setBrush(QColor(80, 130, 255, 230));
-        painter.drawRect(crushBar);
-    }
-    // Tick the right edge of the plot at 255 so the indicator is
-    // associated with the correct brightness value.
-    painter.setPen(QPen(QColor(255, 70, 70, 180), 1, Qt::DotLine));
-    painter.drawLine(plotRect.right() - kIndicatorWidth - kIndicatorMargin * 2 - 1,
-                     plotRect.top(),
-                     plotRect.right() - kIndicatorWidth - kIndicatorMargin * 2 - 1,
-                     plotRect.bottom());
-    painter.setPen(QPen(QColor(80, 130, 255, 180), 1, Qt::DotLine));
-    painter.drawLine(plotRect.left() + kIndicatorWidth + kIndicatorMargin * 2 + 1,
-                     plotRect.top(),
-                     plotRect.left() + kIndicatorWidth + kIndicatorMargin * 2 + 1,
-                     plotRect.bottom());
+        const int plotW = totalPlotWidth / 3;
+        const int plotH = rect.height() - marginTop - marginBottom;
+        if (plotH <= 30) {
+            return;
+        }
 
+        const QString titles[3] = {tr("Red"), tr("Green"), tr("Blue")};
+        QFont titleFont = painter.font();
+        titleFont.setPointSizeF(std::max(7.0, titleFont.pointSizeF() - 1.0));
+        painter.setFont(titleFont);
+        const QFontMetrics titleFm(titleFont);
+        const int titleBaselineY = marginTop - 4;
 
-    // Axis tick labels.
-    QFont smallFont = painter.font();
-    smallFont.setPointSizeF(std::max(7.0, smallFont.pointSizeF() - 1.0));
-    painter.setFont(smallFont);
-    const QFontMetrics fm(smallFont);
-    painter.setPen(QPen(axisColor, 1));
-    const QString xLabels[] = {QStringLiteral("0"), QStringLiteral("64"),
-                               QStringLiteral("128"), QStringLiteral("192"),
-                               QStringLiteral("255")};
-    const double xFracs[] = {0.0, 0.25, 0.5, 0.75, 1.0};
-    for (int i = 0; i < 5; ++i) {
-        const int x = plotRect.left() + static_cast<int>(xFracs[i] * plotRect.width());
-        const QRect textRect(x - 16, plotRect.bottom() + 2, 32, fm.height());
-        painter.drawText(textRect, Qt::AlignHCenter | Qt::AlignTop, xLabels[i]);
+        for (int i = 0; i < 3; ++i) {
+            const QRect subRect(marginLeft + i * (plotW + gap),
+                                marginTop, plotW, plotH);
+            const int channelIndices[1] = {i};
+            const QColor colors[1] = {channelColors[i]};
+            renderChannels(painter, subRect, channelIndices, colors, 1,
+                           gridColor, axisColor, textColor);
+
+            // Channel label, centered above the sub-plot, in the channel color.
+            painter.setPen(QPen(channelColors[i], 1));
+            const QRect labelRect(subRect.left(), 0, subRect.width(),
+                                  titleBaselineY + 4);
+            painter.drawText(labelRect, Qt::AlignHCenter | Qt::AlignBottom,
+                             titles[i]);
+        }
+        return;
     }
-    painter.setPen(QPen(textColor, 1));
-    const QRect xTitleRect(plotRect.left(), plotRect.bottom() + fm.height() + 1,
-                           plotRect.width(), fm.height());
-    painter.drawText(xTitleRect, Qt::AlignHCenter | Qt::AlignTop, tr("Brightness"));
 
-    // Y label, rotated.
-    painter.save();
-    painter.translate(fm.height() / 2 + 2, plotRect.top() + plotRect.height() / 2);
-    painter.rotate(-90);
-    const QString yTitle = tr("Pixels");
-    const int yTitleWidth = fm.horizontalAdvance(yTitle);
-    const QRect yTitleRect(-plotRect.height() / 2, -yTitleWidth / 2,
-                           plotRect.height(), yTitleWidth);
-    painter.drawText(yTitleRect, Qt::AlignHCenter | Qt::AlignVCenter, yTitle);
-    painter.restore();
+    // Single plot (AllChannels or LumaOnly).
+    const int marginLeft = 26;
+    const int marginRight = 8;
+    const int marginTop = 8;
+    const int marginBottom = 18;
+    const QRect plotRect = rect.adjusted(marginLeft, marginTop, -marginRight, -marginBottom);
+    if (plotRect.width() <= 2 || plotRect.height() <= 2) {
+        return;
+    }
+
+    if (m_mode == AllChannels) {
+        const int channelIndices[4] = {0, 1, 2, 3};
+        const QColor colors[4] = {
+            channelColors[0], channelColors[1], channelColors[2], lumaColor,
+        };
+        renderChannels(painter, plotRect, channelIndices, colors, 4,
+                       gridColor, axisColor, textColor);
+    } else {
+        // LumaOnly
+        const int channelIndices[1] = {3};
+        const QColor colors[1] = {lumaColor};
+        renderChannels(painter, plotRect, channelIndices, colors, 1,
+                       gridColor, axisColor, textColor);
+    }
 
     if (m_sourceImage.isNull()) {
         painter.setPen(QPen(textColor, 1));

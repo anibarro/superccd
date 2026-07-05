@@ -443,7 +443,7 @@ MainWindow::MainWindow(QWidget *parent)
     m_exposureToolsWindow->hide();
     m_showExposureToolsCheckBox->setToolTip(
         tr("Show or hide the floating Exposure Tools window (Histogram, "
-           "RGB/Luma Waveform, Vectorscope with skin-tone guide)."));
+           "RGB/Luma Waveform)."));
 
     QPushButton *addFilesButton = new QPushButton(tr("Add RAF Files..."), this);
     QPushButton *removeFilesButton = new QPushButton(tr("Remove Selected"), this);
@@ -736,7 +736,7 @@ MainWindow::MainWindow(QWidget *parent)
     QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
 
     // First control: toggle that shows or hides the floating Exposure Tools
-    // window (Histogram, Waveform, Vectorscope).
+    // window (Histogram, Waveform).
     previewControlsLayout->addRow(m_showExposureToolsCheckBox);
 
     QHBoxLayout *exposureLayout = new QHBoxLayout;
@@ -878,7 +878,15 @@ MainWindow::MainWindow(QWidget *parent)
         m_showExposureToolsCheckBox->setChecked(true);
     });
     connect(m_showExposureToolsCheckBox, &QCheckBox::toggled, this,
-            &MainWindow::onShowExposureToolsToggled);
+            [this](bool checked) {
+                onShowExposureToolsToggled(checked);
+                // Persist the toggle state immediately so the user's
+                // choice is remembered across sessions, independent of
+                // whether they exit the app via the window close button,
+                // the menu, or the toggle checkbox itself.
+                appSettings().setValue(
+                    QStringLiteral("exposureTools/visible"), checked);
+            });
     // Re-push the current preview when the user toggles "meter visible area
     // only" so the scopes immediately reflect the new sampling region.
     connect(m_exposureToolsWindow->meterVisibleAreaCheckBox(), &QCheckBox::toggled,
@@ -1162,13 +1170,14 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         if (event->type() == QEvent::Close) {
             appSettings().setValue(QStringLiteral("windows/exposureToolsGeometry"),
                                    m_exposureToolsWindow->saveGeometry());
-            appSettings().setValue(QStringLiteral("exposureTools/visible"), false);
             appSettings().setValue(
                 QStringLiteral("exposureTools/meterVisibleAreaOnly"),
                 m_exposureToolsWindow->metersVisibleAreaOnly());
-            // Keep the toggle checkbox in sync with the actual window state.
-            const QSignalBlocker blocker(m_showExposureToolsCheckBox);
-            m_showExposureToolsCheckBox->setChecked(false);
+            // Closing the window via the X button is treated as a hide,
+            // not a "turn this off permanently" — the toggle checkbox
+            // and the `exposureTools/visible` setting keep whatever
+            // state the user last chose. Reflect that in the UI: the
+            // window is hidden but the checkbox is left alone.
         }
     }
 
@@ -2120,7 +2129,7 @@ QImage MainWindow::buildAdjustedDisplayImage8() const
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
 
     // applyDisplayAdjustments performs the same path the preview canvas
-    // uses, so the exposure tools (histogram, waveform, vectorscope)
+    // uses, so the exposure tools (histogram, waveform)
     // always show the same pixels the user is looking at.
     QImage image = PreviewImageProcessing::applyDisplayAdjustments(
         m_currentPreviewImage, adjustments);
@@ -2172,8 +2181,8 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     m_previewScrollArea->verticalScrollBar()->setValue(std::max(0, newVValue));
 
     // Build the same display-adjusted 8-bit image the preview canvas paints
-    // and push it to the exposure tools, so the histogram / waveform /
-    // vectorscope always reflect what the user is actually seeing.
+    // and push it to the exposure tools, so the histogram / waveform
+    // always reflect what the user is actually seeing.
     m_adjustedDisplayImage = buildAdjustedDisplayImage8();
     if (m_previewSharpeningSlider->value() > 0) {
         // Defer the heavier re-push to the sharpening timer; that callback
