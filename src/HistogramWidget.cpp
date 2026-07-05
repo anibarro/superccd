@@ -92,6 +92,17 @@ void HistogramWidget::recompute()
         return;
     }
 
+    // Only sample the channels needed for the current mode. The unused
+    // channels stay zeroed, which means the painter draws them as flat
+    // zero (no curve visible) and the dynamic-range normaliser picks up
+    // the reference from the actually-computed channels. This roughly
+    // quarters the per-pixel work in LumaOnly mode and removes the
+    // luma computation in RgbSplit mode.
+    const bool needRed   = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needGreen = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needBlue  = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needLuma  = m_mode == AllChannels || m_mode == LumaOnly;
+
     // Sample on a stride so very large previews stay snappy. 8 MP cap is
     // well above what the user can visually distinguish.
     const int width = rect.width();
@@ -110,15 +121,17 @@ void HistogramWidget::recompute()
         const QRgb *scan = reinterpret_cast<const QRgb *>(image.constScanLine(y));
         for (int x = rect.left(); x <= rect.right(); x += stride) {
             const QRgb px = scan[x];
-            const int r = qRed(px);
-            const int g = qGreen(px);
-            const int b = qBlue(px);
-            m_hist[0][r] += 1.0;
-            m_hist[1][g] += 1.0;
-            m_hist[2][b] += 1.0;
-            // Rec. 709 luma, rounded to the nearest bin.
-            const int y709 = static_cast<int>(std::lround(0.2126 * r + 0.7152 * g + 0.0722 * b));
-            m_hist[3][std::clamp(y709, 0, 255)] += 1.0;
+            if (needRed)   m_hist[0][qRed(px)]   += 1.0;
+            if (needGreen) m_hist[1][qGreen(px)] += 1.0;
+            if (needBlue)  m_hist[2][qBlue(px)]  += 1.0;
+            if (needLuma) {
+                // Rec. 709 luma, rounded to the nearest bin.
+                const int r = qRed(px);
+                const int g = qGreen(px);
+                const int b = qBlue(px);
+                const int y709 = static_cast<int>(std::lround(0.2126 * r + 0.7152 * g + 0.0722 * b));
+                m_hist[3][std::clamp(y709, 0, 255)] += 1.0;
+            }
         }
     }
 
@@ -128,17 +141,28 @@ void HistogramWidget::recompute()
     // crush every other bin to invisible, so a perfectly normal image
     // with a tiny over-exposed spot would look like a flat floor.
     //
-    // We use the 99.5th percentile across all (channel, bin) pairs,
-    // which is what Resolve / Premiere / Lightroom all do. The clipping
+    // We use the 99.5th percentile across only the channels that were
+    // actually sampled for the current mode. Resolve / Premiere /
+    // Lightroom all use a similar percentile reference; restricting it
+    // to the active channels avoids the unused channels (which are
+    // always zero) dragging the reference down to 1. The clipping
     // indicator at the right edge is computed separately from the raw
     // bin count and is not affected by this choice.
     constexpr double kReferencePercentile = 0.995;
     double values[4 * 256];
     int n = 0;
+    const bool channelActive[4] = {
+        needRed, needGreen, needBlue, needLuma,
+    };
     for (int c = 0; c < 4; ++c) {
+        if (!channelActive[c]) continue;
         for (int i = 0; i < 256; ++i) {
             values[n++] = m_hist[c][i];
         }
+    }
+    if (n == 0) {
+        m_peak = 1.0;
+        return;
     }
     std::sort(values, values + n);
     const int idx = std::clamp(

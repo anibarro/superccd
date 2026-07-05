@@ -89,6 +89,16 @@ void WaveformWidget::recompute()
     m_columnPeak.resize(m_columns);
     std::fill(m_columnPeak.begin(), m_columnPeak.end(), 0);
 
+    // Only sample the channels that the current mode actually needs.
+    // WaveformWidget::recompute() is called on every preview-control
+    // change while the window is open, so removing the luma computation
+    // in RgbSplit (and the per-channel work in LumaOnly) is a real win
+    // for preview interactivity.
+    const bool needRed   = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needGreen = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needBlue  = m_mode == AllChannels || m_mode == RgbSplit;
+    const bool needLuma  = m_mode == AllChannels || m_mode == LumaOnly;
+
     // Vertical stride sampling to keep the cost reasonable on large previews.
     const int height = rect.height();
     const int targetSamples = 2'000'000;
@@ -102,7 +112,19 @@ void WaveformWidget::recompute()
         stride = 1;
     }
 
-    quint32 globalPeak = 0;
+    auto bump = [this](int channel, int colIndex, int bin) {
+        const size_t base = (static_cast<size_t>(channel) * static_cast<size_t>(m_columns)
+                             + static_cast<size_t>(colIndex)) * 256
+                            + static_cast<size_t>(bin);
+        const quint32 v = ++m_counts[base];
+        if (v > m_columnPeak[colIndex]) {
+            m_columnPeak[colIndex] = v;
+        }
+        if (v > m_globalPeak) {
+            m_globalPeak = v;
+        }
+    };
+
     for (int y = rect.top(); y <= rect.bottom(); y += stride) {
         const QRgb *scan = reinterpret_cast<const QRgb *>(image.constScanLine(y));
         for (int x = rect.left(); x <= rect.right(); x += stride) {
@@ -111,39 +133,17 @@ void WaveformWidget::recompute()
             const int g = qGreen(px);
             const int b = qBlue(px);
             const int colIndex = x - rect.left();
-            const size_t baseR = static_cast<size_t>(colIndex) * 256 + r;
-            const size_t baseG = (static_cast<size_t>(m_columns) + colIndex) * 256 + g;
-            const size_t baseB = (static_cast<size_t>(2 * m_columns) + colIndex) * 256 + b;
-            ++m_counts[baseR];
-            ++m_counts[baseG];
-            ++m_counts[baseB];
-            if (m_counts[baseR] > m_columnPeak[colIndex]) {
-                m_columnPeak[colIndex] = m_counts[baseR];
+            if (needRed)   bump(0, colIndex, r);
+            if (needGreen) bump(1, colIndex, g);
+            if (needBlue)  bump(2, colIndex, b);
+            if (needLuma) {
+                // Rec. 709 luma, rounded to the nearest bin.
+                const int y709 = static_cast<int>(std::lround(0.2126 * r + 0.7152 * g + 0.0722 * b));
+                bump(3, colIndex, std::clamp(y709, 0, 255));
             }
-            if (m_counts[baseG] > m_columnPeak[colIndex]) {
-                m_columnPeak[colIndex] = m_counts[baseG];
-            }
-            if (m_counts[baseB] > m_columnPeak[colIndex]) {
-                m_columnPeak[colIndex] = m_counts[baseB];
-            }
-            if (m_counts[baseR] > globalPeak) globalPeak = m_counts[baseR];
-            if (m_counts[baseG] > globalPeak) globalPeak = m_counts[baseG];
-            if (m_counts[baseB] > globalPeak) globalPeak = m_counts[baseB];
-
-            const int y709 = static_cast<int>(std::lround(0.2126 * r + 0.7152 * g + 0.0722 * b));
-            const int yc = std::clamp(y709, 0, 255);
-            // 3 * m_columns must be computed as size_t to avoid int
-            // overflow on absurdly wide source images (> ~715M pixels).
-            const size_t baseL = (static_cast<size_t>(3) * static_cast<size_t>(m_columns)
-                                  + colIndex) * 256 + yc;
-            ++m_counts[baseL];
-            if (m_counts[baseL] > m_columnPeak[colIndex]) {
-                m_columnPeak[colIndex] = m_counts[baseL];
-            }
-            if (m_counts[baseL] > globalPeak) globalPeak = m_counts[baseL];
         }
     }
-    m_globalPeak = std::max<quint32>(1, globalPeak);
+    m_globalPeak = std::max<quint32>(1, m_globalPeak);
 }
 
 void WaveformWidget::resizeEvent(QResizeEvent * /*event*/)

@@ -5,8 +5,10 @@
 
 #include <QCheckBox>
 #include <QComboBox>
+#include <QEvent>
 #include <QHBoxLayout>
 #include <QLabel>
+#include <QShowEvent>
 #include <QSlider>
 #include <QSpinBox>
 #include <QTabWidget>
@@ -127,6 +129,13 @@ ExposureToolsWindow::ExposureToolsWindow(QWidget *parent)
     m_tabWidget->addTab(histogramTab, tr("Histogram"));
     m_tabWidget->addTab(waveformTab, tr("Waveform"));
 
+    // When the user switches tabs, push the cached image to the newly
+    // active tab if it was skipped (the previous tab was active) during
+    // the last setSourceImage() call. Otherwise the tab the user just
+    // switched to would show stale data until the next preview event.
+    connect(m_tabWidget, &QTabWidget::currentChanged, this,
+            [this](int) { pushToActiveTab(); });
+
     m_meterVisibleCheckBox = new QCheckBox(
         tr("Meter visible area only"), this);
     m_meterVisibleCheckBox->setToolTip(
@@ -141,9 +150,74 @@ ExposureToolsWindow::ExposureToolsWindow(QWidget *parent)
 
 void ExposureToolsWindow::setSourceImage(const QImage &image, const QRect &visibleRect)
 {
+    // Cache the most recent image so a later show / tab-switch can
+    // re-push it to the widgets without needing the caller to do
+    // anything.
+    m_cachedImage = image;
+    m_cachedVisibleRect = visibleRect;
+
+    // If the window is not visible the user is not looking at the
+    // scopes, so don't pay the recompute cost on every preview-control
+    // change. The next time the window is shown we re-push from the
+    // cache.
+    if (!isVisible()) {
+        return;
+    }
+
+    pushToActiveTab();
+}
+
+void ExposureToolsWindow::showEvent(QShowEvent *event)
+{
+    QWidget::showEvent(event);
+    // Re-push the cached image on every show, including the very first
+    // one, so the scopes aren't blank until the next preview event.
+    pushToActiveTab();
+}
+
+void ExposureToolsWindow::changeEvent(QEvent *event)
+{
+    QWidget::changeEvent(event);
+    if (event->type() == QEvent::WindowStateChange) {
+        // Restoring from minimised should refresh the active tab, since
+        // the user can no longer be looking at stale data.
+        pushToActiveTab();
+    }
+}
+
+void ExposureToolsWindow::pushToActiveTab()
+{
+    if (!isVisible() || m_cachedImage.isNull() || !m_tabWidget) {
+        return;
+    }
+    QWidget *current = m_tabWidget->currentWidget();
+    if (!current) {
+        return;
+    }
+    // The current widget is either the histogramTab or the waveformTab
+    // wrapper QWidget; the actual scope widget is its first child
+    // (because we built each tab as a QVBoxLayout containing the scope
+    // and any toolbar).
+    const QList<QWidget *> children = current->findChildren<QWidget *>();
+    QWidget *scope = current;
+    for (QWidget *child : children) {
+        if (qobject_cast<HistogramWidget *>(child)
+            || qobject_cast<WaveformWidget *>(child)) {
+            scope = child;
+            break;
+        }
+    }
+    pushToWidget(scope, m_cachedVisibleRect);
+}
+
+void ExposureToolsWindow::pushToWidget(QWidget *widget, const QRect &visibleRect)
+{
     const QRect rect = metersVisibleAreaOnly() ? visibleRect : QRect();
-    m_histogram->setSourceImage(image, rect);
-    m_waveform->setSourceImage(image, rect);
+    if (HistogramWidget *h = qobject_cast<HistogramWidget *>(widget)) {
+        h->setSourceImage(m_cachedImage, rect);
+    } else if (WaveformWidget *w = qobject_cast<WaveformWidget *>(widget)) {
+        w->setSourceImage(m_cachedImage, rect);
+    }
 }
 
 bool ExposureToolsWindow::metersVisibleAreaOnly() const
