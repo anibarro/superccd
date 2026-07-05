@@ -111,15 +111,15 @@ void WaveformWidget::recompute()
         return;
     }
 
-    // Only sample the channels that the current mode actually needs.
-    // WaveformWidget::recompute() is called on every preview-control
-    // change while the window is open, so removing the luma computation
-    // in RgbSplit (and the per-channel work in LumaOnly) is a real win
-    // for preview interactivity.
-    const bool needRed   = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needGreen = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needBlue  = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needLuma  = m_mode == AllChannels || m_mode == LumaOnly;
+    // Always sample all 4 channels (R, G, B and luma) on every
+    // recompute, regardless of the current visualization mode. The
+    // per-mode channel skipping was removed because it left the
+    // un-sampled channels in m_counts at all-zero, so a mode change
+    // (e.g. LumaOnly -> RgbSplit) would render a blank graph until
+    // the next preview-control change triggered a fresh recompute.
+    // The cost increase is one extra bump() per pixel (3 RGB bumps
+    // per pixel are always done; the luma is one Q8-fixed-point
+    // add-shift which is essentially free on the Pi).
 
     // ---- Data grid sizing + 2x2 source sampling -------------------------
     // The on-screen waveform plots one data column per X pixel of the
@@ -242,17 +242,18 @@ void WaveformWidget::recompute()
             const int g = qGreen(px);
             const int b = qBlue(px);
             const int colIndex = colIndexForX[i];
-            if (needRed)   bump(counts[0], colIndex, r);
-            if (needGreen) bump(counts[1], colIndex, g);
-            if (needBlue)  bump(counts[2], colIndex, b);
-            if (needLuma) {
-                // Rec. 709 luma in Q8 fixed point, rounded to the
-                // nearest bin. The result fits comfortably in a 16-bit
-                // int before the right-shift, so we can skip the
-                // expensive std::lround path.
-                const int yQ8 = (kLR * r + kLG * g + kLB * b + 128) >> 8;
-                bump(counts[3], colIndex, yQ8 < 0 ? 0 : (yQ8 > 255 ? 255 : yQ8));
-            }
+            // Always sample all 4 channels so a mode change shows
+            // data immediately, without waiting for the next
+            // preview-control event to trigger a fresh recompute.
+            bump(counts[0], colIndex, r);
+            bump(counts[1], colIndex, g);
+            bump(counts[2], colIndex, b);
+            // Rec. 709 luma in Q8 fixed point, rounded to the
+            // nearest bin. The result fits comfortably in a 16-bit
+            // int before the right-shift, so we can skip the
+            // expensive std::lround path.
+            const int yQ8 = (kLR * r + kLG * g + kLB * b + 128) >> 8;
+            bump(counts[3], colIndex, yQ8 < 0 ? 0 : (yQ8 > 255 ? 255 : yQ8));
         }
     }
     // Final global peak: walk each column's recorded peak and take the

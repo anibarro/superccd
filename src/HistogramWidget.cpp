@@ -118,16 +118,15 @@ void HistogramWidget::recompute()
         return;
     }
 
-    // Only sample the channels needed for the current mode. The unused
-    // channels stay zeroed, which means the painter draws them as flat
-    // zero (no curve visible) and the dynamic-range normaliser picks up
-    // the reference from the actually-computed channels. This roughly
-    // quarters the per-pixel work in LumaOnly mode and removes the
-    // luma computation in RgbSplit mode.
-    const bool needRed   = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needGreen = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needBlue  = m_mode == AllChannels || m_mode == RgbSplit;
-    const bool needLuma  = m_mode == AllChannels || m_mode == LumaOnly;
+    // Always sample all 4 channels (R, G, B and luma) on every
+    // recompute, regardless of the current visualization mode. The
+    // per-mode channel skipping was removed because it left the
+    // un-sampled channels at all-zero, so a mode change (e.g.
+    // LumaOnly -> RgbSplit) would render a blank graph until the
+    // next preview-control change triggered a fresh recompute. The
+    // cost increase is the luma Q8 fixed-point computation per
+    // pixel, which is a few integer ops and is essentially free on
+    // the Raspberry Pi compared to the array-increment work.
 
     // 2D 2x2 sampling for consistency with the waveform widget: we
     // skip every other row and every other column of the source. This
@@ -183,13 +182,14 @@ void HistogramWidget::recompute()
             const int r = qRed(px);
             const int g = qGreen(px);
             const int b = qBlue(px);
-            if (needRed)   m_hist[0][r] += 1.0;
-            if (needGreen) m_hist[1][g] += 1.0;
-            if (needBlue)  m_hist[2][b] += 1.0;
-            if (needLuma) {
-                const int yQ8 = (kLR * r + kLG * g + kLB * b + 128) >> 8;
-                m_hist[3][yQ8 < 0 ? 0 : (yQ8 > 255 ? 255 : yQ8)] += 1.0;
-            }
+            // Always sample all 4 channels so a mode change shows
+            // data immediately, without waiting for the next
+            // preview-control event to trigger a fresh recompute.
+            m_hist[0][r] += 1.0;
+            m_hist[1][g] += 1.0;
+            m_hist[2][b] += 1.0;
+            const int yQ8 = (kLR * r + kLG * g + kLB * b + 128) >> 8;
+            m_hist[3][yQ8 < 0 ? 0 : (yQ8 > 255 ? 255 : yQ8)] += 1.0;
         }
     }
 
@@ -199,21 +199,18 @@ void HistogramWidget::recompute()
     // crush every other bin to invisible, so a perfectly normal image
     // with a tiny over-exposed spot would look like a flat floor.
     //
-    // We use the 99.5th percentile across only the channels that were
-    // actually sampled for the current mode. Resolve / Premiere /
-    // Lightroom all use a similar percentile reference; restricting it
-    // to the active channels avoids the unused channels (which are
-    // always zero) dragging the reference down to 1. The clipping
+    // We use the 99.5th percentile across all 4 channels. Resolve /
+    // Premiere / Lightroom all use a similar percentile reference. Now
+    // that recompute() always samples all 4 channels, the peak is
+    // computed from the same data set regardless of the current
+    // visualization mode, so switching modes doesn't cause the
+    // displayed channels to jump in brightness. The clipping
     // indicator at the right edge is computed separately from the raw
     // bin count and is not affected by this choice.
     constexpr double kReferencePercentile = 0.995;
     double values[4 * 256];
     int n = 0;
-    const bool channelActive[4] = {
-        needRed, needGreen, needBlue, needLuma,
-    };
     for (int c = 0; c < 4; ++c) {
-        if (!channelActive[c]) continue;
         for (int i = 0; i < 256; ++i) {
             values[n++] = m_hist[c][i];
         }
