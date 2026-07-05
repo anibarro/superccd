@@ -90,6 +90,9 @@ set(SOURCES
     src/CfaPlaneAlignment.cpp
     src/SuperCCDProcessor.cpp
     src/DngWriter.cpp
+    src/HistogramWidget.cpp
+    src/WaveformWidget.cpp
+    src/ExposureToolsWindow.cpp
     resources/app_resources.qrc
 )
 

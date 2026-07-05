@@ -24,8 +24,10 @@ class QSpinBox;
 class QDoubleSpinBox;
 class PreviewCanvas;
 class TransitionCurveWidget;
+class ExposureToolsWindow;
 
 #include "SuperCCDProcessor.h"
+#include "PreviewImageProcessing.h"
 
 class MainWindow : public QMainWindow
 {
@@ -66,13 +68,17 @@ private slots:
     void onResetDefaults();
     void onAutoPreviewTimer();
     void showPreviewWindow();
+    void onShowExposureToolsToggled(bool enabled);
 
 private:
     void updateControls(bool busy);
     QImage buildAdjustedPreviewImage16() const;
+    QImage buildAdjustedDisplayImage8() const;
     void updatePreviewDisplay(bool preserveViewport = true);
     void updateSharpenedPreviewDisplay();
     void showStatus(const QString &message);
+    QRect currentPreviewVisibleRect() const;
+    void pushExposureToolsFromCache();
     ConversionSettings currentSettings() const;
     void applyParameterSettings(const ConversionSettings &settings);
     void loadSavedDefaults();
@@ -110,6 +116,8 @@ private:
     QButtonGroup *m_previewMethodGroup;
     QCheckBox *m_correctPreviewOutliersCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
+    QCheckBox *m_showExposureToolsCheckBox;
+    ExposureToolsWindow *m_exposureToolsWindow;
     QWidget *m_previewWindow;
     QScrollArea *m_previewScrollArea;
     PreviewCanvas *m_previewLabel;
@@ -125,6 +133,19 @@ private:
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;
     QTimer *m_previewSharpeningTimer;
+    // Coalesces the (relatively expensive) "build the adjusted 8-bit
+    // image and push it to the exposure tools" path so it runs at most
+    // once per ~75 ms while the user is dragging a preview slider.
+    // Without this, every valueChanged tick runs the full
+    // applyDisplayAdjustments() pipeline over the whole preview, which
+    // is the dominant cost on the Raspberry Pi.
+    QTimer *m_exposureScopeTimer;
+    // The cached set of adjustment values used to compute
+    // m_adjustedDisplayImage. Used to short-circuit a re-push when
+    // nothing has actually changed since the last push (e.g. when the
+    // debounce timer fires after only scrollbar / zoom events).
+    QImage m_cachedScopeAdjustmentsImage;
+    PreviewAdjustmentValues m_lastPushedAdjustments;
     QSpinBox *m_rTransitionStartSpinBox;
     QSpinBox *m_rTransitionDelaySpinBox;
     QSpinBox *m_rTransitionSmoothnessSpinBox;
@@ -141,6 +162,7 @@ private:
     QSpinBox *m_previewSharpeningSpinBox;
     QSpinBox *m_previewHighlightCompressionSpinBox;
     QImage m_currentPreviewImage;
+    QImage m_adjustedDisplayImage;
     bool m_previewDragging = false;
     QPoint m_lastPreviewDragPos;
     QString m_lastPreviewedInputPath;
