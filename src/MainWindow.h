@@ -27,6 +27,7 @@ class TransitionCurveWidget;
 class ExposureToolsWindow;
 
 #include "SuperCCDProcessor.h"
+#include "PreviewImageProcessing.h"
 
 class MainWindow : public QMainWindow
 {
@@ -132,6 +133,19 @@ private:
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;
     QTimer *m_previewSharpeningTimer;
+    // Coalesces the (relatively expensive) "build the adjusted 8-bit
+    // image and push it to the exposure tools" path so it runs at most
+    // once per ~75 ms while the user is dragging a preview slider.
+    // Without this, every valueChanged tick runs the full
+    // applyDisplayAdjustments() pipeline over the whole preview, which
+    // is the dominant cost on the Raspberry Pi.
+    QTimer *m_exposureScopeTimer;
+    // The cached set of adjustment values used to compute
+    // m_adjustedDisplayImage. Used to short-circuit a re-push when
+    // nothing has actually changed since the last push (e.g. when the
+    // debounce timer fires after only scrollbar / zoom events).
+    QImage m_cachedScopeAdjustmentsImage;
+    PreviewAdjustmentValues m_lastPushedAdjustments;
     QSpinBox *m_rTransitionStartSpinBox;
     QSpinBox *m_rTransitionDelaySpinBox;
     QSpinBox *m_rTransitionSmoothnessSpinBox;

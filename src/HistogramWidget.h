@@ -63,6 +63,13 @@ private:
     // 0 = red, 1 = green, 2 = blue, 3 = luma.
     double m_hist[4][256];
     Mode m_mode = AllChannels;
+    // True when m_hist / m_peak correspond to the data currently in
+    // m_sourceImage. Lets setSourceImage() / setMode() skip the
+    // (relatively expensive) per-pixel sampling pass when nothing has
+    // changed — this happens a lot on the Raspberry Pi when the preview
+    // pipeline re-pushes the cached image on every visible-rect refresh
+    // (scroll, zoom, "meter visible area only" toggles).
+    bool m_histogramValid = false;
 };
 
 #endif // HISTOGRAMWIDGET_H

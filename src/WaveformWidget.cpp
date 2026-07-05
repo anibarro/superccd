@@ -3,6 +3,7 @@
 #include <QPaintEvent>
 #include <QPainter>
 #include <QFontMetrics>
+#include <QVarLengthArray>
 #include <cmath>
 #include <algorithm>
 
@@ -45,9 +46,32 @@ QSize WaveformWidget::minimumSizeHint() const
 
 void WaveformWidget::setSourceImage(const QImage &image, const QRect &visibleRect)
 {
+    // Cheap fast path: if the same (image, rect) is being pushed again
+    // we already have a valid waveform in m_counts, so just repaint.
+    // On the Raspberry Pi this is a big win because the preview
+    // pipeline re-pushes the cached image on every visible-rect
+    // refresh (scroll, zoom, "meter visible area only" toggles) and
+    // a full re-sample would be a few megabytes of memory traffic.
+    //
+    // The identity check works because QImage uses copy-on-write: a
+    // genuine pixel update produces a different backing buffer, so
+    // constBits() / size / format differ; merely copying or
+    // re-assigning the same QImage keeps the same buffer.
+    if (m_dataValid
+        && m_dataFingerprint == image.constBits()
+        && m_dataSize == image.size()
+        && m_dataFormat == image.format()
+        && m_visibleRect == visibleRect) {
+        update();
+        return;
+    }
     m_sourceImage = image;
     m_visibleRect = visibleRect;
     recompute();
+    m_dataFingerprint = image.constBits();
+    m_dataSize = image.size();
+    m_dataFormat = image.format();
+    m_dataValid = true;
     update();
 }
 
@@ -59,6 +83,10 @@ void WaveformWidget::clearSourceImage()
     m_counts.clear();
     m_columnPeak.clear();
     m_globalPeak = 1;
+    m_dataFingerprint = nullptr;
+    m_dataSize = QSize();
+    m_dataFormat = QImage::Format_Invalid;
+    m_dataValid = true; // empty waveform is still "valid"
     update();
 }
 
@@ -83,12 +111,6 @@ void WaveformWidget::recompute()
         return;
     }
 
-    m_columns = rect.width();
-    m_counts.resize(static_cast<size_t>(4) * m_columns * 256);
-    std::fill(m_counts.begin(), m_counts.end(), 0);
-    m_columnPeak.resize(m_columns);
-    std::fill(m_columnPeak.begin(), m_columnPeak.end(), 0);
-
     // Only sample the channels that the current mode actually needs.
     // WaveformWidget::recompute() is called on every preview-control
     // change while the window is open, so removing the luma computation
@@ -99,51 +121,151 @@ void WaveformWidget::recompute()
     const bool needBlue  = m_mode == AllChannels || m_mode == RgbSplit;
     const bool needLuma  = m_mode == AllChannels || m_mode == LumaOnly;
 
-    // Vertical stride sampling to keep the cost reasonable on large previews.
-    const int height = rect.height();
-    const int targetSamples = 2'000'000;
-    int stride = 1;
-    while ((static_cast<long long>(m_columns) * height)
-               / (static_cast<long long>(stride) * stride)
-           > targetSamples) {
-        ++stride;
+    // ---- Data grid sizing + 2x2 source sampling -------------------------
+    // The on-screen waveform plots one data column per X pixel of the
+    // widget overlay (the painter computes colStartX = (col *
+    // overlayWidth) / m_columns, so a data column index beyond the
+    // overlay width maps to the same screen pixel as the previous
+    // column and is wasted work). It is therefore both correct and a
+    // big performance win to size the internal data grid to the
+    // widget's overlay width, clamped to the number of source columns
+    // we have.
+    //
+    // For a 960-wide preview image displayed in a 220-px widget, this
+    // shrinks the per-channel data buffer from 960*256 = 245,760 cells
+    // down to ~220*256 = 56,320 cells, a 4.3x reduction. The painter
+    // then maps each data column to exactly one on-screen X (since
+    // m_columns == overlayWidth), which is gap-free by construction.
+    //
+    // On the source-pixel side we sample at a fixed "every other row,
+    // every other column" stride (= 2 in both X and Y) to keep the
+    // per-slider-tick cost reasonable on the Raspberry Pi. The
+    // sampled source X is mapped to its data column by the same
+    // integer divide the painter uses to map data column -> screen X,
+    // so every data column gets roughly the same number of source X's
+    // (no per-data-column under-sampling that would leave empty
+    // columns painting as visible gaps). The stride grows in small
+    // equal steps in X and Y only for very large sources.
+    int overlayWidth = width();
+    if (overlayWidth <= 2) {
+        // Widget hasn't been laid out yet; fall back to the source
+        // width so the next paint still has data.
+        overlayWidth = rect.width();
     }
-    if (stride < 1) {
-        stride = 1;
+    const int sourceWidth = rect.width();
+    m_columns = std::min(sourceWidth, overlayWidth);
+    if (m_columns < 1) {
+        m_columns = 1;
+    }
+    m_counts.resize(static_cast<size_t>(4) * m_columns * 256);
+    std::fill(m_counts.begin(), m_counts.end(), 0);
+    m_columnPeak.resize(m_columns);
+    std::fill(m_columnPeak.begin(), m_columnPeak.end(), 0);
+
+    int xStride = 2;
+    int yStride = 2;
+    const int height = rect.height();
+    // 1 M-sample cap: a 1920x1280 preview at 2x2 is 614k samples
+    // and stays snappy, a 4000x3000 preview jumps to 6 M samples and
+    // is throttled back by growing the stride in equal X/Y steps so
+    // the per-column peak normalization stays stable.
+    constexpr int kMaxSamples = 1'000'000;
+    while ((static_cast<long long>(sourceWidth / xStride)
+            * (height / yStride))
+           > kMaxSamples) {
+        if (xStride <= yStride) {
+            ++xStride;
+        } else {
+            ++yStride;
+        }
+        if (xStride > 8 && yStride > 8) {
+            break;
+        }
+    }
+    if (xStride < 1) {
+        xStride = 1;
+    }
+    if (yStride < 1) {
+        yStride = 1;
     }
 
-    auto bump = [this](int channel, int colIndex, int bin) {
-        const size_t base = (static_cast<size_t>(channel) * static_cast<size_t>(m_columns)
-                             + static_cast<size_t>(colIndex)) * 256
-                            + static_cast<size_t>(bin);
-        const quint32 v = ++m_counts[base];
+    // Precompute which destination column each sampled source X maps
+    // to. The mapping is the same integer divide the painter uses in
+    // reverse (painter: col * overlayWidth / m_columns -> screen X;
+    // here: sourceX * m_columns / sourceWidth -> col). With the data
+    // grid sized to the overlay width, every data column receives
+    // roughly the same number of source X's (no missing or
+    // under-sampled columns that would show up as visible vertical
+    // gaps in the rendered waveform).
+    const int sampledSourceWidth = (sourceWidth + xStride - 1) / xStride;
+    QVarLengthArray<int, 4096> colIndexForX;
+    colIndexForX.resize(sampledSourceWidth);
+    for (int i = 0; i < sampledSourceWidth; ++i) {
+        const int sourceX = i * xStride;
+        colIndexForX[i] = (sourceX * m_columns) / std::max(1, sourceWidth);
+    }
+
+    // Inline bump that avoids the function-call indirection from the
+    // previous lambda, and uses quint32 indices rather than
+    // size_t-multiplied offsets. On ARM this matters because the
+    // compiler can keep the per-channel base pointers in registers.
+    auto bump = [this](quint32 *counts, int colIndex, int bin) {
+        const quint32 v = ++counts[colIndex * 256 + bin];
         if (v > m_columnPeak[colIndex]) {
             m_columnPeak[colIndex] = v;
         }
-        if (v > m_globalPeak) {
-            m_globalPeak = v;
-        }
     };
 
-    for (int y = rect.top(); y <= rect.bottom(); y += stride) {
+    // Cache the per-channel pointers (one per channel) for the inner loop.
+    quint32 *counts[4] = {
+        m_counts.data() + 0 * static_cast<size_t>(m_columns) * 256,
+        m_counts.data() + 1 * static_cast<size_t>(m_columns) * 256,
+        m_counts.data() + 2 * static_cast<size_t>(m_columns) * 256,
+        m_counts.data() + 3 * static_cast<size_t>(m_columns) * 256,
+    };
+
+    // For integer luma: 0.2126*R + 0.7152*G + 0.0722*B in Q8 fixed point
+    // gives a value in [0, 255*256] for R/G/B in [0, 255]. We then
+    // round-to-nearest by adding 128 before shifting right by 8. This
+    // is a single multiply-add pair per channel with no libm call,
+    // dramatically faster than std::lround() on the Raspberry Pi.
+    constexpr int kLR = 54;  // 0.2126 * 256 ≈ 54
+    constexpr int kLG = 183; // 0.7152 * 256 ≈ 183
+    constexpr int kLB = 18;  // 0.0722 * 256 ≈ 18
+
+    quint32 localGlobalPeak = 1;
+    for (int y = rect.top(); y <= rect.bottom(); y += yStride) {
         const QRgb *scan = reinterpret_cast<const QRgb *>(image.constScanLine(y));
-        for (int x = rect.left(); x <= rect.right(); x += stride) {
+        for (int i = 0, x = rect.left(); x <= rect.right(); x += xStride, ++i) {
             const QRgb px = scan[x];
             const int r = qRed(px);
             const int g = qGreen(px);
             const int b = qBlue(px);
-            const int colIndex = x - rect.left();
-            if (needRed)   bump(0, colIndex, r);
-            if (needGreen) bump(1, colIndex, g);
-            if (needBlue)  bump(2, colIndex, b);
+            const int colIndex = colIndexForX[i];
+            if (needRed)   bump(counts[0], colIndex, r);
+            if (needGreen) bump(counts[1], colIndex, g);
+            if (needBlue)  bump(counts[2], colIndex, b);
             if (needLuma) {
-                // Rec. 709 luma, rounded to the nearest bin.
-                const int y709 = static_cast<int>(std::lround(0.2126 * r + 0.7152 * g + 0.0722 * b));
-                bump(3, colIndex, std::clamp(y709, 0, 255));
+                // Rec. 709 luma in Q8 fixed point, rounded to the
+                // nearest bin. The result fits comfortably in a 16-bit
+                // int before the right-shift, so we can skip the
+                // expensive std::lround path.
+                const int yQ8 = (kLR * r + kLG * g + kLB * b + 128) >> 8;
+                bump(counts[3], colIndex, yQ8 < 0 ? 0 : (yQ8 > 255 ? 255 : yQ8));
             }
         }
     }
-    m_globalPeak = std::max<quint32>(1, m_globalPeak);
+    // Final global peak: walk each column's recorded peak and take the
+    // max. This is 1 read per column and avoids the O(W * 256) re-scan
+    // that a naive "max of m_counts" would require. m_columnPeak was
+    // updated inline as the histogram was filled, so this is the
+    // global max across all (col, bin, channel) cells.
+    for (int c = 0; c < m_columns; ++c) {
+        if (m_columnPeak[c] > localGlobalPeak) {
+            localGlobalPeak = m_columnPeak[c];
+        }
+    }
+    m_globalPeak = std::max<quint32>(1, localGlobalPeak);
 }
 
 void WaveformWidget::resizeEvent(QResizeEvent * /*event*/)

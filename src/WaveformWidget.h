@@ -82,6 +82,15 @@ private:
     quint32 m_globalPeak = 1;
     Mode m_mode = RgbSplit;
     double m_transparency = 0.0; // 0 = opaque (no transparency), 1 = invisible
+    // Cached identity of the source data we last sampled. setSourceImage
+    // short-circuits the (relatively expensive) per-pixel sampling pass
+    // when the cache is still valid. On the Raspberry Pi this avoids a
+    // full waveform rebuild on every preview-control tick when the
+    // image and visible rect haven't actually changed.
+    const uchar *m_dataFingerprint = nullptr;
+    QSize m_dataSize;
+    QImage::Format m_dataFormat = QImage::Format_Invalid;
+    bool m_dataValid = false;
 };
 
 #endif // WAVEFORMWIDGET_H

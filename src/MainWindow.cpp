@@ -410,6 +410,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
     , m_previewSharpeningTimer(new QTimer(this))
+    , m_exposureScopeTimer(new QTimer(this))
     , m_rTransitionStartSpinBox(new QSpinBox(this))
     , m_rTransitionDelaySpinBox(new QSpinBox(this))
     , m_rTransitionSmoothnessSpinBox(new QSpinBox(this))
@@ -551,6 +552,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_autoPreviewTimer->setInterval(250);
     m_previewSharpeningTimer->setSingleShot(true);
     m_previewSharpeningTimer->setInterval(100);
+    m_exposureScopeTimer->setSingleShot(true);
+    // 75 ms is fast enough to feel live (≈13 Hz) while reducing the
+    // number of full-image applyDisplayAdjustments() rebuilds per
+    // slider drag from 30+ to ~13. On a Raspberry Pi this is the
+    // difference between the Exposure slider feeling sluggish and
+    // feeling responsive while the scopes window is open.
+    m_exposureScopeTimer->setInterval(75);
     warmupNoteLabel->setWordWrap(true);
     warmupNoteLabel->setStyleSheet(QStringLiteral("color:#808080;"));
 
@@ -911,6 +919,10 @@ MainWindow::MainWindow(QWidget *parent)
             &QTimer::timeout,
             this,
             &MainWindow::updateSharpenedPreviewDisplay);
+    connect(m_exposureScopeTimer,
+            &QTimer::timeout,
+            this,
+            &MainWindow::pushExposureToolsFromCache);
     // The preview is expensive to render, so only queue an auto-preview
     // update once the user has finished dragging the slider. The curve
     // widget and the spinbox still update live via the valueChanged
@@ -1441,7 +1453,10 @@ void MainWindow::onRemoveSelectedFiles()
     if (m_fileList->count() == 0) {
         m_currentPreviewImage = QImage();
         m_adjustedDisplayImage = QImage();
+        m_cachedScopeAdjustmentsImage = QImage();
+        m_lastPushedAdjustments = PreviewAdjustmentValues();
         m_previewSharpeningTimer->stop();
+        m_exposureScopeTimer->stop();
         m_previewLabel->clearSourceImage();
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
@@ -1521,6 +1536,8 @@ void MainWindow::onConvertCurrent()
         m_previewWindow->setWindowTitle(
             tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
         m_adjustedDisplayImage = QImage();
+        m_cachedScopeAdjustmentsImage = QImage();
+        m_lastPushedAdjustments = PreviewAdjustmentValues();
         updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
@@ -1668,6 +1685,8 @@ void MainWindow::onUpdatePreview()
     m_previewWindow->setWindowTitle(
         tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
     m_adjustedDisplayImage = QImage();
+    m_cachedScopeAdjustmentsImage = QImage();
+    m_lastPushedAdjustments = PreviewAdjustmentValues();
     updatePreviewDisplay(!shouldResetViewport);
     showStatus(tr("Preview updated."));
     m_busy = false;
@@ -1988,20 +2007,56 @@ void MainWindow::pushExposureToolsFromCache()
     if (m_currentPreviewImage.isNull()) {
         return;
     }
-    // Lazy build of the adjusted 8-bit cache. updatePreviewDisplay normally
-    // refreshes it on every preview-control change; this is the fallback
-    // path for events that don't go through that funnel (toggling the
-    // exposure tools window itself, toggling "meter visible area only",
-    // scroll/zoom while visible-area-only is on, etc.).
-    if (m_adjustedDisplayImage.isNull()
-        || m_adjustedDisplayImage.size() != m_currentPreviewImage.size()) {
+
+    // Collect the current preview-control adjustments so we can decide
+    // whether the cached m_adjustedDisplayImage is still up to date.
+    // When it is, we still need to push it to the scopes (in case the
+    // visible-rect changed due to scroll/zoom) but we can skip the
+    // expensive full-image rebuild.
+    PreviewAdjustmentValues currentAdjustments;
+    currentAdjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    currentAdjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
+    currentAdjustments.tint = m_previewTintSlider->value();
+    currentAdjustments.gammaHundredths = m_previewGammaSlider->value();
+    currentAdjustments.contrast = m_previewContrastSlider->value();
+    currentAdjustments.shadows = m_previewShadowsSlider->value();
+    currentAdjustments.shadowRange = m_previewShadowRangeSlider->value();
+    currentAdjustments.saturation = m_previewSaturationSlider->value();
+    currentAdjustments.highlightCompression =
+        m_previewHighlightCompressionSlider->value();
+    const int sharpening = m_previewSharpeningSlider->value();
+
+    const bool cacheStale = m_adjustedDisplayImage.isNull()
+        || m_adjustedDisplayImage.size() != m_currentPreviewImage.size()
+        || m_lastPushedAdjustments.exposureTenthsEv
+            != currentAdjustments.exposureTenthsEv
+        || m_lastPushedAdjustments.whiteBalance
+            != currentAdjustments.whiteBalance
+        || m_lastPushedAdjustments.tint != currentAdjustments.tint
+        || m_lastPushedAdjustments.gammaHundredths
+            != currentAdjustments.gammaHundredths
+        || m_lastPushedAdjustments.contrast != currentAdjustments.contrast
+        || m_lastPushedAdjustments.shadows != currentAdjustments.shadows
+        || m_lastPushedAdjustments.shadowRange
+            != currentAdjustments.shadowRange
+        || m_lastPushedAdjustments.saturation != currentAdjustments.saturation
+        || m_lastPushedAdjustments.highlightCompression
+            != currentAdjustments.highlightCompression
+        || m_cachedScopeAdjustmentsImage.isNull()
+        || m_cachedScopeAdjustmentsImage.size()
+            != m_currentPreviewImage.size();
+
+    if (cacheStale) {
         m_adjustedDisplayImage = buildAdjustedDisplayImage8();
+        m_cachedScopeAdjustmentsImage = m_currentPreviewImage;
+        m_lastPushedAdjustments = currentAdjustments;
     }
     if (m_adjustedDisplayImage.isNull()) {
         return;
     }
     m_exposureToolsWindow->setSourceImage(
         m_adjustedDisplayImage, currentPreviewVisibleRect());
+    (void)sharpening; // buildAdjustedDisplayImage8 already accounts for it
 }
 
 void MainWindow::onPreviewZoomChanged(int value)
@@ -2192,20 +2247,28 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     // display-adjustment pipeline on the entire preview image on every
     // slider tick, which makes even basic Exposure tweaks feel sluggish
     // on a Raspberry Pi when the scopes are not in use.
+    //
+    // When the scopes are visible, we still defer the full-image rebuild
+    // to m_exposureScopeTimer (a 75 ms single-shot). While the user is
+    // dragging a slider the timer keeps restarting and only fires after
+    // they pause, so a continuous drag coalesces dozens of
+    // valueChanged events into a single full-image rebuild per
+    // drag-pause. The canvas itself still updates live via
+    // m_previewLabel->setDisplayState() above; only the scope path is
+    // debounced.
     if (m_exposureToolsWindow->isVisible()) {
-        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
         if (m_previewSharpeningSlider->value() > 0) {
-            // Defer the heavier re-push to the sharpening timer; that callback
-            // calls back into updateSharpenedPreviewDisplay() which refreshes
-            // the scopes with the sharpened pixels applied.
+            // Defer the heavier re-push to the sharpening timer; that
+            // callback calls back into updateSharpenedPreviewDisplay()
+            // which rebuilds the cache and pushes to the scopes.
             m_previewSharpeningTimer->start();
         } else {
             m_previewSharpeningTimer->stop();
-            m_exposureToolsWindow->setSourceImage(
-                m_adjustedDisplayImage, currentPreviewVisibleRect());
+            m_exposureScopeTimer->start();
         }
     } else {
         m_previewSharpeningTimer->stop();
+        m_exposureScopeTimer->stop();
     }
 }
 
@@ -2224,10 +2287,14 @@ void MainWindow::updateSharpenedPreviewDisplay()
     // exposure tools window is hidden -- it caches the most recent image
     // and re-pushes it on showEvent(), so the scopes will catch up the
     // moment the user opens the window.
+    //
+    // The full-image rebuild and scope push is debounced through
+    // m_exposureScopeTimer, same as updatePreviewDisplay(). The
+    // sharpening timer fires on slider-release, so this path is the
+    // one that handles the "user paused dragging a sharpening slider"
+    // case.
     if (m_exposureToolsWindow->isVisible()) {
-        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
-        m_exposureToolsWindow->setSourceImage(
-            m_adjustedDisplayImage, currentPreviewVisibleRect());
+        m_exposureScopeTimer->start();
     }
 }
 
