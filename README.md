@@ -142,6 +142,7 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 - preview rotation options
 - preview export as `JPEG` or lossless `16-bit TIFF`
 - preview export at `6MP` or `12MP`
+- exposure tools window with **Histogram** and **Waveform** overlays for the live preview
 - adjustable `S -> R` highlight handoff parameters
 - optional export of individual S and R plane images
 - convert current previewed RAF

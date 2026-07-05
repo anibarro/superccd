@@ -243,6 +243,82 @@ Controls the displayed preview scale.
 
 You can drag RAF files directly onto the file list to add them. The application accepts `.raf` files dropped anywhere on the list area.
 
+## Exposure Tools
+
+The application ships a dedicated **Exposure Tools** window that hosts in-app
+**Histogram** and **Waveform** overlays for the live preview. Enable the
+window with the **Show Exposure Tools** checkbox in the main window. It
+opens as an independent top-level window, can be moved and resized freely,
+and is restored at its last size and position on the next launch.
+
+The Exposure Tools window has two tabs:
+
+- **Histogram** - a classic RGB + luma histogram for the preview image.
+- **Waveform** - a classic waveform monitor for the preview image.
+
+Both tools are metered from the same image source the on-screen preview is
+built from, so they stay in sync with the visible preview adjustments
+(exposure, white balance, gamma, contrast, shadows, etc.).
+
+### Meter visible area only
+
+A checkbox at the bottom of the Exposure Tools window toggles between:
+
+- **Full preview image** (default) - the tools meter the full preview image.
+- **Visible area only** - the tools meter only the sub-rect currently
+  visible in the Preview window (taking the current zoom and scroll
+  position into account).
+
+The "Visible area only" mode is useful when you have zoomed in on a small
+part of the preview and want to check the histogram or waveform of just
+that part of the image.
+
+### Histogram tab
+
+The histogram shows the per-channel R, G, B, and luma (Rec. 709 weighted)
+distribution of the metered image, binned into 256 buckets per channel.
+
+A **Histogram mode** dropdown in the toolbar selects the visualization:
+
+- **All** - a single plot with the R, G, B, and luma curves overlaid.
+- **RGB split** - three side-by-side plots, one per RGB channel.
+- **Luma** - a single plot with the luma channel only.
+
+Per-channel histograms are drawn in log space so shadow detail stays
+visible even when the image has bright highlights. The histogram is
+sampled in 8-bit-per-channel form (matching what you see on screen).
+
+### Waveform tab
+
+The waveform shows, for each column of the metered image, how many pixels
+in that column landed in each `[0, 255]` bin, drawn with brightness
+proportional to the count. This makes it easy to spot crushed shadows,
+clipped highlights, and channel imbalance at a glance.
+
+A **Waveform mode** dropdown in the toolbar selects the visualization
+layout (same three modes as the histogram: **All**, **RGB split**, **Luma**).
+
+A **Transparency** slider and spin box in the toolbar let you dial the
+waveform's opacity. 0% is fully opaque, 100% is fully transparent. The
+slider is useful when the waveform is on top of a busy preview and you
+want to peek through it.
+
+The waveform uses a per-column peak reference instead of a single global
+peak, so a single bright column does not dim every other column in the
+trace. Each column self-normalizes.
+
+### Performance
+
+The exposure tools are designed to stay cheap to update on every preview
+redraw. They short-circuit the (relatively expensive) per-pixel sampling
+pass when the cached source image and visible rect have not actually
+changed, so adjusting a slider on the main window does not force a
+full histogram + waveform recompute on every tick.
+
+The tools are off by default. Enable them with the **Show Exposure Tools**
+checkbox in the main window; their open/closed state is persisted across
+launches.
+
 ## Merge Controls
 
 These controls affect the exported `6MP Raw CFA` result.

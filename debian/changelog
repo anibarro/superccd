@@ -1,3 +1,22 @@
+superccd2dng (1.4.2) stable; urgency=low
+
+  * Add a new Exposure Tools window with Histogram and Waveform overlays
+    for the live preview, each with All / RGB split / Luma visualization modes
+  * Add a "Meter visible area only" toggle to scope histogram and waveform
+    sampling to the sub-rect currently visible in the Preview window
+  * Add a Transparency slider/spin box to the Waveform tab so the overlay
+    can be dialed back over a busy preview
+  * Retune the histogram and waveform visualizations for a cleaner look
+    (tighter line weights, more readable color palette, consistent grid
+    and axis decorations)
+  * Use per-column peak normalization in the waveform so a single bright
+    column does not dim every other column in the trace
+  * Cache the source image and visible rect in the exposure tools so
+    adjusting a slider does not force a full histogram + waveform
+    recompute on every tick (especially noticeable on the Raspberry Pi)
+
+ -- Eduardo Anibarro <anibarro@example.com>  Sun, 05 Jul 2026 14:30:00 +0200
+
 superccd2dng (1.4.1) stable; urgency=low
 
   * Add a Transition Curve graph widget that visualizes the live S->R merge
