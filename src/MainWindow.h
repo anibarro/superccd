@@ -24,6 +24,7 @@ class QSpinBox;
 class QDoubleSpinBox;
 class PreviewCanvas;
 class TransitionCurveWidget;
+class ExposureToolsWindow;
 
 #include "SuperCCDProcessor.h"
 
@@ -66,13 +67,17 @@ private slots:
     void onResetDefaults();
     void onAutoPreviewTimer();
     void showPreviewWindow();
+    void onShowExposureToolsToggled(bool enabled);
 
 private:
     void updateControls(bool busy);
     QImage buildAdjustedPreviewImage16() const;
+    QImage buildAdjustedDisplayImage8() const;
     void updatePreviewDisplay(bool preserveViewport = true);
     void updateSharpenedPreviewDisplay();
     void showStatus(const QString &message);
+    QRect currentPreviewVisibleRect() const;
+    void pushExposureToolsFromCache();
     ConversionSettings currentSettings() const;
     void applyParameterSettings(const ConversionSettings &settings);
     void loadSavedDefaults();
@@ -110,6 +115,8 @@ private:
     QButtonGroup *m_previewMethodGroup;
     QCheckBox *m_correctPreviewOutliersCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
+    QCheckBox *m_showExposureToolsCheckBox;
+    ExposureToolsWindow *m_exposureToolsWindow;
     QWidget *m_previewWindow;
     QScrollArea *m_previewScrollArea;
     PreviewCanvas *m_previewLabel;
@@ -141,6 +148,7 @@ private:
     QSpinBox *m_previewSharpeningSpinBox;
     QSpinBox *m_previewHighlightCompressionSpinBox;
     QImage m_currentPreviewImage;
+    QImage m_adjustedDisplayImage;
     bool m_previewDragging = false;
     QPoint m_lastPreviewDragPos;
     QString m_lastPreviewedInputPath;

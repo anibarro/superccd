@@ -1,5 +1,6 @@
 #include "MainWindow.h"
 #include "DngWriter.h"
+#include "ExposureToolsWindow.h"
 #include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
 #include "PreviewPixelCorrection.h"
@@ -392,6 +393,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_correctPreviewOutliersCheckBox(
           new QCheckBox(tr("Correct isolated light/dark pixels"), this))
     , m_autoPreviewCheckBox(new QCheckBox(tr("Update preview automatically"), this))
+    , m_showExposureToolsCheckBox(new QCheckBox(tr("Exposure tools window"), this))
+    , m_exposureToolsWindow(new ExposureToolsWindow(this))
     , m_previewWindow(new QWidget(this, Qt::Window))
     , m_previewScrollArea(new QScrollArea(m_previewWindow))
     , m_previewLabel(new PreviewCanvas(m_previewScrollArea))
@@ -437,9 +440,14 @@ MainWindow::MainWindow(QWidget *parent)
     previewWindowLayout->setContentsMargins(0, 0, 0, 0);
     previewWindowLayout->addWidget(m_previewScrollArea);
 
+    m_exposureToolsWindow->hide();
+    m_showExposureToolsCheckBox->setToolTip(
+        tr("Show or hide the floating Exposure Tools window (Histogram, "
+           "RGB/Luma Waveform, Vectorscope with skin-tone guide)."));
+
     QPushButton *addFilesButton = new QPushButton(tr("Add RAF Files..."), this);
     QPushButton *removeFilesButton = new QPushButton(tr("Remove Selected"), this);
-    QPushButton *selectFolderButton = new QPushButton(tr("Select Output Folder..."), this);
+    QPushButton *selectFolderButton = new QPushButton(tr("Select"), this);
     QLabel *warmupNoteLabel = new QLabel(
         tr("Note: the first preview or conversion for a RAF file is slower because the app has to decode and cache the raw data."),
         this);
@@ -726,7 +734,11 @@ MainWindow::MainWindow(QWidget *parent)
     // Preview controls group box (wrapped in scrollable area)
     QGroupBox *previewGroup = new QGroupBox(tr("Preview Controls"), this);
     QFormLayout *previewControlsLayout = new QFormLayout(previewGroup);
-    
+
+    // First control: toggle that shows or hides the floating Exposure Tools
+    // window (Histogram, Waveform, Vectorscope).
+    previewControlsLayout->addRow(m_showExposureToolsCheckBox);
+
     QHBoxLayout *exposureLayout = new QHBoxLayout;
     exposureLayout->addWidget(m_previewExposureSlider, 1);
     exposureLayout->addWidget(m_previewExposureSpinBox, 0);
@@ -802,9 +814,12 @@ MainWindow::MainWindow(QWidget *parent)
     // instead of keeping the platform's empty frame area).
     transitionGroup->setSizePolicy(QSizePolicy::Preferred, QSizePolicy::Preferred);
 
+    QHBoxLayout *outputFolderLayout = new QHBoxLayout;
+    outputFolderLayout->addWidget(m_outputFolder);
+    outputFolderLayout->addWidget(selectFolderButton);
+
     QFormLayout *optionsLayout = new QFormLayout;
-    optionsLayout->addRow(tr("Output folder:"), m_outputFolder);
-    optionsLayout->addRow(tr(""), selectFolderButton);
+    optionsLayout->addRow(tr("Output folder:"), outputFolderLayout);
     optionsLayout->addRow(transitionGroup);
     optionsLayout->addRow(previewScrollArea);
 
@@ -819,6 +834,8 @@ MainWindow::MainWindow(QWidget *parent)
     previewButtonsLayout->addWidget(m_showPreviewButton);
     previewButtonsLayout->addWidget(m_previewButton);
     previewButtonsLayout->addWidget(m_exportPreviewButton);
+    QPushButton *showExposureToolsButton = new QPushButton(tr("Show Exposure Tools"), this);
+    previewButtonsLayout->addWidget(showExposureToolsButton);
     rightLayout->addLayout(previewButtonsLayout);
     rightLayout->addWidget(warmupNoteLabel);
 
@@ -856,6 +873,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_showPreviewButton, &QPushButton::clicked, this, &MainWindow::showPreviewWindow);
     connect(m_previewButton, &QPushButton::clicked, this, &MainWindow::onUpdatePreview);
     connect(m_exportPreviewButton, &QPushButton::clicked, this, &MainWindow::onExportPreview);
+    connect(showExposureToolsButton, &QPushButton::clicked, this, [this]() {
+        onShowExposureToolsToggled(true);
+        m_showExposureToolsCheckBox->setChecked(true);
+    });
+    connect(m_showExposureToolsCheckBox, &QCheckBox::toggled, this,
+            &MainWindow::onShowExposureToolsToggled);
+    // Re-push the current preview when the user toggles "meter visible area
+    // only" so the scopes immediately reflect the new sampling region.
+    connect(m_exposureToolsWindow->meterVisibleAreaCheckBox(), &QCheckBox::toggled,
+            this, [this](bool) { pushExposureToolsFromCache(); });
     connect(m_fileList, &QListWidget::currentRowChanged, this, [this](int row) {
         m_whiteBalancePickerButton->setChecked(false);
         if (row >= 0) {
@@ -914,6 +941,19 @@ MainWindow::MainWindow(QWidget *parent)
         m_rTransitionDelaySlider->value() / 100.0,
         m_rTransitionSmoothnessSlider->value() / 100.0);
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewZoomChanged);
+    // Keep the exposure tools in sync with the visible part of the preview
+    // window whenever the user zooms or scrolls.
+    const auto refreshExposureToolsIfVisible = [this]() {
+        if (m_exposureToolsWindow->metersVisibleAreaOnly()) {
+            pushExposureToolsFromCache();
+        }
+    };
+    connect(m_previewZoomSlider, &QSlider::valueChanged, this,
+            [refreshExposureToolsIfVisible](int) { refreshExposureToolsIfVisible(); });
+    connect(m_previewScrollArea->horizontalScrollBar(), &QScrollBar::valueChanged,
+            this, [refreshExposureToolsIfVisible](int) { refreshExposureToolsIfVisible(); });
+    connect(m_previewScrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
+            this, [refreshExposureToolsIfVisible](int) { refreshExposureToolsIfVisible(); });
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
     connect(m_previewTintSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewTintChanged);
@@ -1079,6 +1119,36 @@ MainWindow::MainWindow(QWidget *parent)
         m_previewWindow->restoreGeometry(previewGeometry);
     }
     m_previewWindow->show();
+
+    // Exposure tools window: restore geometry and the "meter visible area
+    // only" preference. The toggle checkbox drives whether the window is
+    // shown, so we honor that state and only show the window when the user
+    // had it open last session.
+    const QByteArray exposureGeometry =
+        appSettings().value(QStringLiteral("windows/exposureToolsGeometry")).toByteArray();
+    if (!exposureGeometry.isEmpty()) {
+        m_exposureToolsWindow->restoreGeometry(exposureGeometry);
+    }
+    const bool meterVisibleOnly = appSettings().value(
+        QStringLiteral("exposureTools/meterVisibleAreaOnly"), false).toBool();
+    {
+        const QSignalBlocker blocker(
+            m_exposureToolsWindow->meterVisibleAreaCheckBox());
+        m_exposureToolsWindow->meterVisibleAreaCheckBox()->setChecked(meterVisibleOnly);
+    }
+    const bool exposureToolsVisible = appSettings().value(
+        QStringLiteral("exposureTools/visible"), false).toBool();
+    {
+        const QSignalBlocker blocker(m_showExposureToolsCheckBox);
+        m_showExposureToolsCheckBox->setChecked(exposureToolsVisible);
+    }
+    if (exposureToolsVisible) {
+        // The exposure tools will be populated automatically the first time
+        // a preview is rendered (via updatePreviewDisplay), so we only need
+        // to show the window here.
+        m_exposureToolsWindow->show();
+    }
+    m_exposureToolsWindow->installEventFilter(this);
 }
 
 bool MainWindow::eventFilter(QObject *watched, QEvent *event)
@@ -1086,6 +1156,20 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
     if (watched == m_previewWindow && event->type() == QEvent::Close) {
         appSettings().setValue(QStringLiteral("windows/previewGeometry"),
                                m_previewWindow->saveGeometry());
+    }
+
+    if (watched == m_exposureToolsWindow) {
+        if (event->type() == QEvent::Close) {
+            appSettings().setValue(QStringLiteral("windows/exposureToolsGeometry"),
+                                   m_exposureToolsWindow->saveGeometry());
+            appSettings().setValue(QStringLiteral("exposureTools/visible"), false);
+            appSettings().setValue(
+                QStringLiteral("exposureTools/meterVisibleAreaOnly"),
+                m_exposureToolsWindow->metersVisibleAreaOnly());
+            // Keep the toggle checkbox in sync with the actual window state.
+            const QSignalBlocker blocker(m_showExposureToolsCheckBox);
+            m_showExposureToolsCheckBox->setChecked(false);
+        }
     }
 
     if ((watched == m_previewLabel || watched == m_previewScrollArea->viewport()) && !m_currentPreviewImage.isNull()) {
@@ -1185,7 +1269,15 @@ void MainWindow::closeEvent(QCloseEvent *event)
 {
     appSettings().setValue(QStringLiteral("windows/previewGeometry"),
                            m_previewWindow->saveGeometry());
+    appSettings().setValue(QStringLiteral("windows/exposureToolsGeometry"),
+                           m_exposureToolsWindow->saveGeometry());
+    appSettings().setValue(QStringLiteral("exposureTools/visible"),
+                           m_showExposureToolsCheckBox->isChecked());
+    appSettings().setValue(
+        QStringLiteral("exposureTools/meterVisibleAreaOnly"),
+        m_exposureToolsWindow->metersVisibleAreaOnly());
     m_previewWindow->close();
+    m_exposureToolsWindow->close();
     QMainWindow::closeEvent(event);
 }
 
@@ -1339,12 +1431,14 @@ void MainWindow::onRemoveSelectedFiles()
 
     if (m_fileList->count() == 0) {
         m_currentPreviewImage = QImage();
+        m_adjustedDisplayImage = QImage();
         m_previewSharpeningTimer->stop();
         m_previewLabel->clearSourceImage();
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
         m_previewLabel->unsetCursor();
         m_previewWindow->setWindowTitle(tr("Preview"));
+        m_exposureToolsWindow->setSourceImage(QImage(), QRect());
     }
 }
 
@@ -1417,6 +1511,7 @@ void MainWindow::onConvertCurrent()
         m_lastPreviewedInputPath = inputPath;
         m_previewWindow->setWindowTitle(
             tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
+        m_adjustedDisplayImage = QImage();
         updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
@@ -1563,6 +1658,7 @@ void MainWindow::onUpdatePreview()
     m_lastPreviewedInputPath = inputPath;
     m_previewWindow->setWindowTitle(
         tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
+    m_adjustedDisplayImage = QImage();
     updatePreviewDisplay(!shouldResetViewport);
     showStatus(tr("Preview updated."));
     m_busy = false;
@@ -1834,6 +1930,71 @@ void MainWindow::showPreviewWindow()
     m_previewWindow->activateWindow();
 }
 
+void MainWindow::onShowExposureToolsToggled(bool enabled)
+{
+    if (enabled) {
+        if (m_exposureToolsWindow->isMinimized()) {
+            m_exposureToolsWindow->setWindowState(
+                m_exposureToolsWindow->windowState() & ~Qt::WindowMinimized);
+        }
+        // Push the current preview (if any) so the scopes aren't blank when
+        // first opened.
+        pushExposureToolsFromCache();
+        m_exposureToolsWindow->show();
+        m_exposureToolsWindow->raise();
+        m_exposureToolsWindow->activateWindow();
+    } else {
+        m_exposureToolsWindow->hide();
+    }
+}
+
+QRect MainWindow::currentPreviewVisibleRect() const
+{
+    if (m_currentPreviewImage.isNull() || m_previewLabel->width() <= 0
+        || m_previewLabel->height() <= 0) {
+        return QRect();
+    }
+    const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
+    if (zoom <= 0.0) {
+        return m_currentPreviewImage.rect();
+    }
+    // The scroll area's horizontal/vertical scroll values tell us which
+    // portion of the canvas is on screen. Convert that to image coords.
+    const QPoint topLeftCanvas(
+        m_previewScrollArea->horizontalScrollBar()->value(),
+        m_previewScrollArea->verticalScrollBar()->value());
+    const QSize viewportSize = m_previewScrollArea->viewport()->size();
+    const int left = static_cast<int>(std::floor(topLeftCanvas.x() / zoom));
+    const int top = static_cast<int>(std::floor(topLeftCanvas.y() / zoom));
+    const int right = static_cast<int>(
+        std::ceil((topLeftCanvas.x() + viewportSize.width()) / zoom));
+    const int bottom = static_cast<int>(
+        std::ceil((topLeftCanvas.y() + viewportSize.height()) / zoom));
+    return QRect(QPoint(left, top), QPoint(right - 1, bottom - 1))
+        .intersected(m_currentPreviewImage.rect());
+}
+
+void MainWindow::pushExposureToolsFromCache()
+{
+    if (m_currentPreviewImage.isNull()) {
+        return;
+    }
+    // Lazy build of the adjusted 8-bit cache. updatePreviewDisplay normally
+    // refreshes it on every preview-control change; this is the fallback
+    // path for events that don't go through that funnel (toggling the
+    // exposure tools window itself, toggling "meter visible area only",
+    // scroll/zoom while visible-area-only is on, etc.).
+    if (m_adjustedDisplayImage.isNull()
+        || m_adjustedDisplayImage.size() != m_currentPreviewImage.size()) {
+        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
+    }
+    if (m_adjustedDisplayImage.isNull()) {
+        return;
+    }
+    m_exposureToolsWindow->setSourceImage(
+        m_adjustedDisplayImage, currentPreviewVisibleRect());
+}
+
 void MainWindow::onPreviewZoomChanged(int value)
 {
     Q_UNUSED(value);
@@ -1941,6 +2102,35 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
         adjustments);
 }
 
+QImage MainWindow::buildAdjustedDisplayImage8() const
+{
+    if (m_currentPreviewImage.isNull()) {
+        return QImage();
+    }
+
+    PreviewAdjustmentValues adjustments;
+    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
+    adjustments.tint = m_previewTintSlider->value();
+    adjustments.gammaHundredths = m_previewGammaSlider->value();
+    adjustments.contrast = m_previewContrastSlider->value();
+    adjustments.shadows = m_previewShadowsSlider->value();
+    adjustments.shadowRange = m_previewShadowRangeSlider->value();
+    adjustments.saturation = m_previewSaturationSlider->value();
+    adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+
+    // applyDisplayAdjustments performs the same path the preview canvas
+    // uses, so the exposure tools (histogram, waveform, vectorscope)
+    // always show the same pixels the user is looking at.
+    QImage image = PreviewImageProcessing::applyDisplayAdjustments(
+        m_currentPreviewImage, adjustments);
+    const int sharpening = m_previewSharpeningSlider->value();
+    if (sharpening > 0) {
+        PreviewImageProcessing::applyLumaSharpening8(image, sharpening);
+    }
+    return image;
+}
+
 void MainWindow::updatePreviewDisplay(bool preserveViewport)
 {
     if (m_currentPreviewImage.isNull()) {
@@ -1981,21 +2171,37 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     m_previewScrollArea->horizontalScrollBar()->setValue(std::max(0, newHValue));
     m_previewScrollArea->verticalScrollBar()->setValue(std::max(0, newVValue));
 
+    // Build the same display-adjusted 8-bit image the preview canvas paints
+    // and push it to the exposure tools, so the histogram / waveform /
+    // vectorscope always reflect what the user is actually seeing.
+    m_adjustedDisplayImage = buildAdjustedDisplayImage8();
     if (m_previewSharpeningSlider->value() > 0) {
+        // Defer the heavier re-push to the sharpening timer; that callback
+        // calls back into updateSharpenedPreviewDisplay() which refreshes
+        // the scopes with the sharpened pixels applied.
         m_previewSharpeningTimer->start();
     } else {
         m_previewSharpeningTimer->stop();
+        m_exposureToolsWindow->setSourceImage(
+            m_adjustedDisplayImage, currentPreviewVisibleRect());
     }
 }
 
 void MainWindow::updateSharpenedPreviewDisplay()
 {
-    if (m_currentPreviewImage.isNull()
-        || m_previewSharpeningSlider->value() <= 0) {
+    if (m_currentPreviewImage.isNull()) {
         return;
     }
-
+    if (m_previewSharpeningSlider->value() <= 0) {
+        m_previewLabel->setSharpening(0);
+        return;
+    }
     m_previewLabel->setSharpening(m_previewSharpeningSlider->value());
+    // Rebuild the cached display image with the new sharpening amount and
+    // push it to the exposure tools.
+    m_adjustedDisplayImage = buildAdjustedDisplayImage8();
+    m_exposureToolsWindow->setSourceImage(
+        m_adjustedDisplayImage, currentPreviewVisibleRect());
 }
 
 void MainWindow::showStatus(const QString &message)
