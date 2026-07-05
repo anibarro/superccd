@@ -2183,16 +2183,29 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     // Build the same display-adjusted 8-bit image the preview canvas paints
     // and push it to the exposure tools, so the histogram / waveform
     // always reflect what the user is actually seeing.
-    m_adjustedDisplayImage = buildAdjustedDisplayImage8();
-    if (m_previewSharpeningSlider->value() > 0) {
-        // Defer the heavier re-push to the sharpening timer; that callback
-        // calls back into updateSharpenedPreviewDisplay() which refreshes
-        // the scopes with the sharpened pixels applied.
-        m_previewSharpeningTimer->start();
+    //
+    // Skip the rebuild (and the deferred sharpening re-push) when the
+    // exposure tools window is hidden: the window caches the most recent
+    // image internally and re-pushes it on showEvent(), so the scopes
+    // will catch up the moment the user opens the window. Rebuilding
+    // here on every preview-control change would otherwise run the full
+    // display-adjustment pipeline on the entire preview image on every
+    // slider tick, which makes even basic Exposure tweaks feel sluggish
+    // on a Raspberry Pi when the scopes are not in use.
+    if (m_exposureToolsWindow->isVisible()) {
+        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
+        if (m_previewSharpeningSlider->value() > 0) {
+            // Defer the heavier re-push to the sharpening timer; that callback
+            // calls back into updateSharpenedPreviewDisplay() which refreshes
+            // the scopes with the sharpened pixels applied.
+            m_previewSharpeningTimer->start();
+        } else {
+            m_previewSharpeningTimer->stop();
+            m_exposureToolsWindow->setSourceImage(
+                m_adjustedDisplayImage, currentPreviewVisibleRect());
+        }
     } else {
         m_previewSharpeningTimer->stop();
-        m_exposureToolsWindow->setSourceImage(
-            m_adjustedDisplayImage, currentPreviewVisibleRect());
     }
 }
 
@@ -2207,10 +2220,15 @@ void MainWindow::updateSharpenedPreviewDisplay()
     }
     m_previewLabel->setSharpening(m_previewSharpeningSlider->value());
     // Rebuild the cached display image with the new sharpening amount and
-    // push it to the exposure tools.
-    m_adjustedDisplayImage = buildAdjustedDisplayImage8();
-    m_exposureToolsWindow->setSourceImage(
-        m_adjustedDisplayImage, currentPreviewVisibleRect());
+    // push it to the exposure tools. Skip the rebuild entirely if the
+    // exposure tools window is hidden -- it caches the most recent image
+    // and re-pushes it on showEvent(), so the scopes will catch up the
+    // moment the user opens the window.
+    if (m_exposureToolsWindow->isVisible()) {
+        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
+        m_exposureToolsWindow->setSourceImage(
+            m_adjustedDisplayImage, currentPreviewVisibleRect());
+    }
 }
 
 void MainWindow::showStatus(const QString &message)
