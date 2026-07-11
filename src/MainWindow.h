@@ -64,6 +64,8 @@ private slots:
     void onPreviewSaturationChanged(int value);
     void onPreviewSharpeningChanged(int value);
     void onPreviewHighlightCompressionChanged(int value);
+    void onPreviewToneBalanceChanged(int value);
+    void onPreviewBalanceBiasChanged(int value);
     void onSaveDefaults();
     void onResetDefaults();
     void onAutoPreviewTimer();
@@ -109,6 +111,8 @@ private:
     QSlider *m_previewSaturationSlider;
     QSlider *m_previewSharpeningSlider;
     QSlider *m_previewHighlightCompressionSlider;
+    QSlider *m_previewToneBalanceSlider;
+    QSlider *m_previewBalanceBiasSlider;
     QComboBox *m_previewRotationCombo;
     QWidget *m_previewMethodRow;
     QRadioButton *m_previewMethodReconstructionButton;
@@ -161,6 +165,8 @@ private:
     QSpinBox *m_previewSaturationSpinBox;
     QSpinBox *m_previewSharpeningSpinBox;
     QSpinBox *m_previewHighlightCompressionSpinBox;
+    QSpinBox *m_previewToneBalanceSpinBox;
+    QSpinBox *m_previewBalanceBiasSpinBox;
     QImage m_currentPreviewImage;
     QImage m_adjustedDisplayImage;
     bool m_previewDragging = false;

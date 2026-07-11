@@ -70,6 +70,8 @@ constexpr int kDefaultPreviewShadowRangeSliderValue = 100;
 constexpr int kDefaultPreviewSaturationSliderValue = 64;
 constexpr int kDefaultPreviewSharpeningSliderValue = 0;
 constexpr int kDefaultPreviewHighlightCompressionSliderValue = 30;
+constexpr int kDefaultPreviewToneBalanceSliderValue = 0;
+constexpr int kDefaultPreviewBalanceBiasSliderValue = 50;
 constexpr int kDefaultPreviewZoomSliderValue = 35;
 constexpr bool kDefaultAutoPreview = true;
 constexpr int kPreviewExportSixMpShortSide = 2016;
@@ -385,6 +387,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
     , m_previewSharpeningSlider(new QSlider(Qt::Horizontal, this))
     , m_previewHighlightCompressionSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewToneBalanceSlider(new QSlider(Qt::Horizontal, this))
+    , m_previewBalanceBiasSlider(new QSlider(Qt::Horizontal, this))
     , m_previewRotationCombo(new QComboBox(this))
     , m_previewMethodRow(new QWidget(this))
     , m_previewMethodReconstructionButton(new QRadioButton(tr("Reconstruction"), this))
@@ -426,6 +430,8 @@ MainWindow::MainWindow(QWidget *parent)
     , m_previewSaturationSpinBox(new QSpinBox(this))
     , m_previewSharpeningSpinBox(new QSpinBox(this))
     , m_previewHighlightCompressionSpinBox(new QSpinBox(this))
+    , m_previewToneBalanceSpinBox(new QSpinBox(this))
+    , m_previewBalanceBiasSpinBox(new QSpinBox(this))
 {
     setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
     resize(900, 760);
@@ -507,6 +513,23 @@ MainWindow::MainWindow(QWidget *parent)
     // Highlight compression slider: range 0 to 100, default 0
     m_previewHighlightCompressionSlider->setRange(0, 100);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
+    // Tone balance slider: range 0 to 100, default 0
+    // Applies an S-curve tone map that lifts shadows and compresses highlights
+    // while preserving midtone contrast.
+    m_previewToneBalanceSlider->setRange(0, 100);
+    m_previewToneBalanceSlider->setValue(kDefaultPreviewToneBalanceSliderValue);
+    m_previewToneBalanceSlider->setToolTip(
+        tr("Tone mapping strength. Lifts shadows and compresses highlights while "
+           "preserving midtone contrast. 0 = off, 100 = maximum effect."));
+    // Balance bias slider: range 0 to 100, default 50 (center)
+    // 0 = bias toward shadow preservation (more highlight compression)
+    // 50 = balanced
+    // 100 = bias toward highlight preservation (more shadow lift)
+    m_previewBalanceBiasSlider->setRange(0, 100);
+    m_previewBalanceBiasSlider->setValue(kDefaultPreviewBalanceBiasSliderValue);
+    m_previewBalanceBiasSlider->setToolTip(
+        tr("Shifts the tone curve pivot. Lower values preserve more highlights; "
+           "higher values preserve more shadows. 50 = neutral."));
     m_previewRotationCombo->addItem(tr("Normal"), 0);
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
@@ -643,6 +666,16 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewHighlightCompressionSpinBox->setValue(kDefaultPreviewHighlightCompressionSliderValue);
     m_previewHighlightCompressionSpinBox->setSingleStep(5);
 
+    // Tone balance spinbox: 0 to 100
+    m_previewToneBalanceSpinBox->setRange(0, 100);
+    m_previewToneBalanceSpinBox->setValue(kDefaultPreviewToneBalanceSliderValue);
+    m_previewToneBalanceSpinBox->setSingleStep(5);
+
+    // Balance bias spinbox: 0 to 100
+    m_previewBalanceBiasSpinBox->setRange(0, 100);
+    m_previewBalanceBiasSpinBox->setValue(kDefaultPreviewBalanceBiasSliderValue);
+    m_previewBalanceBiasSpinBox->setSingleStep(5);
+
     QHBoxLayout *fileButtonsLayout = new QHBoxLayout;
     fileButtonsLayout->addWidget(addFilesButton);
     fileButtonsLayout->addWidget(removeFilesButton);
@@ -762,43 +795,166 @@ MainWindow::MainWindow(QWidget *parent)
     contrastLayout->addWidget(m_previewContrastSlider, 1);
     contrastLayout->addWidget(m_previewContrastSpinBox, 0);
     previewControlsLayout->addRow(tr("Contrast:"), contrastLayout);
-    
-    QHBoxLayout *saturationLayout = new QHBoxLayout;
-    saturationLayout->addWidget(m_previewSaturationSlider, 1);
-    saturationLayout->addWidget(m_previewSaturationSpinBox, 0);
-    previewControlsLayout->addRow(tr("Saturation:"), saturationLayout);
-    
+
+    QHBoxLayout *highlightCompressionLayout = new QHBoxLayout;
+    highlightCompressionLayout->addWidget(m_previewHighlightCompressionSlider, 1);
+    highlightCompressionLayout->addWidget(m_previewHighlightCompressionSpinBox, 0);
+    previewControlsLayout->addRow(tr("Highlight compression:"), highlightCompressionLayout);
+
+    // Visual group: Tone Mapping (Tone balance + Balance bias)
+    QFrame *toneGroupFrame = new QFrame(this);
+    toneGroupFrame->setFrameShape(QFrame::StyledPanel);
+    toneGroupFrame->setStyleSheet(QStringLiteral(
+        "QFrame#toneGroupFrame {"
+        "  background: rgba(255,255,255,0.03);"
+        "  border: 1px solid rgba(255,255,255,0.08);"
+        "  border-radius: 4px;"
+        "  margin: 0px;"
+        "  padding: 4px;"
+        "}"));
+    toneGroupFrame->setObjectName(QStringLiteral("toneGroupFrame"));
+    QVBoxLayout *toneGroupLayout = new QVBoxLayout(toneGroupFrame);
+    toneGroupLayout->setContentsMargins(4, 4, 4, 4);
+    toneGroupLayout->setSpacing(4);
+
+    QLabel *toneGroupTitle = new QLabel(tr("Tone Mapping"), this);
+    toneGroupTitle->setStyleSheet(QStringLiteral(
+        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
+    toneGroupLayout->addWidget(toneGroupTitle);
+
+    QHBoxLayout *toneBalanceRow = new QHBoxLayout;
+    toneBalanceRow->setContentsMargins(0, 0, 0, 0);
+    toneBalanceRow->setSpacing(4);
+    QLabel *toneBalanceLabel = new QLabel(tr("Tone balance:"), this);
+    toneBalanceLabel->setMinimumWidth(90);
+    toneBalanceRow->addWidget(toneBalanceLabel);
+    toneBalanceRow->addWidget(m_previewToneBalanceSlider, 1);
+    toneBalanceRow->addWidget(m_previewToneBalanceSpinBox, 0);
+    toneGroupLayout->addLayout(toneBalanceRow);
+
+    QHBoxLayout *balanceBiasRow = new QHBoxLayout;
+    balanceBiasRow->setContentsMargins(0, 0, 0, 0);
+    balanceBiasRow->setSpacing(4);
+    QLabel *balanceBiasLabel = new QLabel(tr("Balance bias:"), this);
+    balanceBiasLabel->setMinimumWidth(90);
+    balanceBiasRow->addWidget(balanceBiasLabel);
+    balanceBiasRow->addWidget(m_previewBalanceBiasSlider, 1);
+    balanceBiasRow->addWidget(m_previewBalanceBiasSpinBox, 0);
+    toneGroupLayout->addLayout(balanceBiasRow);
+
+    previewControlsLayout->addRow(toneGroupFrame);
+
+    // Visual group: Shadow Recovery (Shadows + Shadow range)
+    QFrame *shadowGroupFrame = new QFrame(this);
+    shadowGroupFrame->setFrameShape(QFrame::StyledPanel);
+    shadowGroupFrame->setStyleSheet(QStringLiteral(
+        "QFrame#shadowGroupFrame {"
+        "  background: rgba(255,255,255,0.03);"
+        "  border: 1px solid rgba(255,255,255,0.08);"
+        "  border-radius: 4px;"
+        "  margin: 0px;"
+        "  padding: 4px;"
+        "}"));
+    shadowGroupFrame->setObjectName(QStringLiteral("shadowGroupFrame"));
+    QVBoxLayout *shadowGroupLayout = new QVBoxLayout(shadowGroupFrame);
+    shadowGroupLayout->setContentsMargins(4, 4, 4, 4);
+    shadowGroupLayout->setSpacing(4);
+
+    QLabel *shadowGroupTitle = new QLabel(tr("Shadow Recovery"), this);
+    shadowGroupTitle->setStyleSheet(QStringLiteral(
+        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
+    shadowGroupLayout->addWidget(shadowGroupTitle);
+
+    QHBoxLayout *shadowRow = new QHBoxLayout;
+    shadowRow->setContentsMargins(0, 0, 0, 0);
+    shadowRow->setSpacing(4);
+    QLabel *shadowsLabel = new QLabel(tr("Shadows:"), this);
+    shadowsLabel->setMinimumWidth(90);
+    shadowRow->addWidget(shadowsLabel);
+    shadowRow->addWidget(m_previewShadowsSlider, 1);
+    shadowRow->addWidget(m_previewShadowsSpinBox, 0);
+    shadowGroupLayout->addLayout(shadowRow);
+
+    QHBoxLayout *shadowRangeRow = new QHBoxLayout;
+    shadowRangeRow->setContentsMargins(0, 0, 0, 0);
+    shadowRangeRow->setSpacing(4);
+    QLabel *shadowRangeLabel = new QLabel(tr("Shadow range:"), this);
+    shadowRangeLabel->setMinimumWidth(90);
+    shadowRangeRow->addWidget(shadowRangeLabel);
+    shadowRangeRow->addWidget(m_previewShadowRangeSlider, 1);
+    shadowRangeRow->addWidget(m_previewShadowRangeSpinBox, 0);
+    shadowGroupLayout->addLayout(shadowRangeRow);
+
+    previewControlsLayout->addRow(shadowGroupFrame);
+
+    // Visual group: Color (Saturation + White Balance + Tint + White balance picker)
+    QFrame *colorGroupFrame = new QFrame(this);
+    colorGroupFrame->setFrameShape(QFrame::StyledPanel);
+    colorGroupFrame->setStyleSheet(QStringLiteral(
+        "QFrame#colorGroupFrame {"
+        "  background: rgba(255,255,255,0.03);"
+        "  border: 1px solid rgba(255,255,255,0.08);"
+        "  border-radius: 4px;"
+        "  margin: 0px;"
+        "  padding: 4px;"
+        "}"));
+    colorGroupFrame->setObjectName(QStringLiteral("colorGroupFrame"));
+    QVBoxLayout *colorGroupLayout = new QVBoxLayout(colorGroupFrame);
+    colorGroupLayout->setContentsMargins(4, 4, 4, 4);
+    colorGroupLayout->setSpacing(4);
+
+    QLabel *colorGroupTitle = new QLabel(tr("Color"), this);
+    colorGroupTitle->setStyleSheet(QStringLiteral(
+        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
+    colorGroupLayout->addWidget(colorGroupTitle);
+
+    QHBoxLayout *saturationRow = new QHBoxLayout;
+    saturationRow->setContentsMargins(0, 0, 0, 0);
+    saturationRow->setSpacing(4);
+    QLabel *saturationLabel = new QLabel(tr("Saturation:"), this);
+    saturationLabel->setMinimumWidth(90);
+    saturationRow->addWidget(saturationLabel);
+    saturationRow->addWidget(m_previewSaturationSlider, 1);
+    saturationRow->addWidget(m_previewSaturationSpinBox, 0);
+    colorGroupLayout->addLayout(saturationRow);
+
+    QHBoxLayout *whiteBalanceRow = new QHBoxLayout;
+    whiteBalanceRow->setContentsMargins(0, 0, 0, 0);
+    whiteBalanceRow->setSpacing(4);
+    QLabel *whiteBalanceLabel = new QLabel(tr("White balance:"), this);
+    whiteBalanceLabel->setMinimumWidth(90);
+    whiteBalanceRow->addWidget(whiteBalanceLabel);
+    whiteBalanceRow->addWidget(m_previewWhiteBalanceSlider, 1);
+    whiteBalanceRow->addWidget(m_previewWhiteBalanceSpinBox, 0);
+    colorGroupLayout->addLayout(whiteBalanceRow);
+
+    QHBoxLayout *tintRow = new QHBoxLayout;
+    tintRow->setContentsMargins(0, 0, 0, 0);
+    tintRow->setSpacing(4);
+    QLabel *tintLabel = new QLabel(tr("Tint:"), this);
+    tintLabel->setMinimumWidth(90);
+    tintRow->addWidget(tintLabel);
+    tintRow->addWidget(m_previewTintSlider, 1);
+    tintRow->addWidget(m_previewTintSpinBox, 0);
+    colorGroupLayout->addLayout(tintRow);
+
+    QHBoxLayout *pickerRow = new QHBoxLayout;
+    pickerRow->setContentsMargins(0, 0, 0, 0);
+    pickerRow->setSpacing(4);
+    QLabel *pickerLabel = new QLabel(tr("WB picker:"), this);
+    pickerLabel->setMinimumWidth(90);
+    pickerRow->addWidget(pickerLabel);
+    pickerRow->addWidget(m_whiteBalancePickerButton, 0);
+    pickerRow->addStretch();
+    colorGroupLayout->addLayout(pickerRow);
+
+    previewControlsLayout->addRow(colorGroupFrame);
+
     QHBoxLayout *sharpeningLayout = new QHBoxLayout;
     sharpeningLayout->addWidget(m_previewSharpeningSlider, 1);
     sharpeningLayout->addWidget(m_previewSharpeningSpinBox, 0);
     previewControlsLayout->addRow(tr("Sharpening:"), sharpeningLayout);
 
-    QHBoxLayout *shadowsLayout = new QHBoxLayout;
-    shadowsLayout->addWidget(m_previewShadowsSlider, 1);
-    shadowsLayout->addWidget(m_previewShadowsSpinBox, 0);
-    previewControlsLayout->addRow(tr("Shadows:"), shadowsLayout);
-
-    QHBoxLayout *shadowRangeLayout = new QHBoxLayout;
-    shadowRangeLayout->addWidget(m_previewShadowRangeSlider, 1);
-    shadowRangeLayout->addWidget(m_previewShadowRangeSpinBox, 0);
-    previewControlsLayout->addRow(tr("Shadow range:"), shadowRangeLayout);
-    
-    QHBoxLayout *highlightCompressionLayout = new QHBoxLayout;
-    highlightCompressionLayout->addWidget(m_previewHighlightCompressionSlider, 1);
-    highlightCompressionLayout->addWidget(m_previewHighlightCompressionSpinBox, 0);
-    previewControlsLayout->addRow(tr("Highlight compression:"), highlightCompressionLayout);
-    
-    QHBoxLayout *whiteBalanceLayout = new QHBoxLayout;
-    whiteBalanceLayout->addWidget(m_previewWhiteBalanceSlider, 1);
-    whiteBalanceLayout->addWidget(m_previewWhiteBalanceSpinBox, 0);
-    previewControlsLayout->addRow(tr("White balance:"), whiteBalanceLayout);
-    
-    QHBoxLayout *tintLayout = new QHBoxLayout;
-    tintLayout->addWidget(m_previewTintSlider, 1);
-    tintLayout->addWidget(m_previewTintSpinBox, 0);
-    previewControlsLayout->addRow(tr("Tint:"), tintLayout);
-    
-    previewControlsLayout->addRow(tr("White balance picker:"), m_whiteBalancePickerButton);
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
     
     QHBoxLayout *zoomLayout = new QHBoxLayout;
@@ -988,6 +1144,8 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
     connect(m_previewSharpeningSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSharpeningChanged);
     connect(m_previewHighlightCompressionSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewHighlightCompressionChanged);
+    connect(m_previewToneBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewToneBalanceChanged);
+    connect(m_previewBalanceBiasSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewBalanceBiasChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
     });
@@ -1053,6 +1211,12 @@ MainWindow::MainWindow(QWidget *parent)
     });
     connect(m_previewHighlightCompressionSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewHighlightCompressionSpinBox->setValue(value);
+    });
+    connect(m_previewToneBalanceSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_previewToneBalanceSpinBox->setValue(value);
+    });
+    connect(m_previewBalanceBiasSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_previewBalanceBiasSpinBox->setValue(value);
     });
 
     // When spinbox changes, update slider (no auto preview for preview adjustments)
@@ -1127,6 +1291,16 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_previewHighlightCompressionSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         if (m_previewHighlightCompressionSlider->value() != value) {
             m_previewHighlightCompressionSlider->setValue(value);
+        }
+    });
+    connect(m_previewToneBalanceSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_previewToneBalanceSlider->value() != value) {
+            m_previewToneBalanceSlider->setValue(value);
+        }
+    });
+    connect(m_previewBalanceBiasSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_previewBalanceBiasSlider->value() != value) {
+            m_previewBalanceBiasSlider->setValue(value);
         }
     });
 
@@ -1929,6 +2103,10 @@ void MainWindow::updateControls(bool busy)
     m_previewSharpeningSpinBox->setEnabled(!busy);
     m_previewHighlightCompressionSlider->setEnabled(!busy);
     m_previewHighlightCompressionSpinBox->setEnabled(!busy);
+    m_previewToneBalanceSlider->setEnabled(!busy);
+    m_previewToneBalanceSpinBox->setEnabled(!busy);
+    m_previewBalanceBiasSlider->setEnabled(!busy);
+    m_previewBalanceBiasSpinBox->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_correctPreviewOutliersCheckBox->setEnabled(!busy);
     m_showPreviewButton->setEnabled(true);
@@ -2024,6 +2202,8 @@ void MainWindow::pushExposureToolsFromCache()
     currentAdjustments.saturation = m_previewSaturationSlider->value();
     currentAdjustments.highlightCompression =
         m_previewHighlightCompressionSlider->value();
+    currentAdjustments.toneBalance = m_previewToneBalanceSlider->value();
+    currentAdjustments.balanceBias = m_previewBalanceBiasSlider->value();
     const int sharpening = m_previewSharpeningSlider->value();
 
     const bool cacheStale = m_adjustedDisplayImage.isNull()
@@ -2042,6 +2222,10 @@ void MainWindow::pushExposureToolsFromCache()
         || m_lastPushedAdjustments.saturation != currentAdjustments.saturation
         || m_lastPushedAdjustments.highlightCompression
             != currentAdjustments.highlightCompression
+        || m_lastPushedAdjustments.toneBalance
+            != currentAdjustments.toneBalance
+        || m_lastPushedAdjustments.balanceBias
+            != currentAdjustments.balanceBias
         || m_cachedScopeAdjustmentsImage.isNull()
         || m_cachedScopeAdjustmentsImage.size()
             != m_currentPreviewImage.size();
@@ -2145,6 +2329,18 @@ void MainWindow::onPreviewHighlightCompressionChanged(int value)
     updatePreviewDisplay();
 }
 
+void MainWindow::onPreviewToneBalanceChanged(int value)
+{
+    Q_UNUSED(value);
+    updatePreviewDisplay();
+}
+
+void MainWindow::onPreviewBalanceBiasChanged(int value)
+{
+    Q_UNUSED(value);
+    updatePreviewDisplay();
+}
+
 QImage MainWindow::buildAdjustedPreviewImage16() const
 {
     if (m_currentPreviewImage.isNull()) {
@@ -2161,6 +2357,8 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
     adjustments.shadowRange = m_previewShadowRangeSlider->value();
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+    adjustments.toneBalance = m_previewToneBalanceSlider->value();
+    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
     return PreviewImageProcessing::applyExportAdjustments16(
         m_currentPreviewImage,
         adjustments);
@@ -2182,6 +2380,8 @@ QImage MainWindow::buildAdjustedDisplayImage8() const
     adjustments.shadowRange = m_previewShadowRangeSlider->value();
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+    adjustments.toneBalance = m_previewToneBalanceSlider->value();
+    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
 
     // applyDisplayAdjustments performs the same path the preview canvas
     // uses, so the exposure tools (histogram, waveform)
@@ -2224,6 +2424,8 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     adjustments.shadowRange = m_previewShadowRangeSlider->value();
     adjustments.saturation = m_previewSaturationSlider->value();
     adjustments.highlightCompression = m_previewHighlightCompressionSlider->value();
+    adjustments.toneBalance = m_previewToneBalanceSlider->value();
+    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
     m_previewLabel->setDisplayState(zoom, adjustments, 0);
     m_previewLabel->setCursor(
         m_whiteBalancePickerButton->isChecked() ? Qt::CrossCursor : Qt::OpenHandCursor);
@@ -2471,6 +2673,16 @@ void MainWindow::loadSavedDefaults()
     m_previewHighlightCompressionSlider->setValue(std::clamp(previewHighlightCompression,
                                                              m_previewHighlightCompressionSlider->minimum(),
                                                              m_previewHighlightCompressionSlider->maximum()));
+    const int previewToneBalance = settingsStore.value(QStringLiteral("defaults/previewToneBalanceSlider"),
+                                                        kDefaultPreviewToneBalanceSliderValue).toInt();
+    m_previewToneBalanceSlider->setValue(std::clamp(previewToneBalance,
+                                                    m_previewToneBalanceSlider->minimum(),
+                                                    m_previewToneBalanceSlider->maximum()));
+    const int previewBalanceBias = settingsStore.value(QStringLiteral("defaults/previewBalanceBiasSlider"),
+                                                        kDefaultPreviewBalanceBiasSliderValue).toInt();
+    m_previewBalanceBiasSlider->setValue(std::clamp(previewBalanceBias,
+                                                    m_previewBalanceBiasSlider->minimum(),
+                                                    m_previewBalanceBiasSlider->maximum()));
     const int previewZoom = settingsStore.value(QStringLiteral("defaults/previewZoomSlider"),
                                                 kDefaultPreviewZoomSliderValue).toInt();
     m_previewZoomSlider->setValue(std::clamp(previewZoom,
@@ -2511,6 +2723,8 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/previewSaturationSlider"), m_previewSaturationSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewSharpeningSlider"), m_previewSharpeningSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewHighlightCompressionSlider"), m_previewHighlightCompressionSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewToneBalanceSlider"), m_previewToneBalanceSlider->value());
+    settingsStore.setValue(QStringLiteral("defaults/previewBalanceBiasSlider"), m_previewBalanceBiasSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewZoomSlider"), m_previewZoomSlider->value());
     settingsStore.setValue(QStringLiteral("defaults/previewRotation"), m_previewRotationCombo->currentData().toInt());
     settingsStore.setValue(QStringLiteral("defaults/autoPreview"), m_autoPreviewCheckBox->isChecked());
@@ -2544,6 +2758,8 @@ void MainWindow::onResetDefaults()
     m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
     m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
+    m_previewToneBalanceSlider->setValue(kDefaultPreviewToneBalanceSliderValue);
+    m_previewBalanceBiasSlider->setValue(kDefaultPreviewBalanceBiasSliderValue);
     m_previewRotationCombo->setCurrentIndex(0);
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     queueAutoPreview();

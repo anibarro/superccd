@@ -36,6 +36,74 @@ double applyShadowRecovery(double linear, double shadowRecovery, double shadowRa
     return clamped + (lifted - clamped) * shadowRangeMask(clamped, shadowRange);
 }
 
+// Applies a tone-mapping curve designed to preserve midtone contrast.
+//
+// * amount  (0..1): overall strength of the tone mapping effect.
+//           0 = identity; 1 = maximum shadow lift + highlight compression.
+// * bias   (-1..1): shifts the curve's pivot.
+//           Negative values lean toward shadow preservation (compress
+//           highlights more, lift shadows less).
+//           Positive values lean toward highlight preservation (lift
+//           shadows more, compress highlights less).
+//
+// The curve works in two stages:
+//   1. A power-curve tone map with separate exponents for shadows and
+//      highlights (split at a bias-dependent pivot). Shadows are lifted
+//      and highlights are compressed.
+//   2. A midtone contrast correction that applies a gentle S-curve
+//      around the pivot to compensate for the slope reduction introduced
+//      by stage 1, keeping the image looking punchy rather than flat.
+double applyToneBalance(double linear, double amount, double bias)
+{
+    if (amount <= 0.0) {
+        return linear;
+    }
+
+    const double x = std::clamp(linear, 0.0, 1.0);
+
+    // Pivot point: where the shadow region ends and the highlight region
+    // begins.  bias < 0 moves the pivot lower (more of the image is in
+    // the highlight region → more highlight compression).  bias > 0 moves
+    // it higher (more of the image is in the shadow region → more shadow
+    // lift).
+    const double pivot = std::clamp(0.5 + bias * 0.25, 0.2, 0.8);
+
+    // Shadow exponent (> 1 lifts dark values).
+    const double shadowStr = amount * (1.0 + std::max(bias, 0.0)) * 0.45;
+    const double sExp = 1.0 / std::max(1.0 - shadowStr, 0.3);
+
+    // Highlight exponent (> 1 compresses bright values).
+    const double highlightStr = amount * (1.0 + std::max(-bias, 0.0)) * 0.45;
+    const double hExp = 1.0 + highlightStr * 2.5;
+
+    double y;
+    if (x <= pivot) {
+        const double t = x / std::max(pivot, 0.001);
+        y = std::pow(t, sExp) * pivot;
+    } else {
+        const double t = (x - pivot) / std::max(1.0 - pivot, 0.001);
+        y = pivot + (1.0 - std::pow(1.0 - t, hExp)) * (1.0 - pivot);
+    }
+
+    // Midtone contrast correction.  At the pivot the tone curve slope is
+    // reduced by the shadow lift / highlight compression.  We compensate
+    // with a sigmoid-shaped local contrast boost centred on the pivot.
+    //
+    // Estimate the actual slope at the pivot from the shadow side:
+    const double slopeAtPivot = std::pow(1.0, sExp - 1.0) * sExp;
+    const double contrastCompensation = std::clamp(
+        1.0 / std::max(slopeAtPivot, 0.4), 1.0, 1.8);
+    const double cc = (contrastCompensation - 1.0) * amount;
+
+    if (cc > 0.0) {
+        const double d = y - pivot;
+        const double mask = std::exp(-d * d / 0.08);
+        y += d * cc * mask;
+    }
+
+    return std::clamp(y, 0.0, 1.0);
+}
+
 template <typename FillLuma, typename ApplyPixel>
 void applyLumaSharpening(int width,
                          int height,
@@ -92,6 +160,8 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
     const double compressionStart = 200.0 - highlightCompression * 152.0;
     const double compressionStrength = highlightCompression * 2.0
         + highlightCompression * highlightCompression * 14.0;
+    const double toneBalanceAmount = adjustments.toneBalance / 100.0;
+    const double toneBalanceBias = adjustments.balanceBias / 100.0;
 
     std::vector<quint16> lut(65536);
     for (int i = 0; i <= 65535; ++i) {
@@ -106,6 +176,7 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
             linear = (linear - 0.5) * contrastScale + 0.5;
         }
         linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
+        linear = applyToneBalance(linear, toneBalanceAmount, toneBalanceBias);
         const double output =
             std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
         lut[static_cast<size_t>(i)] = static_cast<quint16>(
@@ -140,6 +211,8 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     const double invOriginalGamma = 1.0 / kOriginalGamma;
     const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
+    const double toneBalanceAmount = adjustments.toneBalance / 100.0;
+    const double toneBalanceBias = adjustments.balanceBias / 100.0;
 
     std::array<quint8, 256> gammaLut{};
     for (int i = 0; i < 256; ++i) {
@@ -148,6 +221,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
             linear = (linear - 0.5) * contrastScale + 0.5;
         }
         linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
+        linear = applyToneBalance(linear, toneBalanceAmount, toneBalanceBias);
         gammaLut[static_cast<size_t>(i)] = static_cast<quint8>(std::clamp(
             static_cast<int>(std::lround(
                 std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 255.0)),
