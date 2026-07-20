@@ -1,3 +1,23 @@
+superccd2dng (1.4.3) stable; urgency=low
+
+  * Add a new Tone Mapping control group to the preview adjustments panel
+    with Tone balance and Balance bias sliders, each backed by a numeric
+    spin box for precise input
+  * Add a two-stage tone-mapping curve that lifts shadows and compresses
+    highlights while preserving midtone contrast via a local sigmoid
+    contrast correction centred on the pivot
+  * Add a Balance bias control that shifts the tone curve pivot so the
+    user can favour shadow preservation or highlight preservation
+  * Reorganize the preview adjustments panel into visual groups
+    (Tone Mapping, Shadow Recovery, Color) with styled panel frames
+    for a cleaner, more scannable layout
+  * Improve the shadow recovery range control with a proportional
+    smoothstep falloff that scales with the pivot point, so low range
+    values have narrow transitions and high range values have wide
+    transitions for a more natural look at all settings
+
+ -- Eduardo Anibarro <anibarro@example.com>  Mon, 20 Jul 2026 22:30:00 +0200
+
 superccd2dng (1.4.2) stable; urgency=low
 
   * Add a new Exposure Tools window with Histogram and Waveform overlays
