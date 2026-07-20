@@ -12,16 +12,38 @@ constexpr int kToneLutMaxInput = 8192;
 
 double shadowRangeMask(double linear, double shadowRange)
 {
-    constexpr double kMinimumPivot = 0.08;
-    constexpr double kMaximumPivot = 0.80;
+    // The shadow range slider controls how far up the tonal range the shadow
+    // recovery effect reaches.
+    //
+    // shadowRange = 1.0 (max): effect spans the full tonal range (0..0.60),
+    //                          gentle falloff — shadows blend into midtones.
+    // shadowRange = 0.0 (min): effect is confined to the deepest shadows
+    //                          (0..0.10) with a smooth cutoff.
+    //
+    // The mask uses a smoothstep falloff that scales with the pivot point,
+    // ensuring a natural transition at all range values.
+
+    constexpr double kMinimumPivot = 0.10;
+    constexpr double kMaximumPivot = 0.60;
+
     const double pivot =
         kMinimumPivot + (kMaximumPivot - kMinimumPivot) * shadowRange;
-    const double normalized =
-        std::clamp(std::clamp(linear, 0.0, 1.0) / std::max(pivot, 0.001), 0.0, 1.0);
-    const double baseMask =
-        1.0 - normalized * normalized * (3.0 - 2.0 * normalized);
-    const double maskStrength = std::pow(1.0 - shadowRange, 2.5);
-    return 1.0 - (1.0 - baseMask) * maskStrength;
+
+    const double x = std::clamp(linear, 0.0, 1.0);
+
+    // Transition width is proportional to the pivot, so low range values
+    // have narrow transitions and high range values have wide transitions.
+    const double fadeEnd = pivot + pivot * 1.5;
+
+    if (x <= pivot) {
+        return 1.0;
+    } else if (x >= fadeEnd) {
+        return 0.0;
+    } else {
+        const double t = (x - pivot) / (fadeEnd - pivot);
+        // Smoothstep: 1 at t=0, 0 at t=1
+        return (1.0 - t) * (1.0 - t) * (1.0 + 2.0 * t);
+    }
 }
 
 double applyShadowRecovery(double linear, double shadowRecovery, double shadowRange)

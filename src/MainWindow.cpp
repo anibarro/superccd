@@ -143,16 +143,24 @@ int sliderFromMergeStart(double start)
 
 double shadowRangeMask(double linear, double shadowRange)
 {
-    constexpr double kMinimumPivot = 0.08;
-    constexpr double kMaximumPivot = 0.80;
+    constexpr double kMinimumPivot = 0.10;
+    constexpr double kMaximumPivot = 0.60;
+
     const double pivot =
         kMinimumPivot + (kMaximumPivot - kMinimumPivot) * shadowRange;
-    const double normalized =
-        std::clamp(std::clamp(linear, 0.0, 1.0) / std::max(pivot, 0.001), 0.0, 1.0);
-    const double baseMask =
-        1.0 - normalized * normalized * (3.0 - 2.0 * normalized);
-    const double maskStrength = std::pow(1.0 - shadowRange, 2.5);
-    return 1.0 - (1.0 - baseMask) * maskStrength;
+
+    const double x = std::clamp(linear, 0.0, 1.0);
+
+    const double fadeEnd = pivot + pivot * 1.5;
+
+    if (x <= pivot) {
+        return 1.0;
+    } else if (x >= fadeEnd) {
+        return 0.0;
+    } else {
+        const double t = (x - pivot) / (fadeEnd - pivot);
+        return (1.0 - t) * (1.0 - t) * (1.0 + 2.0 * t);
+    }
 }
 
 double applyShadowRecoveryCurve(double linear, double shadowRecovery, double shadowRange)
@@ -2760,7 +2768,17 @@ void MainWindow::onResetDefaults()
     m_previewHighlightCompressionSlider->setValue(kDefaultPreviewHighlightCompressionSliderValue);
     m_previewToneBalanceSlider->setValue(kDefaultPreviewToneBalanceSliderValue);
     m_previewBalanceBiasSlider->setValue(kDefaultPreviewBalanceBiasSliderValue);
-    m_previewRotationCombo->setCurrentIndex(0);
+    // Match the rotation of the currently selected file (if any) so reset
+    // doesn't drop a picture back to "Normal" when it embeds an orientation.
+    int resetRotation = 0;
+    if (const QListWidgetItem *currentItem = m_fileList->currentItem()) {
+        resetRotation = currentItem->data(kItemPreviewRotationRole).toInt();
+    }
+    const int resetRotationIndex = m_previewRotationCombo->findData(resetRotation);
+    {
+        const QSignalBlocker blocker(m_previewRotationCombo);
+        m_previewRotationCombo->setCurrentIndex(resetRotationIndex >= 0 ? resetRotationIndex : 0);
+    }
     m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
     queueAutoPreview();
     showStatus(tr("Defaults restored."));
