@@ -99,6 +99,7 @@ private:
     QSlider *m_rTransitionStartSlider;
     QSlider *m_rTransitionDelaySlider;
     QSlider *m_rTransitionSmoothnessSlider;
+    QSlider *m_rLumaNoiseReductionSlider;
     QSlider *m_previewZoomSlider;
     QSlider *m_previewExposureSlider;
     QSlider *m_previewWhiteBalanceSlider;
@@ -153,6 +154,7 @@ private:
     QSpinBox *m_rTransitionStartSpinBox;
     QSpinBox *m_rTransitionDelaySpinBox;
     QSpinBox *m_rTransitionSmoothnessSpinBox;
+    QSpinBox *m_rLumaNoiseReductionSpinBox;
     TransitionCurveWidget *m_transitionCurveWidget;
     QSpinBox *m_previewZoomSpinBox;
     QDoubleSpinBox *m_previewExposureSpinBox;

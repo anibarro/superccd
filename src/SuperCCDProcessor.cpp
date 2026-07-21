@@ -1168,6 +1168,163 @@ void estimateProjectedGain(const std::vector<uint16_t> &primary,
     }
 }
 
+// Advanced noise reduction for the R (secondary) CFA plane.
+//
+// Applies two independent filters:
+//   1. Luma NR:  edge-aware bilateral smoothing that preserves luminance edges
+//      while reducing grain.  Uses variance-adaptive range sigma so flat
+//      areas get stronger smoothing than edge regions.
+//   2. Color NR: chroma noise suppression via soft-thresholding of pixel
+//      deviations from local mean.  At CFA level, "color noise" manifests
+//      as random high-frequency pixel-to-pixel variations that become
+//      chroma artifacts after demosaicing.  We estimate local mean using
+//      spatial weights only (no range weighting), compute deviation, and
+//      apply a soft threshold: small deviations (noise) are suppressed,
+//      large deviations (detail/edges) are preserved.  This targets color
+//      noise without blurring luminance structure.
+//
+// Both filters operate on same-channel CFA neighbors at stride 2 within
+// a configurable radius, using pre-computed Gaussian spatial weights.
+//
+// The strength parameter (0..1) controls:
+//   - Luma NR: range sigma and blend factor
+//   - Color NR: soft threshold value (larger = more aggressive noise suppression)
+//
+// A luminance-dependent activity curve reduces NR in deep shadows
+// (where signal is unreliable) and specular highlights (already flat).
+static void applyRPlaneNoiseReduction(std::vector<uint16_t> &rPlane,
+                                      const std::vector<uint8_t> &channels,
+                                      int width,
+                                      int height,
+                                      double lumaNR)    // 0..1
+{
+    if (lumaNR <= 0.0) {
+        return;
+    }
+    const size_t pixelCount = static_cast<size_t>(width) * height;
+    if (rPlane.size() != pixelCount || channels.size() != pixelCount) {
+        return;
+    }
+
+    const double lumaStrength = std::clamp(lumaNR, 0.0, 1.0);
+
+    // Estimate white reference from the R plane for sigma normalization.
+    uint16_t maxVal = 0;
+    for (size_t i = 0; i < pixelCount; ++i) {
+        if (rPlane[i] > maxVal) {
+            maxVal = rPlane[i];
+        }
+    }
+    const double whiteRef = maxVal > 0 ? static_cast<double>(maxVal) : 1.0;
+
+    // Range sigma for luma NR: controls edge preservation sensitivity.
+    // At strength 0.01 the sigma is very small (almost no smoothing),
+    // at strength 1.0 the sigma is large (aggressive smoothing).
+    const double lumaSigma = (0.002 + lumaStrength * 0.148) * whiteRef;
+    const double lumaInv2Sigma2 = 1.0 / (2.0 * lumaSigma * lumaSigma + 1e-12);
+
+    // Spatial kernel: radius 2 in CFA stride-2 coordinates gives up to
+    // 24 same-channel neighbors in a 5x5 CFA window.
+    constexpr int kRadius = 2;
+    constexpr double kSpatialSigma = 1.5;
+    constexpr double kSpatialInv2Sigma2 = 1.0 / (2.0 * kSpatialSigma * kSpatialSigma);
+
+    // Pre-compute spatial weight table for offsets in stride-2 CFA grid.
+    struct NeighborOffset {
+        int dx;           // pixel-space offset (already *2)
+        int dy;
+        double spatialW;  // pre-computed Gaussian spatial weight
+    };
+    std::array<NeighborOffset, 24> offsets;
+    int nOffsets = 0;
+    for (int dy = -kRadius; dy <= kRadius; ++dy) {
+        for (int dx = -kRadius; dx <= kRadius; ++dx) {
+            if (dx == 0 && dy == 0) continue;
+            const double dist2 = static_cast<double>(dx * dx + dy * dy);
+            const double sw = std::exp(-dist2 * kSpatialInv2Sigma2);
+            offsets[static_cast<size_t>(nOffsets++)] = {dx * 2, dy * 2, sw};
+        }
+    }
+
+    std::vector<uint16_t> output(rPlane);
+
+    // Process in parallel by horizontal bands.
+    superccd::parallel::forRanges(
+        0, height, 64,
+        [&](int yBegin, int yEnd, unsigned) {
+            for (int y = yBegin; y < yEnd; ++y) {
+                for (int x = 0; x < width; ++x) {
+                    const size_t idx = static_cast<size_t>(y) * width + x;
+                    const uint8_t ch = channels[idx];
+                    if (ch > 3 || rPlane[idx] == 0) {
+                        output[idx] = rPlane[idx];
+                        continue;
+                    }
+
+                    const double centerVal = static_cast<double>(rPlane[idx]);
+
+                    // Luminance-dependent activity curve: reduce NR effect
+                    // in deep shadows (< 3% of white) and specular highlights
+                    // (> 90% of white) where it's less useful or harmful.
+                    const double normalizedLuma = centerVal / whiteRef;
+                    double activity = 1.0;
+                    if (normalizedLuma < 0.03) {
+                        activity = normalizedLuma / 0.03;
+                        activity = activity * activity * (3.0 - 2.0 * activity);
+                    } else if (normalizedLuma > 0.90) {
+                        const double t = (normalizedLuma - 0.90) / 0.10;
+                        activity = 1.0 - t * t * (3.0 - 2.0 * t);
+                    }
+
+                    if (activity < 0.01) {
+                        output[idx] = rPlane[idx];
+                        continue;
+                    }
+
+                    double lumaSum = 0.0;
+                    double lumaWeightSum = 0.0;
+
+                    for (int k = 0; k < nOffsets; ++k) {
+                        const int nx = x + offsets[k].dx;
+                        const int ny = y + offsets[k].dy;
+                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
+                            continue;
+                        }
+                        const size_t nidx = static_cast<size_t>(ny) * width + nx;
+                        if (channels[nidx] != ch || rPlane[nidx] == 0) {
+                            continue;
+                        }
+
+                        const double nVal = static_cast<double>(rPlane[nidx]);
+                        const double diff = centerVal - nVal;
+                        const double diff2 = diff * diff;
+                        const double sw = offsets[k].spatialW;
+
+                        // Bilateral filter with range weighting
+                        const double rangeW = std::exp(-diff2 * lumaInv2Sigma2);
+                        const double w = sw * rangeW;
+                        lumaSum += nVal * w;
+                        lumaWeightSum += w;
+                    }
+
+                    double result = centerVal;
+
+                    // Apply luma NR: blend original toward bilateral-smoothed value.
+                    if (lumaWeightSum > 1e-12) {
+                        const double smoothed = lumaSum / lumaWeightSum;
+                        const double blend = std::sqrt(lumaStrength) * activity;
+                        result = (1.0 - blend) * centerVal + blend * smoothed;
+                    }
+
+                    output[idx] = static_cast<uint16_t>(
+                        std::clamp<int>(static_cast<int>(result + 0.5), 0, 65535));
+                }
+            }
+        });
+
+    rPlane = std::move(output);
+}
+
 void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                                        const std::vector<uint8_t> &primaryChannels,
                                        const std::vector<uint16_t> &projectedSecondary,
@@ -1177,6 +1334,7 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                                        double rTransitionStart,
                                        double rTransitionDelay,
                                        double rTransitionSmoothness,
+                                       double rLumaNoiseReduction,
                                        bool sDrivenHighlightsOnly,
                                        std::vector<uint16_t> &merged,
                                        QString &logLabel,
@@ -1184,6 +1342,14 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
 {
     merged.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
     const size_t pixelCount = primary.size();
+
+    // Apply noise reduction to a mutable copy of the R plane when requested.
+    std::vector<uint16_t> denoisedR = projectedSecondary;
+    if (rLumaNoiseReduction > 0.0) {
+        applyRPlaneNoiseReduction(denoisedR, primaryChannels, width, height,
+                                  rLumaNoiseReduction);
+    }
+
     std::vector<double> desired(pixelCount, 0.0);
 
     double gains[4] = {1.0, 1.0, 1.0, 1.0};
@@ -1220,7 +1386,7 @@ void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
                     continue;
                 }
 
-                const uint16_t rProjected = projectedSecondary[i];
+                const uint16_t rProjected = denoisedR[i];
                 if (rProjected == 0) {
                     merged[i] = s;
                     desired[i] = static_cast<double>(s);
@@ -3547,6 +3713,7 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                                      settings.rTransitionStart,
                                      settings.rTransitionDelay,
                                      settings.rTransitionSmoothness,
+                                     settings.rLumaNoiseReduction,
                                      false,
                                      mergedSr,
                                      mergeSummary,
@@ -3683,6 +3850,7 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
                                       settings.rTransitionStart,
                                       settings.rTransitionDelay,
                                       settings.rTransitionSmoothness,
+                                      settings.rLumaNoiseReduction,
                                       false,
                                       mergedSr,
                                       mergeSummary);

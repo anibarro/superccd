@@ -31,6 +31,9 @@ struct ConversionSettings {
     // the slider stays meaningful across its full range.
     double rTransitionDelay = 0.20;
     double rTransitionSmoothness = 0.65;
+    // R pixel noise reduction. 0..1 strength value.
+    // rLumaNoiseReduction reduces luma noise in the R plane before merging.
+    double rLumaNoiseReduction = 0.0;
     double linearChromaSuppression = 1.0;
     bool correctPreviewOutliers = false;
     bool exportPlaneImages = false;  // Export S and R plane images alongside merged DNG
