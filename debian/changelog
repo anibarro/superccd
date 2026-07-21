@@ -1,3 +1,15 @@
+superccd2dng (1.4.4) stable; urgency=low
+
+  * Add R pixel noise reduction controls (R color NR and R luma NR) in the
+    Transition Settings group, using dual bilateral filters with activity
+    curves to suppress chroma noise and grain in the R pixel plane before
+    the S+R merge
+  * Add --r-color-nr and --r-luma-nr CLI flags for batch processing
+  * Apply NR in parallel by horizontal bands with zero-copy optimization
+    when both sliders are at 0
+
+ -- Eduardo Anibarro <anibarro@example.com>  Mon, 20 Jul 2026 23:00:00 +0200
+
 superccd2dng (1.4.3) stable; urgency=low
 
   * Add a new Tone Mapping control group to the preview adjustments panel

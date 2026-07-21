@@ -24,7 +24,7 @@
 // APP_VERSION_STRING is defined by CMake via -DAPP_VERSION_STRING=...
 // If not defined (e.g., standalone compilation), use a default
 #ifndef APP_VERSION_STRING
-#define APP_VERSION_STRING "1.4.3"
+#define APP_VERSION_STRING "1.4.4"
 #endif
 
 static char error_log_path[4096] = "last_error.log";
@@ -210,6 +210,8 @@ int main(int argc, char *argv[])
                 settings.rTransitionDelay = std::clamp(std::atof(argv[i] + 8), 0.01, 1.0);
             } else if (std::strncmp(argv[i], "--smoothness=", 12) == 0) {
                 settings.rTransitionSmoothness = std::clamp(std::atof(argv[i] + 12), 0.0, 1.0);
+            } else if (std::strncmp(argv[i], "--r-luma-nr=", 12) == 0) {
+                settings.rLumaNoiseReduction = std::clamp(std::atof(argv[i] + 12), 0.0, 1.0);
             }
         }
 

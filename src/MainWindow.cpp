@@ -383,6 +383,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_rTransitionStartSlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionDelaySlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionSmoothnessSlider(new QSlider(Qt::Horizontal, this))
+    , m_rLumaNoiseReductionSlider(new QSlider(Qt::Horizontal, this))
     , m_previewZoomSlider(new QSlider(Qt::Horizontal, this))
     , m_previewExposureSlider(new QSlider(Qt::Horizontal, this))
     , m_previewWhiteBalanceSlider(new QSlider(Qt::Horizontal, this))
@@ -426,6 +427,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_rTransitionStartSpinBox(new QSpinBox(this))
     , m_rTransitionDelaySpinBox(new QSpinBox(this))
     , m_rTransitionSmoothnessSpinBox(new QSpinBox(this))
+    , m_rLumaNoiseReductionSpinBox(new QSpinBox(this))
     , m_transitionCurveWidget(new TransitionCurveWidget(this))
     , m_previewZoomSpinBox(new QSpinBox(this))
     , m_previewExposureSpinBox(new QDoubleSpinBox(this))
@@ -488,6 +490,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_rTransitionSmoothnessSlider->setToolTip(
         tr("Eases the shape of the merge: 0 = a straight line, 100 = a sharp "
            "exponential ramp that approaches a 90 degree shoulder."));
+    m_rLumaNoiseReductionSlider->setRange(0, 100);
+    m_rLumaNoiseReductionSlider->setValue(0);
+    m_rLumaNoiseReductionSlider->setToolTip(
+        tr("Noise reduction strength applied to the R (secondary) pixels "
+           "before merging. 0 = off, 100 = maximum reduction. Helps suppress "
+           "noise in the R pixels without losing fine detail."));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
     m_previewExposureSlider->setRange(-30, 40);
@@ -613,7 +621,12 @@ MainWindow::MainWindow(QWidget *parent)
     m_rTransitionSmoothnessSpinBox->setRange(0, 100);
     m_rTransitionSmoothnessSpinBox->setValue(kDefaultSmoothnessSliderValue);
     m_rTransitionSmoothnessSpinBox->setSingleStep(1);
-    
+
+    // R luma NR spinbox: 0 to 100 (represents 0.00 to 1.00)
+    m_rLumaNoiseReductionSpinBox->setRange(0, 100);
+    m_rLumaNoiseReductionSpinBox->setValue(0);
+    m_rLumaNoiseReductionSpinBox->setSingleStep(1);
+
     // Zoom spinbox: 5% to 400%
     m_previewZoomSpinBox->setRange(5, 400);
     m_previewZoomSpinBox->setValue(kDefaultPreviewZoomSliderValue);
@@ -723,9 +736,11 @@ MainWindow::MainWindow(QWidget *parent)
     smoothnessLayout->addWidget(m_rTransitionSmoothnessSpinBox, 0);
     transitionLayout->addRow(tr("Smoothness:"), smoothnessLayout);
 
-    // Visual representation of the S->R merging curve. It updates live as
-    // the user drags the Merge start / Transition width / Smoothness
-    // sliders above.
+    QHBoxLayout *lumaNRLayout = new QHBoxLayout;
+    lumaNRLayout->addWidget(m_rLumaNoiseReductionSlider, 1);
+    lumaNRLayout->addWidget(m_rLumaNoiseReductionSpinBox, 0);
+    transitionLayout->addRow(tr("R noise reduction:"), lumaNRLayout);
+
     QLabel *transitionCurveLabel = new QLabel(tr("Merge curve:"), this);
     transitionLayout->addRow(transitionCurveLabel, m_transitionCurveWidget);
 
@@ -1100,6 +1115,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_rTransitionSmoothnessSlider, &QSlider::sliderReleased, this, [this]() {
         queueAutoPreview();
     });
+    connect(m_rLumaNoiseReductionSlider, &QSlider::sliderReleased, this, [this]() {
+        queueAutoPreview();
+    });
     // Keep the visual merge curve in sync with the sliders.
     connect(m_rTransitionStartSlider, &QSlider::valueChanged, this, [this](int) {
         m_transitionCurveWidget->setParameters(
@@ -1187,6 +1205,9 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_rTransitionSmoothnessSlider, &QSlider::valueChanged, this, [this](int value) {
         m_rTransitionSmoothnessSpinBox->setValue(value);
     });
+    connect(m_rLumaNoiseReductionSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_rLumaNoiseReductionSpinBox->setValue(value);
+    });
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewZoomSpinBox->setValue(value);
     });
@@ -1243,6 +1264,12 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_rTransitionSmoothnessSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         if (m_rTransitionSmoothnessSlider->value() != value) {
             m_rTransitionSmoothnessSlider->setValue(value);
+            queueAutoPreview();
+        }
+    });
+    connect(m_rLumaNoiseReductionSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_rLumaNoiseReductionSlider->value() != value) {
+            m_rLumaNoiseReductionSlider->setValue(value);
             queueAutoPreview();
         }
     });
@@ -2580,10 +2607,13 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
     const bool oldStartSignals = m_rTransitionStartSlider->blockSignals(true);
     const bool oldDelaySignals = m_rTransitionDelaySlider->blockSignals(true);
     const bool oldSmoothnessSignals = m_rTransitionSmoothnessSlider->blockSignals(true);
+    const bool oldLumaNRSignals = m_rLumaNoiseReductionSlider->blockSignals(true);
     const bool oldStartSpinSignals = m_rTransitionStartSpinBox->blockSignals(true);
     const bool oldDelaySpinSignals = m_rTransitionDelaySpinBox->blockSignals(true);
     const bool oldSmoothnessSpinSignals =
         m_rTransitionSmoothnessSpinBox->blockSignals(true);
+    const bool oldLumaNRSpinSignals =
+        m_rLumaNoiseReductionSpinBox->blockSignals(true);
     const bool oldCorrectionSignals =
         m_correctPreviewOutliersCheckBox->blockSignals(true);
     // Map the actual start (0..1) back to the slider position so the
@@ -2597,20 +2627,28 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
         std::clamp(static_cast<int>(settings.rTransitionSmoothness * 100.0 + 0.5),
                    0,
                    100);
+    const int lumaNRValue =
+        std::clamp(static_cast<int>(settings.rLumaNoiseReduction * 100.0 + 0.5),
+                   0,
+                   100);
     m_rTransitionStartSlider->setValue(startValue);
     m_rTransitionStartSpinBox->setValue(startValue);
     m_rTransitionDelaySlider->setValue(delayValue);
     m_rTransitionDelaySpinBox->setValue(delayValue);
     m_rTransitionSmoothnessSlider->setValue(smoothnessValue);
     m_rTransitionSmoothnessSpinBox->setValue(smoothnessValue);
+    m_rLumaNoiseReductionSlider->setValue(lumaNRValue);
+    m_rLumaNoiseReductionSpinBox->setValue(lumaNRValue);
     m_correctPreviewOutliersCheckBox->setChecked(
         settings.correctPreviewOutliers);
     m_rTransitionStartSlider->blockSignals(oldStartSignals);
     m_rTransitionDelaySlider->blockSignals(oldDelaySignals);
     m_rTransitionSmoothnessSlider->blockSignals(oldSmoothnessSignals);
+    m_rLumaNoiseReductionSlider->blockSignals(oldLumaNRSignals);
     m_rTransitionStartSpinBox->blockSignals(oldStartSpinSignals);
     m_rTransitionDelaySpinBox->blockSignals(oldDelaySpinSignals);
     m_rTransitionSmoothnessSpinBox->blockSignals(oldSmoothnessSpinSignals);
+    m_rLumaNoiseReductionSpinBox->blockSignals(oldLumaNRSpinSignals);
     m_correctPreviewOutliersCheckBox->blockSignals(oldCorrectionSignals);
 }
 
@@ -2622,6 +2660,7 @@ void MainWindow::loadSavedDefaults()
     defaults.rTransitionStart = settingsStore.value(QStringLiteral("defaults/rTransitionStart"), 0.75).toDouble();
     defaults.rTransitionDelay = settingsStore.value(QStringLiteral("defaults/rTransitionDelay"), 0.5).toDouble();
     defaults.rTransitionSmoothness = settingsStore.value(QStringLiteral("defaults/rTransitionSmoothness"), 0.5).toDouble();
+    defaults.rLumaNoiseReduction = settingsStore.value(QStringLiteral("defaults/rLumaNoiseReduction"), 0.0).toDouble();
     defaults.correctPreviewOutliers =
         settingsStore.value(
             QStringLiteral("defaults/correctPreviewOutliers"),
@@ -2718,6 +2757,7 @@ void MainWindow::saveCurrentDefaults() const
     settingsStore.setValue(QStringLiteral("defaults/rTransitionStart"), settings.rTransitionStart);
     settingsStore.setValue(QStringLiteral("defaults/rTransitionDelay"), settings.rTransitionDelay);
     settingsStore.setValue(QStringLiteral("defaults/rTransitionSmoothness"), settings.rTransitionSmoothness);
+    settingsStore.setValue(QStringLiteral("defaults/rLumaNoiseReduction"), settings.rLumaNoiseReduction);
     settingsStore.setValue(
         QStringLiteral("defaults/correctPreviewOutliers"),
         settings.correctPreviewOutliers);
@@ -2753,6 +2793,7 @@ void MainWindow::onResetDefaults()
     defaults.rTransitionStart = 0.75;
     defaults.rTransitionDelay = 0.5;
     defaults.rTransitionSmoothness = 0.5;
+    defaults.rLumaNoiseReduction = 0.0;
     defaults.correctPreviewOutliers = false;
     applyParameterSettings(defaults);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
@@ -2812,6 +2853,7 @@ ConversionSettings MainWindow::currentSettings() const
     settings.rTransitionStart = mergeStartFromSlider(m_rTransitionStartSlider->value());
     settings.rTransitionDelay = static_cast<double>(m_rTransitionDelaySlider->value()) / 100.0;
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
+    settings.rLumaNoiseReduction = static_cast<double>(m_rLumaNoiseReductionSlider->value()) / 100.0;
     settings.previewRotation = m_previewRotationCombo->currentData().toInt();
     settings.linearChromaSuppression = 1.0;
     settings.correctPreviewOutliers =

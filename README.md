@@ -2,7 +2,7 @@
 
 Desktop application for converting Fujifilm FinePix `S3 Pro` and `S5 Pro` `.RAF` files into editable `DNG` files, with a focus on the Super CCD SR II sensor's separate `S` and `R` responses. The development work was centered on `S3 Pro` files, but `S5 Pro` files are also supported.
 
-![SuperCCD v1.3.1 screenshot](docs/img/superccd_v1.4.1.jpg)
+![SuperCCD v1.3.1 screenshot](docs/img/superccd_v1.4.4.jpg)
 
 ## Project Status
 
