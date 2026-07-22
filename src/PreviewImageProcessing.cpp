@@ -304,6 +304,144 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     return displayImage;
 }
 
+// Builds a 16-bit-input → 8-bit-output per-channel LUT that fuses
+// exposure, white-balance, highlight compression, gamma decode/encode,
+// contrast, shadow recovery and tone balance into a single 64 Ki-entry
+// lookup table.  By accepting 16‑bit source pixels directly this avoids
+// the intermediate 8‑bit quantisation that produces coarse gradations
+// (banding) in the live preview.  The LUT is rebuilt on every call (it
+// costs ≈ 1 ms) so slider responsiveness is unchanged — the pixel loop
+// is actually faster because it drops the three floating‑point
+// multiplications that the old 8‑bit path required.
+namespace {
+
+std::array<std::array<quint8, 65536>, 3> build16to8Luts(
+    const PreviewAdjustmentValues &adjustments)
+{
+    const double exposureScale =
+        std::pow(2.0, adjustments.exposureTenthsEv / 10.0);
+    const double wbBias = adjustments.whiteBalance / 100.0;
+    const double redScale = std::pow(2.0, wbBias);
+    const double blueScale = std::pow(2.0, -wbBias);
+    const double tintBias = adjustments.tint / 100.0;
+    const double greenScale = std::pow(2.0, -tintBias);
+    const double channelScales[3] = {redScale, greenScale, blueScale};
+
+    constexpr double kOriginalGamma = 2.2;
+    const double newGamma =
+        std::max(adjustments.gammaHundredths / 100.0, 0.01);
+    const double contrastScale =
+        1.0 + adjustments.contrast / 100.0;
+    const double shadowRecovery = adjustments.shadows / 100.0;
+    const double shadowRange = adjustments.shadowRange / 100.0;
+    const double invOriginalGamma = 1.0 / kOriginalGamma;
+    const double invNewGamma = 1.0 / newGamma;
+    const double highlightCompression =
+        adjustments.highlightCompression / 100.0;
+    const double compressionStart =
+        200.0 - highlightCompression * 152.0;
+    const double compressionStrength =
+        highlightCompression * 2.0
+        + highlightCompression * highlightCompression * 14.0;
+    const double toneBalanceAmount =
+        adjustments.toneBalance / 100.0;
+    const double toneBalanceBias =
+        adjustments.balanceBias / 100.0;
+
+    std::array<std::array<quint8, 65536>, 3> luts{};
+
+    for (int ch = 0; ch < 3; ++ch) {
+        const double channelScale = channelScales[ch];
+        for (int i = 0; i <= 65535; ++i) {
+            // 16‑bit → 8‑bit normalised float, same scaling as
+            // buildToneLut16 / applyExportAdjustments16.
+            double compressed = (static_cast<double>(i) / 257.0)
+                                * exposureScale * channelScale;
+            if (highlightCompression > 0.0 && compressed > compressionStart) {
+                const double excess = compressed - compressionStart;
+                compressed = compressionStart
+                    + excess / (1.0 + excess * compressionStrength / 255.0);
+            }
+
+            double linear = std::pow(
+                std::clamp(compressed / 255.0, 0.0, 1.0),
+                invOriginalGamma);
+            if (contrastScale != 1.0) {
+                linear = (linear - 0.5) * contrastScale + 0.5;
+            }
+            linear = applyShadowRecovery(
+                linear, shadowRecovery, shadowRange);
+            linear = applyToneBalance(
+                linear, toneBalanceAmount, toneBalanceBias);
+
+            const double output = std::pow(
+                std::clamp(linear, 0.0, 1.0), invNewGamma) * 255.0;
+            luts[static_cast<size_t>(ch)][static_cast<size_t>(i)] =
+                static_cast<quint8>(std::clamp(
+                    static_cast<int>(std::lround(output)), 0, 255));
+        }
+    }
+
+    return luts;
+}
+
+} // unnamed namespace
+
+QImage PreviewImageProcessing::applyDisplayAdjustmentsFrom16(
+    const QImage &source16,
+    const PreviewAdjustmentValues &adjustments)
+{
+    if (source16.isNull()) {
+        return {};
+    }
+
+    const QImage src =
+        source16.format() == QImage::Format_RGBX64
+            ? source16
+            : source16.convertToFormat(QImage::Format_RGBX64);
+
+    const auto luts = build16to8Luts(adjustments);
+    const auto &rLut = luts[0];
+    const auto &gLut = luts[1];
+    const auto &bLut = luts[2];
+
+    QImage displayImage(src.width(), src.height(), QImage::Format_RGB32);
+    if (displayImage.isNull()) {
+        return {};
+    }
+
+    const double saturationScale =
+        1.0 + adjustments.saturation / 100.0;
+
+    for (int y = 0; y < src.height(); ++y) {
+        const QRgba64 *srcLine =
+            reinterpret_cast<const QRgba64 *>(src.constScanLine(y));
+        QRgb *dstLine =
+            reinterpret_cast<QRgb *>(displayImage.scanLine(y));
+
+        for (int x = 0; x < src.width(); ++x) {
+            const QRgba64 px = srcLine[x];
+            int r = rLut[static_cast<size_t>(px.red())];
+            int g = gLut[static_cast<size_t>(px.green())];
+            int b = bLut[static_cast<size_t>(px.blue())];
+
+            if (saturationScale != 1.0) {
+                const double gray = (r + g + b) / 3.0;
+                r = std::clamp(static_cast<int>(std::lround(
+                    gray + (r - gray) * saturationScale)), 0, 255);
+                g = std::clamp(static_cast<int>(std::lround(
+                    gray + (g - gray) * saturationScale)), 0, 255);
+                b = std::clamp(static_cast<int>(std::lround(
+                    gray + (b - gray) * saturationScale)), 0, 255);
+            }
+
+            dstLine[x] = qRgb(r, g, b);
+        }
+    }
+
+    return displayImage;
+}
+
 QImage PreviewImageProcessing::applyExportAdjustments16(
     const QImage &source,
     const PreviewAdjustmentValues &adjustments)

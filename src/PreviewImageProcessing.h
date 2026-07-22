@@ -28,6 +28,8 @@ namespace PreviewImageProcessing {
 
 QImage applyDisplayAdjustments(const QImage &scaledSource,
                                const PreviewAdjustmentValues &adjustments);
+QImage applyDisplayAdjustmentsFrom16(const QImage &source16,
+                                     const PreviewAdjustmentValues &adjustments);
 QImage applyExportAdjustments16(const QImage &source,
                                 const PreviewAdjustmentValues &adjustments);
 void suppressFalseColor16(QImage &image);

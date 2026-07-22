@@ -142,19 +142,19 @@ void PreviewCanvas::paintEvent(QPaintEvent *event)
         static_cast<double>(renderRect.width()) / m_zoom,
         static_cast<double>(renderRect.height()) / m_zoom);
 
-    QImage tile(renderRect.size(), QImage::Format_RGB32);
-    if (tile.isNull()) {
+    QImage tile16(renderRect.size(), QImage::Format_RGBX64);
+    if (tile16.isNull()) {
         return;
     }
-    tile.fill(Qt::black);
+    tile16.fill(Qt::black);
 
     {
-        QPainter tilePainter(&tile);
+        QPainter tilePainter(&tile16);
         tilePainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        tilePainter.drawImage(QRectF(tile.rect()), m_sourceImage, sourceRect);
+        tilePainter.drawImage(QRectF(tile16.rect()), m_sourceImage, sourceRect);
     }
 
-    tile = PreviewImageProcessing::applyDisplayAdjustments(tile, m_adjustments);
+    QImage tile = PreviewImageProcessing::applyDisplayAdjustmentsFrom16(tile16, m_adjustments);
     if (m_sharpening > 0) {
         PreviewImageProcessing::applyLumaSharpening8(tile, m_sharpening);
     }
