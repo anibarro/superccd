@@ -25,6 +25,7 @@ class QDoubleSpinBox;
 class PreviewCanvas;
 class TransitionCurveWidget;
 class ExposureToolsWindow;
+class PresetManager;
 
 #include "SuperCCDProcessor.h"
 #include "PreviewImageProcessing.h"
@@ -66,8 +67,8 @@ private slots:
     void onPreviewHighlightCompressionChanged(int value);
     void onPreviewToneBalanceChanged(int value);
     void onPreviewBalanceBiasChanged(int value);
-    void onSaveDefaults();
-    void onResetDefaults();
+    void onPresetSelected(int index);
+    void onSavePresetClicked();
     void onAutoPreviewTimer();
     void showPreviewWindow();
     void onShowExposureToolsToggled(bool enabled);
@@ -83,8 +84,10 @@ private:
     void pushExposureToolsFromCache();
     ConversionSettings currentSettings() const;
     void applyParameterSettings(const ConversionSettings &settings);
-    void loadSavedDefaults();
-    void saveCurrentDefaults() const;
+    void loadPreset(const QString &name);
+    QJsonObject collectCurrentStateAsJson() const;
+    void applyJsonPreset(const QJsonObject &data);
+    void refreshPresetCombo();
     void queueAutoPreview();
     void applyWhiteBalancePickerSample();
     QPointF previewCanvasPosition(QObject *watched, const QPointF &position) const;
@@ -132,8 +135,10 @@ private:
     QPushButton *m_convertCurrentButton;
     QPushButton *m_convertAllButton;
     QCheckBox *m_exportPlaneImagesCheckBox;
-    QPushButton *m_resetDefaultsButton;
-    QPushButton *m_saveDefaultsButton;
+    QComboBox *m_presetCombo;
+    QPushButton *m_savePresetButton;
+    PresetManager *m_presetManager;
+    bool m_presetComboGuard = false;
     QLabel *m_statusLabel;
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;

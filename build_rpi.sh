@@ -203,6 +203,9 @@ build_zip_package() {
     copy_if_exists "$PROJECT_DIR/docs/MANUAL.md" "$stage_dir/docs/"
     copy_if_exists "$PROJECT_DIR/RawTherapee profile" "$stage_dir/"
     copy_if_exists "$PROJECT_DIR/resources/icons/app_icon_256.png" "$stage_dir/"
+    if [ -d "$PROJECT_DIR/presets" ]; then
+        cp -R "$PROJECT_DIR/presets" "$stage_dir/"
+    fi
 
     copy_qt_runtime_dirs "$qt_plugin_dir" "$stage_dir"
     create_runtime_launcher "$stage_dir"

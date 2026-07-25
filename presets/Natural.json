@@ -1,0 +1,21 @@
+{
+    "correctPreviewOutliers": false,
+    "previewBalanceBiasSlider": 0,
+    "previewContrastSlider": 0,
+    "previewExposureSlider": -9,
+    "previewGammaSlider": 41,
+    "previewHighlightCompressionSlider": 0,
+    "previewMethod": 1,
+    "previewSaturationSlider": 64,
+    "previewShadowRangeSlider": 100,
+    "previewShadowsSlider": 57,
+    "previewSharpeningSlider": 0,
+    "previewTintSlider": 0,
+    "previewToneBalanceSlider": 100,
+    "previewWhiteBalanceSlider": 0,
+    "rLumaNoiseReduction": 0,
+    "rTransitionDelay": 0.5,
+    "rTransitionSmoothness": 0.5,
+    "rTransitionStart": 0.7488750000000001,
+    "version": "1.4.4"
+}

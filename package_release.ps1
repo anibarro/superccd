@@ -82,6 +82,9 @@ New-Item -ItemType Directory -Path $docsDir | Out-Null
 $rawTherapeeProfileDir = Join-Path $RepoRoot "RawTherapee profile"
 $stageRawTherapeeProfileDir = Join-Path $stageDir "RawTherapee profile"
 
+$presetsDir = Join-Path $RepoRoot "presets"
+$stagePresetsDir = Join-Path $stageDir "presets"
+
 Copy-Item -LiteralPath (Join-Path $RepoRoot "README.md") -Destination $stageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "LICENSE") -Destination $stageDir
 Copy-Item -LiteralPath (Join-Path $RepoRoot "THIRD_PARTY_NOTICES.md") -Destination $stageDir
@@ -93,6 +96,10 @@ if (Test-Path $manualPath) {
 
 if (Test-Path $rawTherapeeProfileDir) {
     Copy-Item -LiteralPath $rawTherapeeProfileDir -Destination $stageRawTherapeeProfileDir -Recurse
+}
+
+if (Test-Path $presetsDir) {
+    Copy-Item -LiteralPath $presetsDir -Destination $stagePresetsDir -Recurse
 }
 
 $vcRedistPath = Join-Path $BuildDir "vc_redist.x64.exe"

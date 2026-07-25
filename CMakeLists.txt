@@ -81,6 +81,7 @@ endif()
 set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
+    src/PresetManager.cpp
     src/AmazeDemosaic.cpp
     src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp
@@ -135,6 +136,20 @@ if(APPLE)
     COMMAND ${CMAKE_COMMAND} -E copy
     "${CMAKE_SOURCE_DIR}/resources/icons/app_icon.icns"
     "$<TARGET_FILE_DIR:superccd2dng>/../Resources/app_icon.icns"
+  )
+
+  # Copy presets directory into the app bundle Resources folder
+  add_custom_command(TARGET superccd2dng POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/presets"
+    "$<TARGET_FILE_DIR:superccd2dng>/../Resources/presets"
+  )
+else()
+  # Copy presets directory next to the executable for Windows/Linux builds
+  add_custom_command(TARGET superccd2dng POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+    "${CMAKE_SOURCE_DIR}/presets"
+    "$<TARGET_FILE_DIR:superccd2dng>/presets"
   )
 endif()
 target_include_directories(superccd2dng PRIVATE src)

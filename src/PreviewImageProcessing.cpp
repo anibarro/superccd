@@ -10,52 +10,68 @@
 namespace {
 constexpr int kToneLutMaxInput = 8192;
 
-double shadowRangeMask(double linear, double shadowRange)
+// Applies natural shadow recovery by adding localised exposure boost
+// (in stops) to dark regions.
+//
+// Unlike curve-based approaches that remap tonal values — inevitably
+// flattening local contrast — this method **multiplies** shadow pixel
+// values by 2^stops.  Multiplication preserves the ratio between
+// neighbouring pixels, which is exactly how professional tools
+// (Lightroom "Shadows", Capture One "Shadow Recovery", RawTherapee
+// "Shadows") achieve a natural-looking fill-light effect.
+//
+// The amount of boost is governed by a sigmoidal mask that operates
+// in log₂ space, giving a perceptually even transition from fully-
+// boosted deep shadows to untouched midtones and highlights.
+//
+// Parameters:
+//   shadowStrength  [0..1]  maximum exposure boost, 0 to ≈2.5 stops.
+//                           Uses a quadratic ramp so low slider values
+//                           give fine control (≈0.6 stops at 50%).
+//   shadowRange     [0..1]  tonal range: controls the threshold (in
+//                           linear space) around which the sigmoidal
+//                           mask transitions from full to zero boost.
+//                           0 → only the deepest shadows (~1% white)
+//                           1 → up to midtones (~60% white)
+double applyShadowRecovery(double linear, double shadowStrength, double shadowRange)
 {
-    // The shadow range slider controls how far up the tonal range the shadow
-    // recovery effect reaches.
-    //
-    // shadowRange = 1.0 (max): effect spans the full tonal range (0..0.60),
-    //                          gentle falloff — shadows blend into midtones.
-    // shadowRange = 0.0 (min): effect is confined to the deepest shadows
-    //                          (0..0.10) with a smooth cutoff.
-    //
-    // The mask uses a smoothstep falloff that scales with the pivot point,
-    // ensuring a natural transition at all range values.
-
-    constexpr double kMinimumPivot = 0.10;
-    constexpr double kMaximumPivot = 0.60;
-
-    const double pivot =
-        kMinimumPivot + (kMaximumPivot - kMinimumPivot) * shadowRange;
-
-    const double x = std::clamp(linear, 0.0, 1.0);
-
-    // Transition width is proportional to the pivot, so low range values
-    // have narrow transitions and high range values have wide transitions.
-    const double fadeEnd = pivot + pivot * 1.5;
-
-    if (x <= pivot) {
-        return 1.0;
-    } else if (x >= fadeEnd) {
-        return 0.0;
-    } else {
-        const double t = (x - pivot) / (fadeEnd - pivot);
-        // Smoothstep: 1 at t=0, 0 at t=1
-        return (1.0 - t) * (1.0 - t) * (1.0 + 2.0 * t);
-    }
-}
-
-double applyShadowRecovery(double linear, double shadowRecovery, double shadowRange)
-{
-    if (shadowRecovery <= 0.0) {
+    if (shadowStrength <= 0.0) {
         return linear;
     }
 
-    const double clamped = std::clamp(linear, 0.0, 1.0);
-    const double exponent = 1.0 + shadowRecovery * 3.0;
-    const double lifted = 1.0 - std::pow(1.0 - clamped, exponent);
-    return clamped + (lifted - clamped) * shadowRangeMask(clamped, shadowRange);
+    const double x = std::clamp(linear, 0.0, 1.0);
+
+    // True black stays black regardless of boost.
+    if (x <= 0.0) {
+        return 0.0;
+    }
+
+    // Maximum exposure boost in stops.
+    // Quadratic ramp: fine control at low settings, stronger at max.
+    const double maxStops = shadowStrength * shadowStrength * 2.5;
+
+    // Threshold: the tonal centre of the sigmoidal transition.
+    // Pixels well below this get full boost; well above get none.
+    // Extended range: [0.01, 0.60] so the boost reaches into midtones
+    const double threshold = 0.01 + shadowRange * 0.59;
+
+    // Sigmoidal mask in log₂ space.
+    // log₂ maps the huge dynamic range of shadow values into a small
+    // perceptually-uniform scale, so the mask transition feels even
+    // across the entire shadow region.
+    const double logX = std::log2(x);
+    const double logThreshold = std::log2(threshold);
+    // Sharpness: how abrupt the transition is.  Much gentler now (1.5-2.5)
+    // so the boost extends smoothly into midtones without creating a
+    // visible "kink" at the threshold.
+    const double sharpness = 1.5 + (1.0 - shadowRange) * 1.0;
+    const double mask = 1.0 / (1.0 + std::exp(sharpness * (logX - logThreshold)));
+
+    // Exposure boost: multiply the pixel value by 2^(stops · mask).
+    // This preserves local contrast because every pixel in a shadow
+    // region gets scaled by approximately the same factor.
+    const double stops = maxStops * mask;
+    return std::clamp(x * std::exp2(stops), 0.0, 1.0);
 }
 
 // Applies a tone-mapping curve designed to preserve midtone contrast.

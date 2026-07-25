@@ -304,6 +304,11 @@ EOF
         cp "$PROJECT_DIR/resources/icons/app_icon.icns" "$app_bundle/Contents/Resources/"
     fi
     
+    # Copy presets to app bundle Resources
+    if [ -d "$PROJECT_DIR/presets" ]; then
+        cp -R "$PROJECT_DIR/presets" "$app_bundle/Contents/Resources/"
+    fi
+    
     # Deploy Qt frameworks
     info "Deploying Qt frameworks..."
     local macdeployqt_args=("$app_bundle" -verbose=1 -no-codesign -no-plugins)
