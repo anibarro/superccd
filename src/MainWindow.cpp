@@ -2263,18 +2263,21 @@ void MainWindow::onPreviewZoomChanged(int value)
 void MainWindow::onPreviewExposureChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewWhiteBalanceChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewTintChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
@@ -2301,54 +2304,63 @@ void MainWindow::onWhiteBalancePickerToggled(bool enabled)
 void MainWindow::onPreviewGammaChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewContrastChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewShadowsChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewShadowRangeChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewSaturationChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewSharpeningChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewHighlightCompressionChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewToneBalanceChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
 void MainWindow::onPreviewBalanceBiasChanged(int value)
 {
     Q_UNUSED(value);
+    markPresetModified();
     updatePreviewDisplay();
 }
 
@@ -2638,8 +2650,41 @@ void MainWindow::refreshPresetCombo()
     }
 }
 
+void MainWindow::markPresetModified()
+{
+    if (m_presetComboGuard) {
+        return;
+    }
+    
+    const QJsonObject current = collectCurrentStateAsJson();
+    const bool modified = (current != m_loadedPresetData);
+    
+    if (modified != m_presetModified) {
+        m_presetModified = modified;
+        const int index = m_presetCombo->currentIndex();
+        if (index >= 0) {
+            QString text = m_presetCombo->itemText(index);
+            if (modified && !text.endsWith(QStringLiteral(" *"))) {
+                m_presetCombo->setItemText(index, text + QStringLiteral(" *"));
+            } else if (!modified && text.endsWith(QStringLiteral(" *"))) {
+                text.chop(2);
+                m_presetCombo->setItemText(index, text);
+            }
+        }
+    }
+}
+
 void MainWindow::loadPreset(const QString &name)
 {
+    // Clear asterisks from all presets in the dropdown
+    for (int i = 0; i < m_presetCombo->count(); ++i) {
+        QString text = m_presetCombo->itemText(i);
+        if (text.endsWith(QStringLiteral(" *"))) {
+            text.chop(2);
+            m_presetCombo->setItemText(i, text);
+        }
+    }
+    
     const QJsonObject jsonData = m_presetManager->loadPreset(name);
     if (jsonData.isEmpty()) {
         // Fall back to factory defaults if preset is missing or invalid
@@ -2667,9 +2712,15 @@ void MainWindow::loadPreset(const QString &name)
         m_previewRotationCombo->setCurrentIndex(0);
         m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
         m_previewMethodReconstructionButton->setChecked(true);
+        m_loadedPresetData = collectCurrentStateAsJson();
     } else {
         applyJsonPreset(jsonData);
+        m_loadedPresetData = jsonData;
     }
+    m_presetModified = false;
+    
+    // Manually trigger preview update since slider signals were blocked
+    updatePreviewDisplay();
 }
 
 void MainWindow::applyJsonPreset(const QJsonObject &data)
@@ -2683,6 +2734,34 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
     settings.rLumaNoiseReduction = data.value(QStringLiteral("rLumaNoiseReduction")).toDouble(0.0);
     settings.correctPreviewOutliers = data.value(QStringLiteral("correctPreviewOutliers")).toBool(false);
     applyParameterSettings(settings);
+
+    // Block signals on preview sliders to prevent markPresetModified() from being called
+    const bool oldExposureSignals = m_previewExposureSlider->blockSignals(true);
+    const bool oldWhiteBalanceSignals = m_previewWhiteBalanceSlider->blockSignals(true);
+    const bool oldTintSignals = m_previewTintSlider->blockSignals(true);
+    const bool oldGammaSignals = m_previewGammaSlider->blockSignals(true);
+    const bool oldContrastSignals = m_previewContrastSlider->blockSignals(true);
+    const bool oldShadowsSignals = m_previewShadowsSlider->blockSignals(true);
+    const bool oldShadowRangeSignals = m_previewShadowRangeSlider->blockSignals(true);
+    const bool oldSaturationSignals = m_previewSaturationSlider->blockSignals(true);
+    const bool oldSharpeningSignals = m_previewSharpeningSlider->blockSignals(true);
+    const bool oldHighlightCompressionSignals = m_previewHighlightCompressionSlider->blockSignals(true);
+    const bool oldToneBalanceSignals = m_previewToneBalanceSlider->blockSignals(true);
+    const bool oldBalanceBiasSignals = m_previewBalanceBiasSlider->blockSignals(true);
+    
+    // Also block spinbox signals
+    const bool oldExposureSpinSignals = m_previewExposureSpinBox->blockSignals(true);
+    const bool oldWhiteBalanceSpinSignals = m_previewWhiteBalanceSpinBox->blockSignals(true);
+    const bool oldTintSpinSignals = m_previewTintSpinBox->blockSignals(true);
+    const bool oldGammaSpinSignals = m_previewGammaSpinBox->blockSignals(true);
+    const bool oldContrastSpinSignals = m_previewContrastSpinBox->blockSignals(true);
+    const bool oldShadowsSpinSignals = m_previewShadowsSpinBox->blockSignals(true);
+    const bool oldShadowRangeSpinSignals = m_previewShadowRangeSpinBox->blockSignals(true);
+    const bool oldSaturationSpinSignals = m_previewSaturationSpinBox->blockSignals(true);
+    const bool oldSharpeningSpinSignals = m_previewSharpeningSpinBox->blockSignals(true);
+    const bool oldHighlightCompressionSpinSignals = m_previewHighlightCompressionSpinBox->blockSignals(true);
+    const bool oldToneBalanceSpinSignals = m_previewToneBalanceSpinBox->blockSignals(true);
+    const bool oldBalanceBiasSpinSignals = m_previewBalanceBiasSpinBox->blockSignals(true);
 
     // Preview sliders
     m_previewExposureSlider->setValue(
@@ -2721,14 +2800,33 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
     m_previewBalanceBiasSlider->setValue(
         std::clamp(data.value(QStringLiteral("previewBalanceBiasSlider")).toInt(kDefaultPreviewBalanceBiasSliderValue),
                    m_previewBalanceBiasSlider->minimum(), m_previewBalanceBiasSlider->maximum()));
-
-    // Preview method
-    const int method = data.value(QStringLiteral("previewMethod")).toInt(static_cast<int>(PreviewMethod::Reconstruction));
-    if (method == static_cast<int>(PreviewMethod::AmazeDebayer)) {
-        m_previewMethodAmazeButton->setChecked(true);
-    } else {
-        m_previewMethodReconstructionButton->setChecked(true);
-    }
+    
+    // Restore signals
+    m_previewExposureSlider->blockSignals(oldExposureSignals);
+    m_previewWhiteBalanceSlider->blockSignals(oldWhiteBalanceSignals);
+    m_previewTintSlider->blockSignals(oldTintSignals);
+    m_previewGammaSlider->blockSignals(oldGammaSignals);
+    m_previewContrastSlider->blockSignals(oldContrastSignals);
+    m_previewShadowsSlider->blockSignals(oldShadowsSignals);
+    m_previewShadowRangeSlider->blockSignals(oldShadowRangeSignals);
+    m_previewSaturationSlider->blockSignals(oldSaturationSignals);
+    m_previewSharpeningSlider->blockSignals(oldSharpeningSignals);
+    m_previewHighlightCompressionSlider->blockSignals(oldHighlightCompressionSignals);
+    m_previewToneBalanceSlider->blockSignals(oldToneBalanceSignals);
+    m_previewBalanceBiasSlider->blockSignals(oldBalanceBiasSignals);
+    
+    m_previewExposureSpinBox->blockSignals(oldExposureSpinSignals);
+    m_previewWhiteBalanceSpinBox->blockSignals(oldWhiteBalanceSpinSignals);
+    m_previewTintSpinBox->blockSignals(oldTintSpinSignals);
+    m_previewGammaSpinBox->blockSignals(oldGammaSpinSignals);
+    m_previewContrastSpinBox->blockSignals(oldContrastSpinSignals);
+    m_previewShadowsSpinBox->blockSignals(oldShadowsSpinSignals);
+    m_previewShadowRangeSpinBox->blockSignals(oldShadowRangeSpinSignals);
+    m_previewSaturationSpinBox->blockSignals(oldSaturationSpinSignals);
+    m_previewSharpeningSpinBox->blockSignals(oldSharpeningSpinSignals);
+    m_previewHighlightCompressionSpinBox->blockSignals(oldHighlightCompressionSpinSignals);
+    m_previewToneBalanceSpinBox->blockSignals(oldToneBalanceSpinSignals);
+    m_previewBalanceBiasSpinBox->blockSignals(oldBalanceBiasSpinSignals);
 }
 
 QJsonObject MainWindow::collectCurrentStateAsJson() const
@@ -2753,7 +2851,6 @@ QJsonObject MainWindow::collectCurrentStateAsJson() const
     data[QStringLiteral("previewHighlightCompressionSlider")] = m_previewHighlightCompressionSlider->value();
     data[QStringLiteral("previewToneBalanceSlider")] = m_previewToneBalanceSlider->value();
     data[QStringLiteral("previewBalanceBiasSlider")] = m_previewBalanceBiasSlider->value();
-    data[QStringLiteral("previewMethod")] = static_cast<int>(currentPreviewMethod());
     return data;
 }
 
@@ -2762,7 +2859,12 @@ void MainWindow::onPresetSelected(int index)
     if (index < 0 || m_presetComboGuard) {
         return;
     }
-    const QString presetName = m_presetCombo->itemText(index);
+    QString presetName = m_presetCombo->itemText(index);
+    // Remove the asterisk if present
+    if (presetName.endsWith(QStringLiteral(" *"))) {
+        presetName.chop(2);
+        m_presetCombo->setItemText(index, presetName);
+    }
     loadPreset(presetName);
     showStatus(tr("Preset '%1' applied.").arg(presetName));
 }
@@ -2808,6 +2910,11 @@ void MainWindow::onSavePresetClicked()
         const QSignalBlocker blocker(m_presetCombo);
         m_presetCombo->setCurrentIndex(newIndex);
     }
+    
+    // Update the loaded preset data and clear modified flag
+    m_loadedPresetData = jsonData;
+    m_presetModified = false;
+    
     showStatus(tr("Preset '%1' saved.").arg(trimmedName));
 }
 
@@ -2863,4 +2970,9 @@ void MainWindow::onPreviewMethodChanged()
     m_lastPreviewedInputPath.clear();
     updateControls(false);
     queueAutoPreview();
+    
+    // Rebuild the preview image from the raw data using the new method
+    if (hasCurrentPreview()) {
+        onUpdatePreview();
+    }
 }

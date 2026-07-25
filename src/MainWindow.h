@@ -6,6 +6,7 @@
 #include <QPoint>
 #include <QPointF>
 #include <QString>
+#include <QJsonObject>
 
 class QListWidget;
 class QLineEdit;
@@ -88,6 +89,7 @@ private:
     QJsonObject collectCurrentStateAsJson() const;
     void applyJsonPreset(const QJsonObject &data);
     void refreshPresetCombo();
+    void markPresetModified();
     void queueAutoPreview();
     void applyWhiteBalancePickerSample();
     QPointF previewCanvasPosition(QObject *watched, const QPointF &position) const;
@@ -139,6 +141,8 @@ private:
     QPushButton *m_savePresetButton;
     PresetManager *m_presetManager;
     bool m_presetComboGuard = false;
+    bool m_presetModified = false;
+    QJsonObject m_loadedPresetData;
     QLabel *m_statusLabel;
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;

@@ -16,6 +16,5 @@
     "previewSharpeningSlider": 0,
     "previewHighlightCompressionSlider": 30,
     "previewToneBalanceSlider": 0,
-    "previewBalanceBiasSlider": 50,
-    "previewMethod": 0
+    "previewBalanceBiasSlider": 50
 }
