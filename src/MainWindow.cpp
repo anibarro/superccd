@@ -2,6 +2,7 @@
 #include "DngWriter.h"
 #include "ExposureToolsWindow.h"
 #include "PresetManager.h"
+#include "ImageSettingsManager.h"
 #include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
 #include "PreviewPixelCorrection.h"
@@ -390,6 +391,7 @@ MainWindow::MainWindow(QWidget *parent)
     , m_presetCombo(new QComboBox(this))
     , m_savePresetButton(new QPushButton(tr("Save current"), this))
     , m_presetManager(new PresetManager())
+    , m_imageSettingsManager(new ImageSettingsManager())
     , m_statusLabel(new QLabel(tr("Ready."), this))
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
@@ -1059,6 +1061,10 @@ MainWindow::MainWindow(QWidget *parent)
             const int rotationIndex = m_previewRotationCombo->findData(metadataRotation);
             const QSignalBlocker blocker(m_previewRotationCombo);
             m_previewRotationCombo->setCurrentIndex(rotationIndex >= 0 ? rotationIndex : 0);
+            
+            // Load per-image settings for the selected file
+            loadImageSettingsForCurrentFile();
+            
             queueAutoPreview();
             updateControls(false);
         }
@@ -1658,6 +1664,7 @@ void MainWindow::onSelectOutputFolder()
                                                        m_outputFolder->text());
     if (!folder.isEmpty()) {
         m_outputFolder->setText(folder);
+        m_imageSettingsManager->setOutputFolder(folder);
     }
 }
 
@@ -2659,19 +2666,21 @@ void MainWindow::markPresetModified()
     const QJsonObject current = collectCurrentStateAsJson();
     const bool modified = (current != m_loadedPresetData);
     
-    if (modified != m_presetModified) {
-        m_presetModified = modified;
-        const int index = m_presetCombo->currentIndex();
-        if (index >= 0) {
-            QString text = m_presetCombo->itemText(index);
-            if (modified && !text.endsWith(QStringLiteral(" *"))) {
-                m_presetCombo->setItemText(index, text + QStringLiteral(" *"));
-            } else if (!modified && text.endsWith(QStringLiteral(" *"))) {
-                text.chop(2);
-                m_presetCombo->setItemText(index, text);
-            }
+    // Always update the asterisk based on whether current differs from loaded preset
+    m_presetModified = modified;
+    const int index = m_presetCombo->currentIndex();
+    if (index >= 0) {
+        QString text = m_presetCombo->itemText(index);
+        if (modified && !text.endsWith(QStringLiteral(" *"))) {
+            m_presetCombo->setItemText(index, text + QStringLiteral(" *"));
+        } else if (!modified && text.endsWith(QStringLiteral(" *"))) {
+            text.chop(2);
+            m_presetCombo->setItemText(index, text);
         }
     }
+    
+    // Auto-save per-image settings whenever any value changes
+    saveImageSettingsForCurrentFile();
 }
 
 void MainWindow::loadPreset(const QString &name)
@@ -2866,6 +2875,83 @@ QJsonObject MainWindow::collectCurrentStateAsJson() const
     data[QStringLiteral("previewToneBalanceSlider")] = m_previewToneBalanceSlider->value();
     data[QStringLiteral("previewBalanceBiasSlider")] = m_previewBalanceBiasSlider->value();
     return data;
+}
+
+void MainWindow::loadImageSettingsForCurrentFile()
+{
+    if (!m_imageSettingsManager || !m_fileList->currentItem()) {
+        return;
+    }
+    
+    const QString inputPath = listItemPath(m_fileList->currentItem());
+    if (inputPath.isEmpty()) {
+        return;
+    }
+    
+    const QFileInfo fileInfo(inputPath);
+    const QString filename = fileInfo.fileName();
+    const QString inputFolder = fileInfo.absolutePath();
+    
+    // Use the input file's folder for settings storage
+    m_imageSettingsManager->setOutputFolder(inputFolder);
+    
+    // Check if per-image settings exist
+    if (m_imageSettingsManager->hasImageSettings(filename)) {
+        // Load and apply the per-image settings
+        QJsonObject imageSettings = m_imageSettingsManager->loadImageSettings(filename);
+        if (!imageSettings.isEmpty()) {
+            m_presetComboGuard = true;
+            applyJsonPreset(imageSettings);
+            m_presetComboGuard = false;
+            // Let markPresetModified() determine if asterisk should be shown
+            // by comparing current state against the selected preset
+            markPresetModified();
+            return;
+        }
+    }
+    
+    // No per-image settings found, load Default preset
+    QJsonObject defaultPreset = m_presetManager->loadPreset(QStringLiteral("Default"));
+    if (defaultPreset.isEmpty()) {
+        return;
+    }
+    
+    m_presetComboGuard = true;
+    applyJsonPreset(defaultPreset);
+    m_presetComboGuard = false;
+    
+    // Capture the current state after applying the preset (not the raw JSON from file)
+    // This accounts for slider conversions and floating-point precision differences
+    m_loadedPresetData = collectCurrentStateAsJson();
+    
+    // Update the asterisk display (should remove it since we just loaded Default)
+    markPresetModified();
+    
+    // Save the default preset as the initial per-image settings
+    m_imageSettingsManager->saveImageSettings(filename, m_loadedPresetData);
+}
+
+void MainWindow::saveImageSettingsForCurrentFile()
+{
+    if (!m_imageSettingsManager || !m_fileList->currentItem()) {
+        return;
+    }
+    
+    const QString inputPath = listItemPath(m_fileList->currentItem());
+    if (inputPath.isEmpty()) {
+        return;
+    }
+    
+    const QFileInfo fileInfo(inputPath);
+    const QString filename = fileInfo.fileName();
+    const QString inputFolder = fileInfo.absolutePath();
+    
+    // Use the input file's folder for settings storage
+    m_imageSettingsManager->setOutputFolder(inputFolder);
+    
+    const QJsonObject currentSettings = collectCurrentStateAsJson();
+    
+    m_imageSettingsManager->saveImageSettings(filename, currentSettings);
 }
 
 void MainWindow::onPresetSelected(int index)

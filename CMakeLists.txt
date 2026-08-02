@@ -82,6 +82,7 @@ set(SOURCES
     src/main.cpp
     src/MainWindow.cpp
     src/PresetManager.cpp
+    src/ImageSettingsManager.cpp
     src/AmazeDemosaic.cpp
     src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp

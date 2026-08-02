@@ -27,6 +27,7 @@ class PreviewCanvas;
 class TransitionCurveWidget;
 class ExposureToolsWindow;
 class PresetManager;
+class ImageSettingsManager;
 
 #include "SuperCCDProcessor.h"
 #include "PreviewImageProcessing.h"
@@ -98,6 +99,8 @@ private:
                         const QString &outputFolder,
                         const ConversionSettings &settings,
                         QString &error);
+    void loadImageSettingsForCurrentFile();
+    void saveImageSettingsForCurrentFile();
 
     QListWidget *m_fileList;
     QLineEdit *m_outputFolder;
@@ -140,6 +143,7 @@ private:
     QComboBox *m_presetCombo;
     QPushButton *m_savePresetButton;
     PresetManager *m_presetManager;
+    ImageSettingsManager *m_imageSettingsManager;
     bool m_presetComboGuard = false;
     bool m_presetModified = false;
     QJsonObject m_loadedPresetData;
