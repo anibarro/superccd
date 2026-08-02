@@ -2033,8 +2033,11 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
             balancedHistogram,
             balancedSampleCount,
             kPreviewHighlightPercentile);
-    const double previewReference =
-        std::max(balancedSensorWhite, highlightReference);
+    // Use the sensor's white level as the reference so that different
+    // exposures produce visibly different previews.  The old behaviour
+    // normalised to the 99.95th-percentile highlight, which made every
+    // photo look equally bright regardless of the actual exposure.
+    const double previewReference = balancedSensorWhite;
     const double previewScale =
         superccd::previewScaleToFit16Bit(previewReference);
     logProcessing(
@@ -2274,40 +2277,14 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
         metadata.asShotNeutral[1] > 0.0 &&
         metadata.asShotNeutral[2] > 0.0) {
     }
-    constexpr double kPreviewHighlightPercentile = 0.9995;
     const double balancedSensorWhite = std::max(
         {1.0,
          std::max(1.0, static_cast<double>(metadata.whiteLevel) - redBlack) * gains.red,
          std::max(1.0, static_cast<double>(metadata.whiteLevel) - greenBlack) * gains.green,
          std::max(1.0, static_cast<double>(metadata.whiteLevel) - blueBlack) * gains.blue});
-    std::vector<std::uint32_t> balancedHistogram(65536, 0);
-    std::uint64_t balancedSampleCount = 0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const double r = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 0]) - redBlack);
-        const double g = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 1]) - greenBlack);
-        const double b = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 2]) - blueBlack);
-        const double balancedLevel = std::max(
-            {0.0, r * gains.red, g * gains.green, b * gains.blue});
-        const std::size_t bucket = static_cast<std::size_t>(std::clamp(
-            static_cast<int>(std::lround(balancedLevel)),
-            0,
-            65535));
-        balancedHistogram[bucket]++;
-        balancedSampleCount++;
-    }
-    const double highlightReference =
-        superccd::previewReferenceLevelFromHistogram(
-            balancedHistogram,
-            balancedSampleCount,
-            kPreviewHighlightPercentile);
-    const double previewReference =
-        std::max(balancedSensorWhite, highlightReference);
+    // Preserve original exposure: use the sensor white level as reference
+    // instead of stretching to the image's actual highlight content.
+    const double previewReference = balancedSensorWhite;
     const double previewScale =
         superccd::previewScaleToFit16Bit(previewReference);
 

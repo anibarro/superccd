@@ -2827,6 +2827,20 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
     m_previewHighlightCompressionSpinBox->blockSignals(oldHighlightCompressionSpinSignals);
     m_previewToneBalanceSpinBox->blockSignals(oldToneBalanceSpinSignals);
     m_previewBalanceBiasSpinBox->blockSignals(oldBalanceBiasSpinSignals);
+    
+    // Sync spinboxes with slider values (signals were blocked during setValue)
+    m_previewExposureSpinBox->setValue(m_previewExposureSlider->value());
+    m_previewWhiteBalanceSpinBox->setValue(m_previewWhiteBalanceSlider->value());
+    m_previewTintSpinBox->setValue(m_previewTintSlider->value());
+    m_previewGammaSpinBox->setValue(m_previewGammaSlider->value());
+    m_previewContrastSpinBox->setValue(m_previewContrastSlider->value());
+    m_previewShadowsSpinBox->setValue(m_previewShadowsSlider->value());
+    m_previewShadowRangeSpinBox->setValue(m_previewShadowRangeSlider->value());
+    m_previewSaturationSpinBox->setValue(m_previewSaturationSlider->value());
+    m_previewSharpeningSpinBox->setValue(m_previewSharpeningSlider->value());
+    m_previewHighlightCompressionSpinBox->setValue(m_previewHighlightCompressionSlider->value());
+    m_previewToneBalanceSpinBox->setValue(m_previewToneBalanceSlider->value());
+    m_previewBalanceBiasSpinBox->setValue(m_previewBalanceBiasSlider->value());
 }
 
 QJsonObject MainWindow::collectCurrentStateAsJson() const
