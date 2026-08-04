@@ -2910,24 +2910,30 @@ void MainWindow::loadImageSettingsForCurrentFile()
         }
     }
     
-    // No per-image settings found, load Default preset
-    QJsonObject defaultPreset = m_presetManager->loadPreset(QStringLiteral("Default"));
-    if (defaultPreset.isEmpty()) {
-        return;
+    // No per-image settings found: apply the currently selected preset from the
+    // dropdown instead of always falling back to Default.
+    const QString selectedPresetName = m_presetCombo->currentText();
+    QJsonObject initialPreset = m_presetManager->loadPreset(selectedPresetName);
+    if (initialPreset.isEmpty()) {
+        // Fall back to Default if the current selection is somehow invalid
+        initialPreset = m_presetManager->loadPreset(QStringLiteral("Default"));
+        if (initialPreset.isEmpty()) {
+            return;
+        }
     }
     
     m_presetComboGuard = true;
-    applyJsonPreset(defaultPreset);
+    applyJsonPreset(initialPreset);
     m_presetComboGuard = false;
     
     // Capture the current state after applying the preset (not the raw JSON from file)
     // This accounts for slider conversions and floating-point precision differences
     m_loadedPresetData = collectCurrentStateAsJson();
     
-    // Update the asterisk display (should remove it since we just loaded Default)
+    // Update the asterisk display (should remove it since we just loaded a preset)
     markPresetModified();
     
-    // Save the default preset as the initial per-image settings
+    // Save the selected preset as the initial per-image settings
     m_imageSettingsManager->saveImageSettings(filename, m_loadedPresetData);
 }
 
@@ -2966,6 +2972,12 @@ void MainWindow::onPresetSelected(int index)
         m_presetCombo->setItemText(index, presetName);
     }
     loadPreset(presetName);
+
+    // Persist the selected preset values as this image's saved settings.
+    // Signals were blocked during loadPreset(), so the normal auto-save
+    // path through markPresetModified() was not triggered.
+    saveImageSettingsForCurrentFile();
+
     showStatus(tr("Preset '%1' applied.").arg(presetName));
 }
 
