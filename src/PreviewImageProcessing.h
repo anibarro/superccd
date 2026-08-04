@@ -6,7 +6,7 @@
 #include <optional>
 
 struct PreviewAdjustmentValues {
-    int exposureTenthsEv = 0;
+    int exposureTenths = 0; // linear exposure adjustment in tenths of a percent (-1000..1000)
     int whiteBalance = 0;
     int tint = 0;
     int gammaHundredths = 220;

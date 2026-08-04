@@ -186,14 +186,17 @@ void applyLumaSharpening(int width,
 std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
                                     double channelScale)
 {
-    const double exposureScale = std::pow(2.0, adjustments.exposureTenthsEv / 10.0);
+    const double exposureScale = std::max(1.0 + adjustments.exposureTenths / 1000.0, 0.001);
     constexpr double kOriginalGamma = 2.2;
     const double newGamma = std::max(adjustments.gammaHundredths / 100.0, 0.01);
     const double contrastScale = 1.0 + adjustments.contrast / 100.0;
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
-    const double invNewGamma = 1.0 / newGamma;
+    // The UI gamma value is the desired display gamma (e.g. 2.2). The
+    // original 2.2 decode cancels out, leaving an effective encoding
+    // exponent of 1 / newGamma, which matches standard gamma curves.
+    const double invNewGamma = kOriginalGamma / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
     const double compressionStart = 200.0 - highlightCompression * 152.0;
     const double compressionStrength = highlightCompression * 2.0
@@ -235,7 +238,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
 
     QImage displayImage = scaledSource.convertToFormat(QImage::Format_RGB32);
 
-    const double exposureScale = std::pow(2.0, adjustments.exposureTenthsEv / 10.0);
+    const double exposureScale = std::max(1.0 + adjustments.exposureTenths / 1000.0, 0.001);
     const double wbBias = adjustments.whiteBalance / 100.0;
     const double redScale = std::pow(2.0, wbBias);
     const double blueScale = std::pow(2.0, -wbBias);
@@ -247,7 +250,8 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
-    const double invNewGamma = 1.0 / newGamma;
+    // Match the LUT path: UI gamma is the effective display gamma.
+    const double invNewGamma = kOriginalGamma / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
     const double toneBalanceAmount = adjustments.toneBalance / 100.0;
     const double toneBalanceBias = adjustments.balanceBias / 100.0;
@@ -335,7 +339,7 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
     const PreviewAdjustmentValues &adjustments)
 {
     const double exposureScale =
-        std::pow(2.0, adjustments.exposureTenthsEv / 10.0);
+        std::max(1.0 + adjustments.exposureTenths / 1000.0, 0.001);
     const double wbBias = adjustments.whiteBalance / 100.0;
     const double redScale = std::pow(2.0, wbBias);
     const double blueScale = std::pow(2.0, -wbBias);
@@ -351,7 +355,9 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invOriginalGamma = 1.0 / kOriginalGamma;
-    const double invNewGamma = 1.0 / newGamma;
+    // UI gamma is the effective display gamma; keep the decode/encode
+    // structure but cancel the original 2.2 factor.
+    const double invNewGamma = kOriginalGamma / newGamma;
     const double highlightCompression =
         adjustments.highlightCompression / 100.0;
     const double compressionStart =

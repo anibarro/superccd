@@ -65,10 +65,10 @@ constexpr int kDefaultSmoothnessSliderValue = 50;
 // from 0.99 to 1.0. Position 60 corresponds to start ~= 0.7425, so
 // the visible default is roughly the original 75% behavior.
 constexpr int kDefaultStartSliderValue = 60;
-constexpr int kDefaultPreviewExposureSliderValue = 0;
+constexpr int kDefaultPreviewExposureSliderValue = 0; // tenths of a percent
 constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
 constexpr int kDefaultPreviewTintSliderValue = 0;
-constexpr int kDefaultPreviewGammaSliderValue = 40;
+constexpr int kDefaultPreviewGammaSliderValue = 220; // 2.2, standard gamma
 constexpr int kDefaultPreviewContrastSliderValue = 38;
 constexpr int kDefaultPreviewShadowsSliderValue = 0;
 constexpr int kDefaultPreviewShadowRangeSliderValue = 100;
@@ -471,8 +471,13 @@ MainWindow::MainWindow(QWidget *parent)
            "noise in the R pixels without losing fine detail."));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
-    m_previewExposureSlider->setRange(-30, 40);
+    m_previewExposureSlider->setRange(-1000, 1000); // tenths of a percent (-100% to +100%)
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
+    m_previewExposureSlider->setTickInterval(100); // tick every 10%
+    m_previewExposureSlider->setTickPosition(QSlider::TicksBelow);
+    m_previewExposureSlider->setToolTip(
+        tr("Exposure adjustment as a linear percentage of brightness. "
+           "Slider step is 0.1%; +100% means twice as bright."));
     m_previewWhiteBalanceSlider->setRange(-100, 100);
     m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
     m_previewTintSlider->setRange(-100, 100);
@@ -481,9 +486,13 @@ MainWindow::MainWindow(QWidget *parent)
     m_whiteBalancePickerButton->setToolTip(
         tr("Turn on the picker, move the box over a neutral gray area, use the "
            "mouse wheel to resize it, and left-click to set white balance and tint."));
-    // Gamma slider: range 0-300 (0 to 3.0), default 220 (gamma 2.2)
-    m_previewGammaSlider->setRange(0, 300);
+    // Gamma slider: range 10-400 (0.10 to 4.00), default 220 (gamma 2.2)
+    m_previewGammaSlider->setRange(10, 400);
     m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
+    m_previewGammaSlider->setTickInterval(20); // tick every 0.20 gamma
+    m_previewGammaSlider->setTickPosition(QSlider::TicksBelow);
+    m_previewGammaSlider->setToolTip(
+        tr("Gamma encoding curve. Standard values such as 1.8, 2.0, 2.2 and 2.4 are ticked."));
     // Contrast slider: range -200 to +200, default 0
     m_previewContrastSlider->setRange(-200, 200);
     m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
@@ -606,28 +615,35 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewZoomSpinBox->setSuffix(QStringLiteral("%"));
     m_previewZoomSpinBox->setSingleStep(5);
     
-    // Exposure spinbox: -3.0 to +4.0 EV, step 0.1
-    m_previewExposureSpinBox->setRange(-30, 40);
-    m_previewExposureSpinBox->setValue(kDefaultPreviewExposureSliderValue);
-    m_previewExposureSpinBox->setSuffix(QStringLiteral(" EV"));
+    // Exposure spinbox: -100% to +100%, step 0.1%
+    m_previewExposureSpinBox->setRange(-100.0, 100.0);
+    m_previewExposureSpinBox->setValue(kDefaultPreviewExposureSliderValue / 10.0);
+    m_previewExposureSpinBox->setSuffix(QStringLiteral("%"));
     m_previewExposureSpinBox->setDecimals(1);
-    m_previewExposureSpinBox->setSingleStep(1);
-    
+    m_previewExposureSpinBox->setSingleStep(0.1);
+    // Force "C" locale so a dot is always the decimal separator; otherwise
+    // system locales that use a comma can turn "0.1" into 1.0.
+    m_previewExposureSpinBox->setLocale(QLocale::C);
+    m_previewExposureSpinBox->setGroupSeparatorShown(false);
+
     // White balance spinbox: -100 to +100
     m_previewWhiteBalanceSpinBox->setRange(-100, 100);
     m_previewWhiteBalanceSpinBox->setValue(kDefaultPreviewWhiteBalanceSliderValue);
     m_previewWhiteBalanceSpinBox->setSingleStep(1);
-    
+
     // Tint spinbox: -100 to +100
     m_previewTintSpinBox->setRange(-100, 100);
     m_previewTintSpinBox->setValue(kDefaultPreviewTintSliderValue);
     m_previewTintSpinBox->setSingleStep(1);
-    
-    // Gamma spinbox: 0.00 to 3.00, step 0.01
-    m_previewGammaSpinBox->setRange(0, 300);
-    m_previewGammaSpinBox->setValue(kDefaultPreviewGammaSliderValue);
+
+    // Gamma spinbox: 0.10 to 4.00, step 0.01, showing standard gamma values
+    m_previewGammaSpinBox->setRange(0.10, 4.00);
+    m_previewGammaSpinBox->setValue(kDefaultPreviewGammaSliderValue / 100.0);
     m_previewGammaSpinBox->setDecimals(2);
-    m_previewGammaSpinBox->setSingleStep(1);
+    m_previewGammaSpinBox->setSingleStep(0.01);
+    // Keep decimal entry consistent with a dot separator on all locales.
+    m_previewGammaSpinBox->setLocale(QLocale::C);
+    m_previewGammaSpinBox->setGroupSeparatorShown(false);
     
     // Contrast spinbox: -200 to +200
     m_previewContrastSpinBox->setRange(-200, 200);
@@ -1193,7 +1209,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_previewZoomSpinBox->setValue(value);
     });
     connect(m_previewExposureSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewExposureSpinBox->setValue(value);
+        m_previewExposureSpinBox->setValue(value / 10.0);
     });
     connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewWhiteBalanceSpinBox->setValue(value);
@@ -1202,7 +1218,7 @@ MainWindow::MainWindow(QWidget *parent)
         m_previewTintSpinBox->setValue(value);
     });
     connect(m_previewGammaSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewGammaSpinBox->setValue(value);
+        m_previewGammaSpinBox->setValue(value / 100.0);
     });
     connect(m_previewContrastSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewContrastSpinBox->setValue(value);
@@ -1260,8 +1276,9 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(m_previewExposureSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        if (m_previewExposureSlider->value() != static_cast<int>(value)) {
-            m_previewExposureSlider->setValue(static_cast<int>(value));
+        const int sliderValue = qRound(value * 10.0);
+        if (m_previewExposureSlider->value() != sliderValue) {
+            m_previewExposureSlider->setValue(sliderValue);
         }
     });
     connect(m_previewWhiteBalanceSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
@@ -1275,8 +1292,9 @@ MainWindow::MainWindow(QWidget *parent)
         }
     });
     connect(m_previewGammaSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        if (m_previewGammaSlider->value() != static_cast<int>(value)) {
-            m_previewGammaSlider->setValue(static_cast<int>(value));
+        const int sliderValue = qRound(value * 100.0);
+        if (m_previewGammaSlider->value() != sliderValue) {
+            m_previewGammaSlider->setValue(sliderValue);
         }
     });
     connect(m_previewContrastSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
@@ -2210,7 +2228,7 @@ void MainWindow::pushExposureToolsFromCache()
     // visible-rect changed due to scroll/zoom) but we can skip the
     // expensive full-image rebuild.
     PreviewAdjustmentValues currentAdjustments;
-    currentAdjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    currentAdjustments.exposureTenths = m_previewExposureSlider->value();
     currentAdjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
     currentAdjustments.tint = m_previewTintSlider->value();
     currentAdjustments.gammaHundredths = m_previewGammaSlider->value();
@@ -2226,8 +2244,8 @@ void MainWindow::pushExposureToolsFromCache()
 
     const bool cacheStale = m_adjustedDisplayImage.isNull()
         || m_adjustedDisplayImage.size() != m_currentPreviewImage.size()
-        || m_lastPushedAdjustments.exposureTenthsEv
-            != currentAdjustments.exposureTenthsEv
+        || m_lastPushedAdjustments.exposureTenths
+            != currentAdjustments.exposureTenths
         || m_lastPushedAdjustments.whiteBalance
             != currentAdjustments.whiteBalance
         || m_lastPushedAdjustments.tint != currentAdjustments.tint
@@ -2378,7 +2396,7 @@ QImage MainWindow::buildAdjustedPreviewImage16() const
     }
 
     PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.exposureTenths = m_previewExposureSlider->value();
     adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
     adjustments.tint = m_previewTintSlider->value();
     adjustments.gammaHundredths = m_previewGammaSlider->value();
@@ -2401,7 +2419,7 @@ QImage MainWindow::buildAdjustedDisplayImage8() const
     }
 
     PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.exposureTenths = m_previewExposureSlider->value();
     adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
     adjustments.tint = m_previewTintSlider->value();
     adjustments.gammaHundredths = m_previewGammaSlider->value();
@@ -2445,7 +2463,7 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
 
     PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenthsEv = m_previewExposureSlider->value();
+    adjustments.exposureTenths = m_previewExposureSlider->value();
     adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
     adjustments.tint = m_previewTintSlider->value();
     adjustments.gammaHundredths = m_previewGammaSlider->value();
@@ -2838,10 +2856,10 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
     m_previewBalanceBiasSpinBox->blockSignals(oldBalanceBiasSpinSignals);
     
     // Sync spinboxes with slider values (signals were blocked during setValue)
-    m_previewExposureSpinBox->setValue(m_previewExposureSlider->value());
+    m_previewExposureSpinBox->setValue(m_previewExposureSlider->value() / 10.0);
     m_previewWhiteBalanceSpinBox->setValue(m_previewWhiteBalanceSlider->value());
     m_previewTintSpinBox->setValue(m_previewTintSlider->value());
-    m_previewGammaSpinBox->setValue(m_previewGammaSlider->value());
+    m_previewGammaSpinBox->setValue(m_previewGammaSlider->value() / 100.0);
     m_previewContrastSpinBox->setValue(m_previewContrastSlider->value());
     m_previewShadowsSpinBox->setValue(m_previewShadowsSlider->value());
     m_previewShadowRangeSpinBox->setValue(m_previewShadowRangeSlider->value());
