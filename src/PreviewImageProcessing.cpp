@@ -10,27 +10,27 @@
 namespace {
 constexpr int kToneLutMaxInput = 8192;
 
-// Applies natural shadow recovery by adding localised exposure boost
-// (in stops) to dark regions.
+// Applies natural shadow recovery by brightening dark regions with a
+// smooth, monotonic curve while preserving local contrast.
 //
-// Unlike curve-based approaches that remap tonal values — inevitably
-// flattening local contrast — this method **multiplies** shadow pixel
-// values by 2^stops.  Multiplication preserves the ratio between
-// neighbouring pixels, which is exactly how professional tools
-// (Lightroom "Shadows", Capture One "Shadow Recovery", RawTherapee
-// "Shadows") achieve a natural-looking fill-light effect.
+// The previous implementation multiplied shadow pixels by 2^stops, which
+// can produce a non-monotonic curve when the shadow range is narrow and
+// the shadow strength is high: midtone values were boosted less than
+// slightly brighter values, causing the curve to fold back on itself.
+// That fold appears as an inverted, negative-like effect in the shadows.
 //
-// The amount of boost is governed by a sigmoidal mask that operates
-// in log₂ space, giving a perceptually even transition from fully-
-// boosted deep shadows to untouched midtones and highlights.
+// This version uses a power curve x^p (with p < 1 to lift dark values)
+// and blends it with the original value using the same sigmoidal mask.
+// Because x^p is strictly increasing for x ≥ 0 and p > 0, the blended
+// result is always monotonic: shadows get brighter, midtones stay
+// neutral, and highlights are untouched.
 //
 // Parameters:
-//   shadowStrength  [0..1]  maximum exposure boost, 0 to ≈2.5 stops.
-//                           Uses a quadratic ramp so low slider values
-//                           give fine control (≈0.6 stops at 50%).
+//   shadowStrength  [0..1]  strength of the lift. 0 = identity,
+//                           1 = strongest natural shadow lift.
 //   shadowRange     [0..1]  tonal range: controls the threshold (in
 //                           linear space) around which the sigmoidal
-//                           mask transitions from full to zero boost.
+//                           mask transitions from full lift to none.
 //                           0 → only the deepest shadows (~1% white)
 //                           1 → up to midtones (~60% white)
 double applyShadowRecovery(double linear, double shadowStrength, double shadowRange)
@@ -46,13 +46,17 @@ double applyShadowRecovery(double linear, double shadowStrength, double shadowRa
         return 0.0;
     }
 
-    // Maximum exposure boost in stops.
-    // Quadratic ramp: fine control at low settings, stronger at max.
-    const double maxStops = shadowStrength * shadowStrength * 2.5;
+    // Shadow curve exponent: p < 1 lifts dark values; p = 1 is identity.
+    // A quadratic ramp on shadowStrength keeps lower slider settings
+    // gentle while still giving a strong lift at the top of the slider.
+    constexpr double kMinExponent = 0.56;
+    const double p = std::clamp(
+        1.0 - shadowStrength * shadowStrength * (1.0 - kMinExponent),
+        0.1, 1.0);
 
     // Threshold: the tonal centre of the sigmoidal transition.
-    // Pixels well below this get full boost; well above get none.
-    // Extended range: [0.01, 0.60] so the boost reaches into midtones
+    // Pixels well below this get full lift; well above get none.
+    // Extended range: [0.01, 0.60] so the lift reaches into midtones.
     const double threshold = 0.01 + shadowRange * 0.59;
 
     // Sigmoidal mask in log₂ space.
@@ -61,17 +65,18 @@ double applyShadowRecovery(double linear, double shadowStrength, double shadowRa
     // across the entire shadow region.
     const double logX = std::log2(x);
     const double logThreshold = std::log2(threshold);
-    // Sharpness: how abrupt the transition is.  Much gentler now (1.5-2.5)
-    // so the boost extends smoothly into midtones without creating a
-    // visible "kink" at the threshold.
+    // Sharpness: how abrupt the transition is. Gentler values (1.5-2.5)
+    // let the lift extend smoothly into midtones without a visible kink.
     const double sharpness = 1.5 + (1.0 - shadowRange) * 1.0;
     const double mask = 1.0 / (1.0 + std::exp(sharpness * (logX - logThreshold)));
 
-    // Exposure boost: multiply the pixel value by 2^(stops · mask).
-    // This preserves local contrast because every pixel in a shadow
-    // region gets scaled by approximately the same factor.
-    const double stops = maxStops * mask;
-    return std::clamp(x * std::exp2(stops), 0.0, 1.0);
+    // Lifted value: a power curve that brightens shadows monotonically.
+    const double lifted = std::pow(x, p);
+
+    // Blend between the original value (highlights / midtones) and the
+    // lifted value (shadows). The mask guarantees a smooth transition
+    // and, because both x and x^p are monotonic, the result is too.
+    return std::clamp(x * (1.0 - mask) + lifted * mask, 0.0, 1.0);
 }
 
 // Applies a tone-mapping curve designed to preserve midtone contrast.

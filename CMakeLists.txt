@@ -259,6 +259,20 @@ if(BUILD_TESTING)
   target_link_libraries(merge_start_test PRIVATE Qt6::Core)
   add_test(NAME merge_start_test COMMAND merge_start_test)
 
+  add_executable(preview_image_processing_test
+    src/tests/PreviewImageProcessingTest.cpp
+    src/PreviewImageProcessing.cpp
+    src/PreviewColorNormalization.cpp
+  )
+  set_target_properties(preview_image_processing_test PROPERTIES
+    AUTOMOC OFF
+    AUTORCC OFF
+    AUTOUIC OFF
+  )
+  target_include_directories(preview_image_processing_test PRIVATE src)
+  target_link_libraries(preview_image_processing_test PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
+  add_test(NAME preview_image_processing_test COMMAND preview_image_processing_test)
+
 endif()
 
 # Linux installation support
