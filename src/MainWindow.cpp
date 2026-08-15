@@ -1339,7 +1339,13 @@ MainWindow::MainWindow(QWidget *parent)
     });
 
     refreshPresetCombo();
-    loadPreset(PresetManager::kDefaultPresetName);
+    // Prefer Default when it is present; otherwise start with the first
+    // available preset. With no presets at all, retain the factory defaults.
+    if (m_presetCombo->count() > 0) {
+        loadPreset(m_presetCombo->currentText());
+    } else {
+        loadPreset(PresetManager::kDefaultPresetName);
+    }
     updateControls(false);
 
     const QByteArray previewGeometry =
@@ -2750,16 +2756,16 @@ void MainWindow::loadPreset(const QString &name)
     updatePreviewDisplay();
 }
 
-void MainWindow::applyJsonPreset(const QJsonObject &data)
+void MainWindow::applyJsonPreset(const QJsonObject &presetData)
 {
     // Conversion settings
     ConversionSettings settings;
     settings.exportMode = ExportMode::RawCfa6MP;
-    settings.rTransitionStart = data.value(QStringLiteral("rTransitionStart")).toDouble(0.75);
-    settings.rTransitionDelay = data.value(QStringLiteral("rTransitionDelay")).toDouble(0.5);
-    settings.rTransitionSmoothness = data.value(QStringLiteral("rTransitionSmoothness")).toDouble(0.5);
-    settings.rLumaNoiseReduction = data.value(QStringLiteral("rLumaNoiseReduction")).toDouble(0.0);
-    settings.correctPreviewOutliers = data.value(QStringLiteral("correctPreviewOutliers")).toBool(false);
+    settings.rTransitionStart = presetData.value(QStringLiteral("rTransitionStart")).toDouble(0.75);
+    settings.rTransitionDelay = presetData.value(QStringLiteral("rTransitionDelay")).toDouble(0.5);
+    settings.rTransitionSmoothness = presetData.value(QStringLiteral("rTransitionSmoothness")).toDouble(0.5);
+    settings.rLumaNoiseReduction = presetData.value(QStringLiteral("rLumaNoiseReduction")).toDouble(0.0);
+    settings.correctPreviewOutliers = presetData.value(QStringLiteral("correctPreviewOutliers")).toBool(false);
     applyParameterSettings(settings);
 
     // Block signals on preview sliders to prevent markPresetModified() from being called
@@ -2792,40 +2798,40 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
 
     // Preview sliders
     m_previewExposureSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewExposureSlider")).toInt(kDefaultPreviewExposureSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewExposureSlider")).toInt(kDefaultPreviewExposureSliderValue),
                    m_previewExposureSlider->minimum(), m_previewExposureSlider->maximum()));
     m_previewWhiteBalanceSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewWhiteBalanceSlider")).toInt(kDefaultPreviewWhiteBalanceSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewWhiteBalanceSlider")).toInt(kDefaultPreviewWhiteBalanceSliderValue),
                    m_previewWhiteBalanceSlider->minimum(), m_previewWhiteBalanceSlider->maximum()));
     m_previewTintSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewTintSlider")).toInt(kDefaultPreviewTintSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewTintSlider")).toInt(kDefaultPreviewTintSliderValue),
                    m_previewTintSlider->minimum(), m_previewTintSlider->maximum()));
     m_previewGammaSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewGammaSlider")).toInt(kDefaultPreviewGammaSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewGammaSlider")).toInt(kDefaultPreviewGammaSliderValue),
                    m_previewGammaSlider->minimum(), m_previewGammaSlider->maximum()));
     m_previewContrastSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewContrastSlider")).toInt(kDefaultPreviewContrastSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewContrastSlider")).toInt(kDefaultPreviewContrastSliderValue),
                    m_previewContrastSlider->minimum(), m_previewContrastSlider->maximum()));
     m_previewShadowsSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewShadowsSlider")).toInt(kDefaultPreviewShadowsSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewShadowsSlider")).toInt(kDefaultPreviewShadowsSliderValue),
                    m_previewShadowsSlider->minimum(), m_previewShadowsSlider->maximum()));
     m_previewShadowRangeSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewShadowRangeSlider")).toInt(kDefaultPreviewShadowRangeSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewShadowRangeSlider")).toInt(kDefaultPreviewShadowRangeSliderValue),
                    m_previewShadowRangeSlider->minimum(), m_previewShadowRangeSlider->maximum()));
     m_previewSaturationSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewSaturationSlider")).toInt(kDefaultPreviewSaturationSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewSaturationSlider")).toInt(kDefaultPreviewSaturationSliderValue),
                    m_previewSaturationSlider->minimum(), m_previewSaturationSlider->maximum()));
     m_previewSharpeningSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewSharpeningSlider")).toInt(kDefaultPreviewSharpeningSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewSharpeningSlider")).toInt(kDefaultPreviewSharpeningSliderValue),
                    m_previewSharpeningSlider->minimum(), m_previewSharpeningSlider->maximum()));
     m_previewHighlightCompressionSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewHighlightCompressionSlider")).toInt(kDefaultPreviewHighlightCompressionSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewHighlightCompressionSlider")).toInt(kDefaultPreviewHighlightCompressionSliderValue),
                    m_previewHighlightCompressionSlider->minimum(), m_previewHighlightCompressionSlider->maximum()));
     m_previewToneBalanceSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewToneBalanceSlider")).toInt(kDefaultPreviewToneBalanceSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewToneBalanceSlider")).toInt(kDefaultPreviewToneBalanceSliderValue),
                    m_previewToneBalanceSlider->minimum(), m_previewToneBalanceSlider->maximum()));
     m_previewBalanceBiasSlider->setValue(
-        std::clamp(data.value(QStringLiteral("previewBalanceBiasSlider")).toInt(kDefaultPreviewBalanceBiasSliderValue),
+        std::clamp(presetData.value(QStringLiteral("previewBalanceBiasSlider")).toInt(kDefaultPreviewBalanceBiasSliderValue),
                    m_previewBalanceBiasSlider->minimum(), m_previewBalanceBiasSlider->maximum()));
     
     // Restore signals
@@ -2872,27 +2878,27 @@ void MainWindow::applyJsonPreset(const QJsonObject &data)
 
 QJsonObject MainWindow::collectCurrentStateAsJson() const
 {
-    QJsonObject data;
-    data[QStringLiteral("version")] = QString::fromLatin1(APP_VERSION_STRING);
+    QJsonObject presetData;
+    presetData[QStringLiteral("version")] = QString::fromLatin1(APP_VERSION_STRING);
     const ConversionSettings settings = currentSettings();
-    data[QStringLiteral("rTransitionStart")] = settings.rTransitionStart;
-    data[QStringLiteral("rTransitionDelay")] = settings.rTransitionDelay;
-    data[QStringLiteral("rTransitionSmoothness")] = settings.rTransitionSmoothness;
-    data[QStringLiteral("rLumaNoiseReduction")] = settings.rLumaNoiseReduction;
-    data[QStringLiteral("correctPreviewOutliers")] = settings.correctPreviewOutliers;
-    data[QStringLiteral("previewExposureSlider")] = m_previewExposureSlider->value();
-    data[QStringLiteral("previewWhiteBalanceSlider")] = m_previewWhiteBalanceSlider->value();
-    data[QStringLiteral("previewTintSlider")] = m_previewTintSlider->value();
-    data[QStringLiteral("previewGammaSlider")] = m_previewGammaSlider->value();
-    data[QStringLiteral("previewContrastSlider")] = m_previewContrastSlider->value();
-    data[QStringLiteral("previewShadowsSlider")] = m_previewShadowsSlider->value();
-    data[QStringLiteral("previewShadowRangeSlider")] = m_previewShadowRangeSlider->value();
-    data[QStringLiteral("previewSaturationSlider")] = m_previewSaturationSlider->value();
-    data[QStringLiteral("previewSharpeningSlider")] = m_previewSharpeningSlider->value();
-    data[QStringLiteral("previewHighlightCompressionSlider")] = m_previewHighlightCompressionSlider->value();
-    data[QStringLiteral("previewToneBalanceSlider")] = m_previewToneBalanceSlider->value();
-    data[QStringLiteral("previewBalanceBiasSlider")] = m_previewBalanceBiasSlider->value();
-    return data;
+    presetData[QStringLiteral("rTransitionStart")] = settings.rTransitionStart;
+    presetData[QStringLiteral("rTransitionDelay")] = settings.rTransitionDelay;
+    presetData[QStringLiteral("rTransitionSmoothness")] = settings.rTransitionSmoothness;
+    presetData[QStringLiteral("rLumaNoiseReduction")] = settings.rLumaNoiseReduction;
+    presetData[QStringLiteral("correctPreviewOutliers")] = settings.correctPreviewOutliers;
+    presetData[QStringLiteral("previewExposureSlider")] = m_previewExposureSlider->value();
+    presetData[QStringLiteral("previewWhiteBalanceSlider")] = m_previewWhiteBalanceSlider->value();
+    presetData[QStringLiteral("previewTintSlider")] = m_previewTintSlider->value();
+    presetData[QStringLiteral("previewGammaSlider")] = m_previewGammaSlider->value();
+    presetData[QStringLiteral("previewContrastSlider")] = m_previewContrastSlider->value();
+    presetData[QStringLiteral("previewShadowsSlider")] = m_previewShadowsSlider->value();
+    presetData[QStringLiteral("previewShadowRangeSlider")] = m_previewShadowRangeSlider->value();
+    presetData[QStringLiteral("previewSaturationSlider")] = m_previewSaturationSlider->value();
+    presetData[QStringLiteral("previewSharpeningSlider")] = m_previewSharpeningSlider->value();
+    presetData[QStringLiteral("previewHighlightCompressionSlider")] = m_previewHighlightCompressionSlider->value();
+    presetData[QStringLiteral("previewToneBalanceSlider")] = m_previewToneBalanceSlider->value();
+    presetData[QStringLiteral("previewBalanceBiasSlider")] = m_previewBalanceBiasSlider->value();
+    return presetData;
 }
 
 void MainWindow::loadImageSettingsForCurrentFile()
@@ -2929,14 +2935,22 @@ void MainWindow::loadImageSettingsForCurrentFile()
     }
     
     // No per-image settings found: apply the currently selected preset from the
-    // dropdown instead of always falling back to Default.
+    // dropdown. If it is unavailable, fall back to the first available preset.
     const QString selectedPresetName = m_presetCombo->currentText();
     QJsonObject initialPreset = m_presetManager->loadPreset(selectedPresetName);
     if (initialPreset.isEmpty()) {
-        // Fall back to Default if the current selection is somehow invalid
-        initialPreset = m_presetManager->loadPreset(QStringLiteral("Default"));
+        const QStringList presets = m_presetManager->availablePresets();
+        if (presets.isEmpty()) {
+            return;
+        }
+        initialPreset = m_presetManager->loadPreset(presets.first());
         if (initialPreset.isEmpty()) {
             return;
+        }
+        const int presetIndex = m_presetCombo->findText(presets.first());
+        if (presetIndex >= 0) {
+            const QSignalBlocker blocker(m_presetCombo);
+            m_presetCombo->setCurrentIndex(presetIndex);
         }
     }
     

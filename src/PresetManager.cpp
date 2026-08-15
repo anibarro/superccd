@@ -57,7 +57,6 @@ QStringList PresetManager::availablePresets() const
 {
     QStringList result;
     result.reserve(8);
-    result.append(kDefaultPresetName);
 
     QDir dir(m_presetsDir);
     if (dir.exists()) {
@@ -69,9 +68,12 @@ QStringList PresetManager::availablePresets() const
             if (baseName.isEmpty()) {
                 continue;
             }
-            // Skip the file that represents the default preset so the
-            // built-in name only appears once at the top.
             if (isDefaultPreset(baseName)) {
+                // Keep an on-disk Default preset at the top, but do not
+                // expose one when its file is not available.
+                if (!result.contains(baseName)) {
+                    result.prepend(baseName);
+                }
                 continue;
             }
             result.append(baseName);
@@ -83,9 +85,6 @@ QStringList PresetManager::availablePresets() const
 
 bool PresetManager::presetExists(const QString &name) const
 {
-    if (isDefaultPreset(name)) {
-        return true; // built-in preset is always available
-    }
     if (name.isEmpty()) {
         return false;
     }
@@ -98,10 +97,6 @@ QJsonObject PresetManager::loadPreset(const QString &name) const
         return QJsonObject();
     }
 
-    // For the built-in Default preset we first try to read a file that the
-    // installer placed next to the executable (so distributors can tweak
-    // the defaults without rebuilding). If that file is missing we fall
-    // back to an empty object; the caller treats that as "factory defaults".
     const QString path = presetFilePath(name);
     QFile file(path);
     if (!file.open(QIODevice::ReadOnly)) {

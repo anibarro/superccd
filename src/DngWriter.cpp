@@ -246,18 +246,6 @@ static void setSRationalArrayField(TIFF *tif, uint32_t tag, uint32_t count, cons
     }
 }
 
-static void setAsciiField(TIFF *tif, uint32_t tag, const QByteArray &value)
-{
-    if (value.isEmpty()) {
-        return;
-    }
-    if (tiffFieldWantsCount(tif, tag, TIFF_ASCII)) {
-        TIFFSetField(tif, tag, static_cast<uint32_t>(value.size() + 1), value.constData());
-    } else {
-        TIFFSetField(tif, tag, value.constData());
-    }
-}
-
 static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
 {
     // SRATIONAL is signed rational: (numerator, denominator)
@@ -265,27 +253,6 @@ static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
         TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
     } else if (value < 0.0f) {
         TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
-    } else {
-        TIFFSetField(tif, tag, 0, 1);
-    }
-}
-
-static void setSingleRationalField(TIFF *tif, uint32_t tag, float value)
-{
-    // RATIONAL is stored as an unsigned numerator/denominator pair.
-    if (value > 0.0f) {
-        const uint32_t scale = 10000;
-        uint32_t numerator = static_cast<uint32_t>(value * static_cast<float>(scale) + 0.5f);
-        uint32_t denominator = scale;
-        const uint32_t divisor = std::gcd(numerator, denominator);
-        if (divisor > 1) {
-            numerator /= divisor;
-            denominator /= divisor;
-        }
-        if (numerator == 0) {
-            numerator = 1;
-        }
-        TIFFSetField(tif, tag, numerator, denominator);
     } else {
         TIFFSetField(tif, tag, 0, 1);
     }

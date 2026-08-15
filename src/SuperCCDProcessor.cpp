@@ -1251,8 +1251,8 @@ static void applyRPlaneNoiseReduction(std::vector<uint16_t> &rPlane,
     // Process in parallel by horizontal bands.
     superccd::parallel::forRanges(
         0, height, 64,
-        [&](int yBegin, int yEnd, unsigned) {
-            for (int y = yBegin; y < yEnd; ++y) {
+        [&](std::size_t yBegin, std::size_t yEnd, unsigned) {
+            for (int y = static_cast<int>(yBegin); y < static_cast<int>(yEnd); ++y) {
                 for (int x = 0; x < width; ++x) {
                     const size_t idx = static_cast<size_t>(y) * width + x;
                     const uint8_t ch = channels[idx];

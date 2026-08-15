@@ -10,15 +10,14 @@
 // as JSON files inside a "presets" folder next to the application executable
 // (or inside the macOS .app bundle Resources directory).
 //
-// A built-in "Default" preset is always available and cannot be overwritten
-// or deleted. When no matching file is found on disk the manager returns a
-// snapshot of the factory defaults.
+// The on-disk "Default" preset, when present, cannot be overwritten or
+// deleted. When no matching file is found on disk the manager returns an
+// empty object so callers can apply their own factory defaults.
 class PresetManager
 {
 public:
-    // The name used for the built-in factory preset. It is always listed
-    // first in availablePresets() and is protected against overwrite /
-    // delete operations.
+    // The protected default preset name. It is listed first only when its
+    // corresponding file is available.
     static const QString kDefaultPresetName;
 
     PresetManager();
@@ -29,7 +28,7 @@ public:
     QString presetsDirectory() const;
 
     // Returns the list of preset names (without the .json extension) that
-    // are currently available. "Default" is always the first entry.
+    // are currently available. If present, "Default" is the first entry.
     QStringList availablePresets() const;
 
     // Returns true when a preset with the given name already exists on
