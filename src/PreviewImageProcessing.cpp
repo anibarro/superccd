@@ -192,16 +192,16 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
                                     double channelScale)
 {
     const double exposureScale = std::max(1.0 + adjustments.exposureTenths / 1000.0, 0.001);
-    constexpr double kOriginalGamma = 2.2;
+    // The preview source is now stored in linear light, so the Gamma slider
+    // is a true display gamma: 1.0 leaves the data linear, 2.2 applies the
+    // standard sRGB-like encoding curve.
+    constexpr double kSourceGamma = 1.0;
     const double newGamma = std::max(adjustments.gammaHundredths / 100.0, 0.01);
     const double contrastScale = 1.0 + adjustments.contrast / 100.0;
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
-    const double invOriginalGamma = 1.0 / kOriginalGamma;
-    // The UI gamma value is the desired display gamma (e.g. 2.2). The
-    // original 2.2 decode cancels out, leaving an effective encoding
-    // exponent of 1 / newGamma, which matches standard gamma curves.
-    const double invNewGamma = kOriginalGamma / newGamma;
+    const double invSourceGamma = 1.0 / kSourceGamma;
+    const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
     const double compressionStart = 200.0 - highlightCompression * 152.0;
     const double compressionStrength = highlightCompression * 2.0
@@ -217,7 +217,7 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
             compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
         }
 
-        double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invOriginalGamma);
+        double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invSourceGamma);
         if (contrastScale != 1.0) {
             linear = (linear - 0.5) * contrastScale + 0.5;
         }
@@ -249,21 +249,23 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     const double blueScale = std::pow(2.0, -wbBias);
     const double tintBias = adjustments.tint / 100.0;
     const double greenScale = std::pow(2.0, -tintBias);
-    constexpr double kOriginalGamma = 2.2;
+    // The preview source is now stored in linear light, so the Gamma slider
+    // is a true display gamma: 1.0 leaves the data linear, 2.2 applies the
+    // standard sRGB-like encoding curve.
+    constexpr double kSourceGamma = 1.0;
     const double newGamma = std::max(adjustments.gammaHundredths / 100.0, 0.01);
     const double contrastScale = 1.0 + adjustments.contrast / 100.0;
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
-    const double invOriginalGamma = 1.0 / kOriginalGamma;
-    // Match the LUT path: UI gamma is the effective display gamma.
-    const double invNewGamma = kOriginalGamma / newGamma;
+    const double invSourceGamma = 1.0 / kSourceGamma;
+    const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression = adjustments.highlightCompression / 100.0;
     const double toneBalanceAmount = adjustments.toneBalance / 100.0;
     const double toneBalanceBias = adjustments.balanceBias / 100.0;
 
     std::array<quint8, 256> gammaLut{};
     for (int i = 0; i < 256; ++i) {
-        double linear = std::pow(static_cast<double>(i) / 255.0, invOriginalGamma);
+        double linear = std::pow(static_cast<double>(i) / 255.0, invSourceGamma);
         if (contrastScale != 1.0) {
             linear = (linear - 0.5) * contrastScale + 0.5;
         }
@@ -352,17 +354,18 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
     const double greenScale = std::pow(2.0, -tintBias);
     const double channelScales[3] = {redScale, greenScale, blueScale};
 
-    constexpr double kOriginalGamma = 2.2;
+    // The preview source is now stored in linear light, so the Gamma slider
+    // is a true display gamma: 1.0 leaves the data linear, 2.2 applies the
+    // standard sRGB-like encoding curve.
+    constexpr double kSourceGamma = 1.0;
     const double newGamma =
         std::max(adjustments.gammaHundredths / 100.0, 0.01);
     const double contrastScale =
         1.0 + adjustments.contrast / 100.0;
     const double shadowRecovery = adjustments.shadows / 100.0;
     const double shadowRange = adjustments.shadowRange / 100.0;
-    const double invOriginalGamma = 1.0 / kOriginalGamma;
-    // UI gamma is the effective display gamma; keep the decode/encode
-    // structure but cancel the original 2.2 factor.
-    const double invNewGamma = kOriginalGamma / newGamma;
+    const double invSourceGamma = 1.0 / kSourceGamma;
+    const double invNewGamma = 1.0 / newGamma;
     const double highlightCompression =
         adjustments.highlightCompression / 100.0;
     const double compressionStart =
@@ -392,7 +395,7 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
 
             double linear = std::pow(
                 std::clamp(compressed / 255.0, 0.0, 1.0),
-                invOriginalGamma);
+                invSourceGamma);
             if (contrastScale != 1.0) {
                 linear = (linear - 0.5) * contrastScale + 0.5;
             }

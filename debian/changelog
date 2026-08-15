@@ -1,3 +1,21 @@
+superccd2dng (1.5.0) stable; urgency=low
+
+  * Add named preset manager with Default preset and user-savable presets
+  * Add per-image settings persistence via .superccd_settings.json in the
+    output folder
+  * Rework preview exposure control as a linear percentage (-100% to +100%)
+    with 0.1% precision
+  * Rework preview gamma control as true gamma values from 0.10 to 4.00
+  * Improve shadow recovery curve to guarantee monotonic output and avoid
+    inverted shadow artefacts
+  * Render live preview through a 16-bit lookup table to reduce banding
+  * Preserve original exposure in preview normalisation while retaining R
+    plane highlight recovery information
+  * Package presets directory with Windows, macOS and Raspberry Pi builds
+  * Add preview image processing test for shadow-recovery monotonicity
+
+ -- Eduardo Anibarro <anibarro@example.com>  Sat, 15 Aug 2026 14:00:00 +0200
+
 superccd2dng (1.4.4) stable; urgency=low
 
   * Add an R noise reduction slider in the Transition Settings group,

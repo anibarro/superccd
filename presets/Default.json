@@ -3,7 +3,7 @@
     "previewBalanceBiasSlider": 20,
     "previewContrastSlider": 0,
     "previewExposureSlider": 0,
-    "previewGammaSlider": 100,
+    "previewGammaSlider": 220,
     "previewHighlightCompressionSlider": 0,
     "previewSaturationSlider": 50,
     "previewShadowRangeSlider": 69,
@@ -16,5 +16,5 @@
     "rTransitionDelay": 0.9,
     "rTransitionSmoothness": 0.5,
     "rTransitionStart": 0.6240625000000001,
-    "version": "1.4.4"
+    "version": "1.5.0"
 }

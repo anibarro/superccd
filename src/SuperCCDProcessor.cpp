@@ -1630,7 +1630,6 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                               const SuperCCDMetadata &metadata,
                               int maxSize,
                               int previewRotation,
-                              double toneGamma,
                               double toneContrast,
                               QImage &preview,
                               QString &error)
@@ -2050,7 +2049,6 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         previewReference,
         previewScale);
     const double contrastFactor = std::pow(2.0, toneContrast);
-    const double inverseGamma = 1.0 / std::max(toneGamma, 0.01);
     uchar *filledBits = filled.bits();
     const qsizetype filledBytesPerLine = filled.bytesPerLine();
     superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
@@ -2069,13 +2067,13 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
             linearG = std::clamp(0.5 + (linearG - 0.5) * contrastFactor, 0.0, 1.0);
             linearB = std::clamp(0.5 + (linearB - 0.5) * contrastFactor, 0.0, 1.0);
 
-            const int outR = static_cast<int>(std::pow(linearR, inverseGamma) * 65535.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, inverseGamma) * 65535.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, inverseGamma) * 65535.0 + 0.5);
+            // Store the preview in linear light. The display pipeline applies
+            // the user-selected gamma curve, so the Gamma slider now behaves
+            // as a true display gamma (1.0 = linear, 2.2 = standard sRGB).
             scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::clamp(outR, 0, 65535)),
-                static_cast<quint16>(std::clamp(outG, 0, 65535)),
-                static_cast<quint16>(std::clamp(outB, 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearR * 65535.0)), 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearG * 65535.0)), 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearB * 65535.0)), 0, 65535)),
                 65535);
         }
     });
@@ -2339,13 +2337,13 @@ bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
                  * gains.blue * previewScale) / 65535.0,
                 0.0,
                 1.0);
-            const int outR = static_cast<int>(std::pow(linearR, 1.0 / 2.2) * 65535.0 + 0.5);
-            const int outG = static_cast<int>(std::pow(linearG, 1.0 / 2.2) * 65535.0 + 0.5);
-            const int outB = static_cast<int>(std::pow(linearB, 1.0 / 2.2) * 65535.0 + 0.5);
+            // Store the preview in linear light. The display pipeline applies
+            // the user-selected gamma curve, so the Gamma slider now behaves
+            // as a true display gamma (1.0 = linear, 2.2 = standard sRGB).
             scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::clamp(outR, 0, 65535)),
-                static_cast<quint16>(std::clamp(outG, 0, 65535)),
-                static_cast<quint16>(std::clamp(outB, 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearR * 65535.0)), 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearG * 65535.0)), 0, 65535)),
+                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearB * 65535.0)), 0, 65535)),
                 65535);
         }
     }
@@ -3873,7 +3871,6 @@ bool SuperCCDProcessor::renderPreview(const QString &inputPath,
             m_cfaPreviewCache.metadata,
             settings.previewMaxSize,
             settings.previewRotation,
-            settings.toneGamma,
             settings.toneContrast,
             preview,
             error);
