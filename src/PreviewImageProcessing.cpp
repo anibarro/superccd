@@ -218,13 +218,15 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
         }
 
         double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invSourceGamma);
-        if (contrastScale != 1.0) {
-            linear = (linear - 0.5) * contrastScale + 0.5;
-        }
         linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
         linear = applyToneBalance(linear, toneBalanceAmount, toneBalanceBias);
-        const double output =
-            std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 65535.0;
+        // Apply contrast after encoding to display gamma so the pivot sits
+        // at the perceptual midpoint (0.5) regardless of the linear value.
+        double encoded = std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma);
+        if (contrastScale != 1.0) {
+            encoded = (encoded - 0.5) * contrastScale + 0.5;
+        }
+        const double output = std::clamp(encoded, 0.0, 1.0) * 65535.0;
         lut[static_cast<size_t>(i)] = static_cast<quint16>(
             std::clamp(static_cast<int>(std::lround(output)), 0, 65535));
     }
@@ -266,14 +268,17 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     std::array<quint8, 256> gammaLut{};
     for (int i = 0; i < 256; ++i) {
         double linear = std::pow(static_cast<double>(i) / 255.0, invSourceGamma);
-        if (contrastScale != 1.0) {
-            linear = (linear - 0.5) * contrastScale + 0.5;
-        }
         linear = applyShadowRecovery(linear, shadowRecovery, shadowRange);
         linear = applyToneBalance(linear, toneBalanceAmount, toneBalanceBias);
+        // Apply contrast after encoding to display gamma so the pivot sits
+        // at the perceptual midpoint (0.5) regardless of the linear value.
+        double encoded = std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma);
+        if (contrastScale != 1.0) {
+            encoded = (encoded - 0.5) * contrastScale + 0.5;
+        }
         gammaLut[static_cast<size_t>(i)] = static_cast<quint8>(std::clamp(
             static_cast<int>(std::lround(
-                std::pow(std::clamp(linear, 0.0, 1.0), invNewGamma) * 255.0)),
+                std::clamp(encoded, 0.0, 1.0) * 255.0)),
             0,
             255));
     }
@@ -396,16 +401,19 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
             double linear = std::pow(
                 std::clamp(compressed / 255.0, 0.0, 1.0),
                 invSourceGamma);
-            if (contrastScale != 1.0) {
-                linear = (linear - 0.5) * contrastScale + 0.5;
-            }
             linear = applyShadowRecovery(
                 linear, shadowRecovery, shadowRange);
             linear = applyToneBalance(
                 linear, toneBalanceAmount, toneBalanceBias);
 
-            const double output = std::pow(
-                std::clamp(linear, 0.0, 1.0), invNewGamma) * 255.0;
+            // Apply contrast after encoding to display gamma so the pivot sits
+            // at the perceptual midpoint (0.5) regardless of the linear value.
+            double encoded = std::pow(
+                std::clamp(linear, 0.0, 1.0), invNewGamma);
+            if (contrastScale != 1.0) {
+                encoded = (encoded - 0.5) * contrastScale + 0.5;
+            }
+            const double output = std::clamp(encoded, 0.0, 1.0) * 255.0;
             luts[static_cast<size_t>(ch)][static_cast<size_t>(i)] =
                 static_cast<quint8>(std::clamp(
                     static_cast<int>(std::lround(output)), 0, 255));
