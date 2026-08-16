@@ -1,0 +1,20 @@
+{
+    "correctPreviewOutliers": false,
+    "previewBalanceBiasSlider": 0,
+    "previewContrastSlider": 10,
+    "previewExposureSlider": 1000,
+    "previewGammaSlider": 220,
+    "previewHighlightCompressionSlider": 0,
+    "previewSaturationSlider": 50,
+    "previewShadowRangeSlider": 0,
+    "previewShadowsSlider": 0,
+    "previewSharpeningSlider": 0,
+    "previewTintSlider": 0,
+    "previewToneBalanceSlider": 0,
+    "previewWhiteBalanceSlider": 0,
+    "rLumaNoiseReduction": 0,
+    "rTransitionDelay": 0.9,
+    "rTransitionSmoothness": 0.5,
+    "rTransitionStart": 0.6240625000000001,
+    "version": "1.5.0"
+}

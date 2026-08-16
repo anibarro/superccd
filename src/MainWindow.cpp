@@ -471,7 +471,7 @@ MainWindow::MainWindow(QWidget *parent)
            "noise in the R pixels without losing fine detail."));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
-    m_previewExposureSlider->setRange(-1000, 1000); // tenths of a percent (-100% to +100%)
+    m_previewExposureSlider->setRange(-1000, 5000); // tenths of a percent (-100% to +500%)
     m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
     m_previewExposureSlider->setTickInterval(100); // tick every 10%
     m_previewExposureSlider->setTickPosition(QSlider::TicksBelow);
@@ -615,8 +615,8 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewZoomSpinBox->setSuffix(QStringLiteral("%"));
     m_previewZoomSpinBox->setSingleStep(5);
     
-    // Exposure spinbox: -100% to +100%, step 0.1%
-    m_previewExposureSpinBox->setRange(-100.0, 100.0);
+    // Exposure spinbox: -100% to +500%, step 0.1%
+    m_previewExposureSpinBox->setRange(-100.0, 500.0);
     m_previewExposureSpinBox->setValue(kDefaultPreviewExposureSliderValue / 10.0);
     m_previewExposureSpinBox->setSuffix(QStringLiteral("%"));
     m_previewExposureSpinBox->setDecimals(1);
