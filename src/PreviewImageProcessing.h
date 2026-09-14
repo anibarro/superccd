@@ -17,6 +17,13 @@ struct PreviewAdjustmentValues {
     int highlightCompression = 0;
     int toneBalance = 0;       // Tone mapping strength (0-100), lifts shadows + compresses highlights with contrast preservation
     int balanceBias = 0;       // Shadow/highlight bias (-100 to +100), negative = shadow-biased, positive = highlight-biased
+    bool flatExposureEnabled = false;
+    double flatBlackPoint = 0.0;
+    double flatWhitePoint = 1.0;
+    int flatContrastRange = 100;
+    int flatContrastPivot = 50;
+    int flatContrastTransition = 30;
+    bool displayContrastRange = false;
 };
 
 struct PreviewWhiteBalanceEstimate {

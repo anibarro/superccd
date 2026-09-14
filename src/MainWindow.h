@@ -128,6 +128,7 @@ private:
     QRadioButton *m_previewMethodAmazeButton;
     QButtonGroup *m_previewMethodGroup;
     QCheckBox *m_correctPreviewOutliersCheckBox;
+    QCheckBox *m_displayContrastRangeCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
     QCheckBox *m_showExposureToolsCheckBox;
     ExposureToolsWindow *m_exposureToolsWindow;
