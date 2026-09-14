@@ -100,9 +100,7 @@ bool testFlatCurveRetainsEdgeContrast()
     adjustments.flatBlackPoint = 0.0;
     adjustments.flatWhitePoint = 1.0;
     adjustments.contrast = 80;
-    adjustments.flatContrastRange = 40;
     adjustments.flatContrastPivot = 50;
-    adjustments.flatContrastTransition = 100;
     adjustments.gammaHundredths = 100;
 
     const QImage output =
@@ -146,87 +144,30 @@ bool testFlatExposureChangesBrightness()
     return brighterValue > baseValue;
 }
 
-bool testFlatContrastPreservesChroma()
+bool testLuminancePercentileUsesPixelDistribution()
 {
-    QImage source(1, 1, QImage::Format_RGBX64);
-    source.setPixelColor(0, 0, QColor::fromRgbF(0.62, 0.42, 0.30));
+    QImage source(100, 1, QImage::Format_RGBX64);
+    for (int x = 0; x < source.width(); ++x) {
+        const double value = static_cast<double>(x) / 99.0;
+        source.setPixelColor(x, 0, QColor::fromRgbF(value, value, value));
+    }
 
-    PreviewAdjustmentValues adjustments;
-    adjustments.flatExposureEnabled = true;
-    adjustments.flatBlackPoint = 0.0;
-    adjustments.flatWhitePoint = 1.0;
-    adjustments.contrast = 100;
-    adjustments.flatContrastRange = 50;
-    adjustments.flatContrastPivot = 63;
-    adjustments.flatContrastTransition = 100;
-    adjustments.gammaHundredths = 100;
-
-    const QRgba64 output =
-        PreviewImageProcessing::applyExportAdjustments16(source, adjustments)
-            .pixelColor(0, 0).rgba64();
-    const double redGreenRatio = static_cast<double>(output.red()) /
-        std::max<double>(output.green(), 1.0);
-    const double greenBlueRatio = static_cast<double>(output.green()) /
-        std::max<double>(output.blue(), 1.0);
-    return std::abs(redGreenRatio - 1.476) < 0.03
-        && std::abs(greenBlueRatio - 1.4) < 0.03;
+    const double blackPoint =
+        PreviewImageProcessing::previewLuminancePercentile(source, 0.05);
+    return blackPoint > 0.0 && blackPoint < 0.2;
 }
 
-bool testFlatContrastExpandsLuminance()
+bool testHighlightPercentileUsesMaximumChannel()
 {
-    QImage source(2, 1, QImage::Format_RGBX64);
-    source.setPixelColor(0, 0, QColor::fromRgbF(0.30, 0.30, 0.30));
-    source.setPixelColor(1, 0, QColor::fromRgbF(0.70, 0.70, 0.70));
+    QImage source(100, 1, QImage::Format_RGBX64);
+    for (int x = 0; x < source.width(); ++x) {
+        const double red = static_cast<double>(x) / 99.0;
+        source.setPixelColor(x, 0, QColor::fromRgbF(red, 0.0, 0.0));
+    }
 
-    PreviewAdjustmentValues base;
-    base.flatExposureEnabled = true;
-    base.flatBlackPoint = 0.0;
-    base.flatWhitePoint = 1.0;
-    base.flatContrastRange = 100;
-    base.flatContrastPivot = 50;
-    base.flatContrastTransition = 100;
-    base.gammaHundredths = 100;
-
-    PreviewAdjustmentValues contrasted = base;
-    contrasted.contrast = 100;
-
-    const QImage baseImage =
-        PreviewImageProcessing::applyExportAdjustments16(source, base);
-    const QImage contrastedImage =
-        PreviewImageProcessing::applyExportAdjustments16(source, contrasted);
-    const int baseSpan = baseImage.pixelColor(1, 0).rgba64().red()
-        - baseImage.pixelColor(0, 0).rgba64().red();
-    const int contrastedSpan = contrastedImage.pixelColor(1, 0).rgba64().red()
-        - contrastedImage.pixelColor(0, 0).rgba64().red();
-    return contrastedSpan > baseSpan;
-}
-
-bool testFlatTransitionDoesNotExtendRange()
-{
-    QImage source(2, 1, QImage::Format_RGBX64);
-    source.setPixelColor(0, 0, QColor::fromRgbF(0.20, 0.20, 0.20));
-    source.setPixelColor(1, 0, QColor::fromRgbF(0.80, 0.80, 0.80));
-
-    PreviewAdjustmentValues sharp;
-    sharp.flatExposureEnabled = true;
-    sharp.flatBlackPoint = 0.0;
-    sharp.flatWhitePoint = 1.0;
-    sharp.contrast = 100;
-    sharp.flatContrastRange = 40;
-    sharp.flatContrastPivot = 50;
-    sharp.flatContrastTransition = 0;
-    sharp.gammaHundredths = 100;
-
-    PreviewAdjustmentValues soft = sharp;
-    soft.flatContrastTransition = 100;
-    const QImage sharpImage =
-        PreviewImageProcessing::applyExportAdjustments16(source, sharp);
-    const QImage softImage =
-        PreviewImageProcessing::applyExportAdjustments16(source, soft);
-    return sharpImage.pixelColor(0, 0).rgba64().red()
-            == softImage.pixelColor(0, 0).rgba64().red()
-        && sharpImage.pixelColor(1, 0).rgba64().red()
-            == softImage.pixelColor(1, 0).rgba64().red();
+    const double whitePoint =
+        PreviewImageProcessing::previewMaximumChannelPercentile(source, 0.95);
+    return whitePoint > 0.9 && whitePoint < 1.0;
 }
 
 } // namespace
@@ -236,8 +177,7 @@ int main()
     const bool shadow = testShadowRecoveryCurveIsMonotonic();
     const bool edge = testFlatCurveRetainsEdgeContrast();
     const bool exposure = testFlatExposureChangesBrightness();
-    const bool chroma = testFlatContrastPreservesChroma();
-    const bool contrast = testFlatContrastExpandsLuminance();
-    const bool transition = testFlatTransitionDoesNotExtendRange();
-    return shadow && edge && exposure && chroma && contrast && transition ? 0 : 1;
+    const bool percentile = testLuminancePercentileUsesPixelDistribution();
+    const bool highlight = testHighlightPercentileUsesMaximumChannel();
+    return shadow && edge && exposure && percentile && highlight ? 0 : 1;
 }

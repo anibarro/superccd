@@ -82,9 +82,9 @@ double applyShadowRecovery(double linear, double shadowStrength, double shadowRa
 // Applies a tone-mapping curve designed to preserve midtone contrast.
 //
 // * amount  (0..1): overall strength of the tone mapping effect.
-//           0 = identity; 1 = maximum shadow lift + highlight compression.
+//           0 = identity; 1 = maximum shadow lift and highlight shaping.
 // * bias   (-1..1): shifts the curve's pivot.
-//           Negative values lean toward shadow preservation (compress
+//           Negative values lean toward shadow preservation (preserve
 //           highlights more, lift shadows less).
 //           Positive values lean toward highlight preservation (lift
 //           shadows more, compress highlights less).
@@ -105,8 +105,8 @@ double applyToneBalance(double linear, double amount, double bias)
     const double x = std::clamp(linear, 0.0, 1.0);
 
     // Pivot point: where the shadow region ends and the highlight region
-    // begins.  bias < 0 moves the pivot lower (more of the image is in
-    // the highlight region → more highlight compression).  bias > 0 moves
+    // begins. bias < 0 moves the pivot lower (more of the image is in
+    // the highlight region → more highlight shaping). bias > 0 moves
     // it higher (more of the image is in the shadow region → more shadow
     // lift).
     const double pivot = std::clamp(0.5 + bias * 0.25, 0.2, 0.8);
@@ -128,8 +128,8 @@ double applyToneBalance(double linear, double amount, double bias)
         y = pivot + (1.0 - std::pow(1.0 - t, hExp)) * (1.0 - pivot);
     }
 
-    // Midtone contrast correction.  At the pivot the tone curve slope is
-    // reduced by the shadow lift / highlight compression.  We compensate
+    // Midtone contrast correction. At the pivot the tone curve slope is
+    // reduced by the shadow lift / highlight shaping. We compensate
     // with a sigmoid-shaped local contrast boost centred on the pivot.
     //
     // Estimate the actual slope at the pivot from the shadow side:
@@ -163,54 +163,15 @@ double applyFlatExposure(double linear,
         return value;
     }
 
-    const double range = std::clamp(adjustments.flatContrastRange / 100.0, 0.01, 1.0);
     const double pivot = std::clamp(adjustments.flatContrastPivot / 100.0, 0.0, 1.0);
-    const double halfRange = range * 0.5;
-    const double lower = std::max(0.0, pivot - halfRange);
-    const double upper = std::min(1.0, pivot + halfRange);
-    const double transitionWidth = std::clamp(
-        adjustments.flatContrastTransition / 100.0, 0.0, 1.0) * halfRange;
-
-    // Keep the contrast range fixed. Transition only softens the effect
-    // inside its two edges; it must not extend the affected tonal range.
-    if (value >= lower && value <= upper && upper > lower) {
-        double edgeEnvelope = 1.0;
-        if (transitionWidth > 0.0) {
-            const double distanceToEdge = std::min(
-                value - lower, upper - value);
-            const double edgeT = std::clamp(
-                distanceToEdge / transitionWidth, 0.0, 1.0);
-            edgeEnvelope = edgeT * edgeT * (3.0 - 2.0 * edgeT);
-        }
-        const double t = (value - lower) / (upper - lower);
-        // Cubic S-curve perturbation: zero at the range edges and pivot,
-        // with stronger separation on either side of the pivot. Its
-        // derivative remains bounded, unlike an unconstrained power curve.
-        const double cubic = t * (1.0 - t) * (2.0 * t - 1.0);
-        const double perturbation = amount * 1.6 * (upper - lower)
-            * cubic * edgeEnvelope;
-        value += perturbation;
+    const double exponent = 1.0 + amount * 0.9;
+    if (value < pivot && pivot > 1e-9) {
+        value = pivot * std::pow(value / pivot, exponent);
+    } else if (value > pivot && pivot < 1.0 - 1e-9) {
+        value = 1.0 - (1.0 - pivot)
+            * std::pow((1.0 - value) / (1.0 - pivot), exponent);
     }
     return std::clamp(value, 0.0, 1.0);
-}
-
-void applyFlatExposureToRgb(double &red,
-                            double &green,
-                            double &blue,
-                            const PreviewAdjustmentValues &adjustments)
-{
-    const double luma = std::clamp(
-        0.2126 * red + 0.7152 * green + 0.0722 * blue, 0.0, 1.0);
-    const double mappedLuma = applyFlatExposure(luma, adjustments);
-    if (luma <= 1e-9) {
-        red = green = blue = mappedLuma;
-        return;
-    }
-
-    const double scale = mappedLuma / luma;
-    red = std::clamp(red * scale, 0.0, 1.0);
-    green = std::clamp(green * scale, 0.0, 1.0);
-    blue = std::clamp(blue * scale, 0.0, 1.0);
 }
 
 template <typename FillLuma, typename ApplyPixel>
@@ -269,22 +230,12 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invSourceGamma = 1.0 / kSourceGamma;
     const double invNewGamma = 1.0 / newGamma;
-    const double highlightCompression = adjustments.highlightCompression / 100.0;
-    const double compressionStart = 200.0 - highlightCompression * 152.0;
-    const double compressionStrength = highlightCompression * 2.0
-        + highlightCompression * highlightCompression * 14.0;
     const double toneBalanceAmount = adjustments.toneBalance / 100.0;
     const double toneBalanceBias = adjustments.balanceBias / 100.0;
 
     std::vector<quint16> lut(65536);
     for (int i = 0; i <= 65535; ++i) {
         double compressed = (static_cast<double>(i) / 257.0) * exposureScale * channelScale;
-        if (!adjustments.flatExposureEnabled
-            && highlightCompression > 0.0 && compressed > compressionStart) {
-            const double excess = compressed - compressionStart;
-            compressed = compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
-        }
-
         double linear = std::pow(std::clamp(compressed / 255.0, 0.0, 1.0), invSourceGamma);
         if (adjustments.flatExposureEnabled) {
             linear = applyFlatExposure(linear, adjustments);
@@ -305,6 +256,85 @@ std::vector<quint16> buildToneLut16(const PreviewAdjustmentValues &adjustments,
 
     return lut;
 }
+}
+
+double PreviewImageProcessing::previewLuminancePercentile(
+    const QImage &image, double percentile)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
+        return percentile <= 0.0 ? 0.0 : 1.0;
+    }
+
+    const QImage source = image.format() == QImage::Format_RGBX64
+        ? image
+        : image.convertToFormat(QImage::Format_RGBX64);
+    std::vector<std::uint32_t> histogram(65536, 0);
+    for (int y = 0; y < source.height(); ++y) {
+        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(
+            source.constScanLine(y));
+        for (int x = 0; x < source.width(); ++x) {
+            const QRgba64 pixel = scanLine[x];
+            const double luminance =
+                0.2126 * pixel.red()
+                + 0.7152 * pixel.green()
+                + 0.0722 * pixel.blue();
+            ++histogram[static_cast<size_t>(std::clamp(
+                static_cast<int>(std::lround(luminance)), 0, 65535))];
+        }
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const std::uint64_t sampleCount = static_cast<std::uint64_t>(
+        source.width()) * static_cast<std::uint64_t>(source.height());
+    const std::uint64_t targetRank = std::max<std::uint64_t>(
+        1,
+        static_cast<std::uint64_t>(std::ceil(
+            static_cast<double>(sampleCount) * clampedPercentile)));
+    std::uint64_t cumulative = 0;
+    for (std::size_t index = 0; index < histogram.size(); ++index) {
+        cumulative += histogram[index];
+        if (cumulative >= targetRank) {
+            return static_cast<double>(index) / 65535.0;
+        }
+    }
+    return 1.0;
+}
+
+double PreviewImageProcessing::previewMaximumChannelPercentile(
+    const QImage &image, double percentile)
+{
+    if (image.isNull() || image.width() <= 0 || image.height() <= 0) {
+        return percentile <= 0.0 ? 0.0 : 1.0;
+    }
+
+    const QImage source = image.format() == QImage::Format_RGBX64
+        ? image
+        : image.convertToFormat(QImage::Format_RGBX64);
+    std::vector<std::uint32_t> histogram(65536, 0);
+    for (int y = 0; y < source.height(); ++y) {
+        const QRgba64 *scanLine = reinterpret_cast<const QRgba64 *>(
+            source.constScanLine(y));
+        for (int x = 0; x < source.width(); ++x) {
+            const QRgba64 pixel = scanLine[x];
+            ++histogram[std::max({pixel.red(), pixel.green(), pixel.blue()})];
+        }
+    }
+
+    const double clampedPercentile = std::clamp(percentile, 0.0, 1.0);
+    const std::uint64_t sampleCount = static_cast<std::uint64_t>(
+        source.width()) * static_cast<std::uint64_t>(source.height());
+    const std::uint64_t targetRank = std::max<std::uint64_t>(
+        1,
+        static_cast<std::uint64_t>(std::ceil(
+            static_cast<double>(sampleCount) * clampedPercentile)));
+    std::uint64_t cumulative = 0;
+    for (std::size_t index = 0; index < histogram.size(); ++index) {
+        cumulative += histogram[index];
+        if (cumulative >= targetRank) {
+            return static_cast<double>(index) / 65535.0;
+        }
+    }
+    return 1.0;
 }
 
 QImage PreviewImageProcessing::applyDisplayAdjustments(
@@ -334,7 +364,6 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invSourceGamma = 1.0 / kSourceGamma;
     const double invNewGamma = 1.0 / newGamma;
-    const double highlightCompression = adjustments.highlightCompression / 100.0;
     const double toneBalanceAmount = adjustments.toneBalance / 100.0;
     const double toneBalanceBias = adjustments.balanceBias / 100.0;
 
@@ -361,17 +390,8 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
     }
 
     std::array<quint8, kToneLutMaxInput + 1> toneLut{};
-    const double compressionStart = 200.0 - highlightCompression * 152.0;
-    const double compressionStrength = highlightCompression * 2.0
-        + highlightCompression * highlightCompression * 14.0;
     for (int i = 0; i <= kToneLutMaxInput; ++i) {
         double compressed = static_cast<double>(i);
-        if (!adjustments.flatExposureEnabled
-            && highlightCompression > 0.0 && compressed > compressionStart) {
-            const double excess = compressed - compressionStart;
-            compressed =
-                compressionStart + excess / (1.0 + excess * compressionStrength / 255.0);
-        }
         const int lutIndex = std::clamp(static_cast<int>(std::lround(compressed)), 0, 255);
         toneLut[static_cast<size_t>(i)] = gammaLut[static_cast<size_t>(lutIndex)];
     }
@@ -384,39 +404,18 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
             displayBits + static_cast<qsizetype>(y) * displayBytesPerLine);
         for (int x = 0; x < displayImage.width(); ++x) {
             const QRgb sourcePixel = scanLine[x];
-            int r;
-            int g;
-            int b;
-            if (adjustments.flatExposureEnabled) {
-                double red = std::clamp(
-                    qRed(sourcePixel) / 255.0 * exposureScale * redScale,
-                    0.0, 1.0);
-                double green = std::clamp(
-                    qGreen(sourcePixel) / 255.0 * exposureScale * greenScale,
-                    0.0, 1.0);
-                double blue = std::clamp(
-                    qBlue(sourcePixel) / 255.0 * exposureScale * blueScale,
-                    0.0, 1.0);
-                applyFlatExposureToRgb(red, green, blue, adjustments);
-                const double invGamma = 1.0 /
-                    std::max(adjustments.gammaHundredths / 100.0, 0.01);
-                r = static_cast<int>(std::lround(std::pow(red, invGamma) * 255.0));
-                g = static_cast<int>(std::lround(std::pow(green, invGamma) * 255.0));
-                b = static_cast<int>(std::lround(std::pow(blue, invGamma) * 255.0));
-            } else {
-                r = toneLut[static_cast<size_t>(std::clamp(
-                    static_cast<int>(std::lround(qRed(sourcePixel) * exposureScale * redScale)),
-                    0,
-                    kToneLutMaxInput))];
-                g = toneLut[static_cast<size_t>(std::clamp(
-                    static_cast<int>(std::lround(qGreen(sourcePixel) * exposureScale * greenScale)),
-                    0,
-                    kToneLutMaxInput))];
-                b = toneLut[static_cast<size_t>(std::clamp(
-                    static_cast<int>(std::lround(qBlue(sourcePixel) * exposureScale * blueScale)),
-                    0,
-                    kToneLutMaxInput))];
-            }
+            int r = toneLut[static_cast<size_t>(std::clamp(
+                static_cast<int>(std::lround(qRed(sourcePixel) * exposureScale * redScale)),
+                0,
+                kToneLutMaxInput))];
+            int g = toneLut[static_cast<size_t>(std::clamp(
+                static_cast<int>(std::lround(qGreen(sourcePixel) * exposureScale * greenScale)),
+                0,
+                kToneLutMaxInput))];
+            int b = toneLut[static_cast<size_t>(std::clamp(
+                static_cast<int>(std::lround(qBlue(sourcePixel) * exposureScale * blueScale)),
+                0,
+                kToneLutMaxInput))];
 
             if (saturationScale != 1.0) {
                 const double gray = (r + g + b) / 3.0;
@@ -436,7 +435,7 @@ QImage PreviewImageProcessing::applyDisplayAdjustments(
 }
 
 // Builds a 16-bit-input → 8-bit-output per-channel LUT that fuses
-// exposure, white-balance, highlight compression, gamma decode/encode,
+// exposure, white-balance, gamma decode/encode,
 // contrast, shadow recovery and tone balance into a single 64 Ki-entry
 // lookup table.  By accepting 16‑bit source pixels directly this avoids
 // the intermediate 8‑bit quantisation that produces coarse gradations
@@ -470,13 +469,6 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
     const double shadowRange = adjustments.shadowRange / 100.0;
     const double invSourceGamma = 1.0 / kSourceGamma;
     const double invNewGamma = 1.0 / newGamma;
-    const double highlightCompression =
-        adjustments.highlightCompression / 100.0;
-    const double compressionStart =
-        200.0 - highlightCompression * 152.0;
-    const double compressionStrength =
-        highlightCompression * 2.0
-        + highlightCompression * highlightCompression * 14.0;
     const double toneBalanceAmount =
         adjustments.toneBalance / 100.0;
     const double toneBalanceBias =
@@ -491,14 +483,6 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
             // buildToneLut16 / applyExportAdjustments16.
             double compressed = (static_cast<double>(i) / 257.0)
                                 * exposureScale * channelScale;
-            if (!adjustments.flatExposureEnabled
-                && highlightCompression > 0.0
-                && compressed > compressionStart) {
-                const double excess = compressed - compressionStart;
-                compressed = compressionStart
-                    + excess / (1.0 + excess * compressionStrength / 255.0);
-            }
-
             double linear = std::pow(
                 std::clamp(compressed / 255.0, 0.0, 1.0),
                 invSourceGamma);
@@ -510,7 +494,6 @@ std::array<std::array<quint8, 65536>, 3> build16to8Luts(
                 linear = applyToneBalance(
                     linear, toneBalanceAmount, toneBalanceBias);
             }
-
             // Apply contrast after encoding to display gamma so the pivot sits
             // at the perceptual midpoint (0.5) regardless of the linear value.
             double encoded = std::pow(
@@ -564,37 +547,9 @@ QImage PreviewImageProcessing::applyDisplayAdjustmentsFrom16(
 
         for (int x = 0; x < src.width(); ++x) {
             const QRgba64 px = srcLine[x];
-            int r;
-            int g;
-            int b;
-            if (adjustments.flatExposureEnabled) {
-                const double exposureScale = std::max(
-                    1.0 + adjustments.exposureTenths / 1000.0, 0.001);
-                const double wbBias = adjustments.whiteBalance / 100.0;
-                const double tintBias = adjustments.tint / 100.0;
-                double red = std::clamp(
-                    px.red() / 65535.0 * exposureScale * std::pow(2.0, wbBias),
-                    0.0, 1.0);
-                double green = std::clamp(
-                    px.green() / 65535.0 * exposureScale * std::pow(2.0, -tintBias),
-                    0.0, 1.0);
-                double blue = std::clamp(
-                    px.blue() / 65535.0 * exposureScale * std::pow(2.0, -wbBias),
-                    0.0, 1.0);
-                applyFlatExposureToRgb(red, green, blue, adjustments);
-                const double invGamma = 1.0 /
-                    std::max(adjustments.gammaHundredths / 100.0, 0.01);
-                r = static_cast<int>(std::lround(
-                    std::pow(red, invGamma) * 255.0));
-                g = static_cast<int>(std::lround(
-                    std::pow(green, invGamma) * 255.0));
-                b = static_cast<int>(std::lround(
-                    std::pow(blue, invGamma) * 255.0));
-            } else {
-                r = rLut[static_cast<size_t>(px.red())];
-                g = gLut[static_cast<size_t>(px.green())];
-                b = bLut[static_cast<size_t>(px.blue())];
-            }
+            int r = rLut[static_cast<size_t>(px.red())];
+            int g = gLut[static_cast<size_t>(px.green())];
+            int b = bLut[static_cast<size_t>(px.blue())];
 
             if (saturationScale != 1.0) {
                 const double gray = (r + g + b) / 3.0;
@@ -637,37 +592,9 @@ QImage PreviewImageProcessing::applyExportAdjustments16(
         QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(adjustedImage.scanLine(y));
         for (int x = 0; x < adjustedImage.width(); ++x) {
             const QRgba64 sourcePixel = scanLine[x];
-            int r;
-            int g;
-            int b;
-            if (adjustments.flatExposureEnabled) {
-                const double exposureScale = std::max(
-                    1.0 + adjustments.exposureTenths / 1000.0, 0.001);
-                const double wbBias = adjustments.whiteBalance / 100.0;
-                const double tintBias = adjustments.tint / 100.0;
-                double red = std::clamp(
-                    sourcePixel.red() / 65535.0 * exposureScale * std::pow(2.0, wbBias),
-                    0.0, 1.0);
-                double green = std::clamp(
-                    sourcePixel.green() / 65535.0 * exposureScale * std::pow(2.0, -tintBias),
-                    0.0, 1.0);
-                double blue = std::clamp(
-                    sourcePixel.blue() / 65535.0 * exposureScale * std::pow(2.0, -wbBias),
-                    0.0, 1.0);
-                applyFlatExposureToRgb(red, green, blue, adjustments);
-                const double invGamma = 1.0 /
-                    std::max(adjustments.gammaHundredths / 100.0, 0.01);
-                r = static_cast<int>(std::lround(
-                    std::pow(red, invGamma) * 65535.0));
-                g = static_cast<int>(std::lround(
-                    std::pow(green, invGamma) * 65535.0));
-                b = static_cast<int>(std::lround(
-                    std::pow(blue, invGamma) * 65535.0));
-            } else {
-                r = redLut[static_cast<size_t>(sourcePixel.red())];
-                g = greenLut[static_cast<size_t>(sourcePixel.green())];
-                b = blueLut[static_cast<size_t>(sourcePixel.blue())];
-            }
+            int r = redLut[static_cast<size_t>(sourcePixel.red())];
+            int g = greenLut[static_cast<size_t>(sourcePixel.green())];
+            int b = blueLut[static_cast<size_t>(sourcePixel.blue())];
 
             if (saturationScale != 1.0) {
                 const double gray = (r + g + b) / 3.0;

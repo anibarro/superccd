@@ -1,20 +1,18 @@
 {
     "correctPreviewOutliers": false,
-    "previewBalanceBiasSlider": 20,
-    "previewContrastSlider": 0,
+    "previewContrastAmount": 100,
+    "previewContrastPivot": 1,
     "previewExposureSlider": 0,
     "previewGammaSlider": 220,
-    "previewHighlightCompressionSlider": 0,
-    "previewSaturationSlider": 50,
-    "previewShadowRangeSlider": 69,
-    "previewShadowsSlider": 100,
+    "previewSaturationSlider": 60,
+    "previewShadowRangeSlider": 0,
+    "previewShadowsSlider": 0,
     "previewSharpeningSlider": 0,
     "previewTintSlider": 0,
-    "previewToneBalanceSlider": 100,
     "previewWhiteBalanceSlider": 0,
     "rLumaNoiseReduction": 0,
     "rTransitionDelay": 0.9,
     "rTransitionSmoothness": 0.5,
     "rTransitionStart": 0.6240625000000001,
-    "version": "1.5.0"
+    "version": "1.6.0"
 }

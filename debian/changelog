@@ -1,3 +1,14 @@
+superccd2dng (1.6.0) stable; urgency=low
+
+  * Replace the legacy flat exposure range and transition controls with a
+    contrast amount and pivot workflow
+  * Apply flat exposure from normalized luma while preserving RGB chroma
+  * Keep preview, waveform/scopes and export on the same flat processing path
+  * Remove obsolete contrast and tone-mapping controls from the main window
+  * Update presets to the new contrast amount and pivot fields
+
+ -- Eduardo Anibarro <anibarro@example.com>  Mon, 14 Sep 2026 00:00:00 +0200
+
 superccd2dng (1.5.0) stable; urgency=low
 
   * Add named preset manager with Default preset and user-savable presets

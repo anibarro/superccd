@@ -163,10 +163,6 @@ void PreviewCanvas::paintEvent(QPaintEvent *event)
                            targetRect.size());
     QPainter painter(this);
     painter.drawImage(targetRect.topLeft(), tile, tileSource);
-    if (m_adjustments.displayContrastRange) {
-        drawContrastRangeOverlay(
-            painter, tile16, targetRect, renderRect, sourceRect);
-    }
 
     if (m_whiteBalancePickerEnabled && m_whiteBalancePickerVisible) {
         const QRect pickerRect = whiteBalancePickerCanvasRect();
@@ -177,64 +173,6 @@ void PreviewCanvas::paintEvent(QPaintEvent *event)
         painter.setPen(QPen(Qt::white, 1, Qt::DashLine));
         painter.drawRect(pickerRect);
     }
-}
-
-void PreviewCanvas::drawContrastRangeOverlay(QPainter &painter,
-                                             const QImage &tile16,
-                                             const QRect &targetRect,
-                                             const QRect &renderRect,
-                                             const QRectF &sourceRect) const
-{
-    Q_UNUSED(sourceRect);
-    const double black = std::clamp(m_adjustments.flatBlackPoint, 0.0, 0.99);
-    const double white = std::clamp(
-        m_adjustments.flatWhitePoint, black + 1e-6, 1.0);
-    const double range = std::clamp(
-        m_adjustments.flatContrastRange / 100.0, 0.01, 1.0);
-    const double pivot = std::clamp(
-        m_adjustments.flatContrastPivot / 100.0, 0.0, 1.0);
-    const double halfRange = range * 0.5;
-    const double lower = std::max(0.0, pivot - halfRange);
-    const double upper = std::min(1.0, pivot + halfRange);
-    const double transitionWidth = std::clamp(
-        m_adjustments.flatContrastTransition / 100.0, 0.0, 1.0) * halfRange;
-
-    QImage overlay(tile16.size(), QImage::Format_ARGB32_Premultiplied);
-    overlay.fill(Qt::transparent);
-    for (int y = 0; y < tile16.height(); ++y) {
-        const QRgba64 *sourceLine = reinterpret_cast<const QRgba64 *>(
-            tile16.constScanLine(y));
-        for (int x = 0; x < tile16.width(); ++x) {
-            const QRgba64 pixel = sourceLine[x];
-            const double luma = std::clamp(
-                (0.2126 * pixel.red() + 0.7152 * pixel.green()
-                 + 0.0722 * pixel.blue()) / 65535.0,
-                0.0, 1.0);
-            const double value = std::clamp(
-                (luma - black) / (white - black), 0.0, 1.0);
-            double alpha = 0.0;
-            if (value >= lower && value <= upper) {
-                if (transitionWidth <= 0.0) {
-                    alpha = 1.0;
-                } else {
-                    const double distanceToEdge = std::min(
-                        value - lower, upper - value);
-                    const double t = std::clamp(
-                        distanceToEdge / transitionWidth, 0.0, 1.0);
-                    alpha = t * t * (3.0 - 2.0 * t);
-                }
-            }
-            if (alpha > 0.0) {
-                overlay.setPixelColor(
-                    x, y, QColor(255, 0, 0,
-                                 static_cast<int>(std::lround(alpha * 255.0))));
-            }
-        }
-    }
-
-    const QRect overlaySource(targetRect.topLeft() - renderRect.topLeft(),
-                              targetRect.size());
-    painter.drawImage(targetRect.topLeft(), overlay, overlaySource);
 }
 
 QRect PreviewCanvas::whiteBalancePickerCanvasRect() const

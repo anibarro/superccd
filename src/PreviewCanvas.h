@@ -7,8 +7,6 @@
 #include <QLabel>
 #include <QPointF>
 
-class QPainter;
-
 class PreviewCanvas : public QLabel
 {
 public:
@@ -31,11 +29,6 @@ protected:
 
 private:
     QRect whiteBalancePickerCanvasRect() const;
-    void drawContrastRangeOverlay(QPainter &painter,
-                                  const QImage &tile16,
-                                  const QRect &targetRect,
-                                  const QRect &renderRect,
-                                  const QRectF &sourceRect) const;
     void updateWhiteBalancePickerArea(const QRect &oldRect);
     void updateCanvasSize();
 

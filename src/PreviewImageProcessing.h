@@ -14,16 +14,12 @@ struct PreviewAdjustmentValues {
     int shadows = 0;
     int shadowRange = 100;
     int saturation = 0;
-    int highlightCompression = 0;
     int toneBalance = 0;       // Tone mapping strength (0-100), lifts shadows + compresses highlights with contrast preservation
     int balanceBias = 0;       // Shadow/highlight bias (-100 to +100), negative = shadow-biased, positive = highlight-biased
     bool flatExposureEnabled = false;
     double flatBlackPoint = 0.0;
     double flatWhitePoint = 1.0;
-    int flatContrastRange = 100;
     int flatContrastPivot = 50;
-    int flatContrastTransition = 30;
-    bool displayContrastRange = false;
 };
 
 struct PreviewWhiteBalanceEstimate {
@@ -32,6 +28,10 @@ struct PreviewWhiteBalanceEstimate {
 };
 
 namespace PreviewImageProcessing {
+
+double previewLuminancePercentile(const QImage &image, double percentile);
+double previewMaximumChannelPercentile(const QImage &image,
+                                       double percentile);
 
 QImage applyDisplayAdjustments(const QImage &scaledSource,
                                const PreviewAdjustmentValues &adjustments);

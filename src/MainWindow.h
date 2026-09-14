@@ -66,11 +66,10 @@ private slots:
     void onPreviewShadowRangeChanged(int value);
     void onPreviewSaturationChanged(int value);
     void onPreviewSharpeningChanged(int value);
-    void onPreviewHighlightCompressionChanged(int value);
-    void onPreviewToneBalanceChanged(int value);
     void onPreviewBalanceBiasChanged(int value);
     void onPresetSelected(int index);
     void onSavePresetClicked();
+    void onResetPresetClicked();
     void onAutoPreviewTimer();
     void showPreviewWindow();
     void onShowExposureToolsToggled(bool enabled);
@@ -119,8 +118,6 @@ private:
     QSlider *m_previewShadowRangeSlider;
     QSlider *m_previewSaturationSlider;
     QSlider *m_previewSharpeningSlider;
-    QSlider *m_previewHighlightCompressionSlider;
-    QSlider *m_previewToneBalanceSlider;
     QSlider *m_previewBalanceBiasSlider;
     QComboBox *m_previewRotationCombo;
     QWidget *m_previewMethodRow;
@@ -128,7 +125,6 @@ private:
     QRadioButton *m_previewMethodAmazeButton;
     QButtonGroup *m_previewMethodGroup;
     QCheckBox *m_correctPreviewOutliersCheckBox;
-    QCheckBox *m_displayContrastRangeCheckBox;
     QCheckBox *m_autoPreviewCheckBox;
     QCheckBox *m_showExposureToolsCheckBox;
     ExposureToolsWindow *m_exposureToolsWindow;
@@ -143,6 +139,7 @@ private:
     QCheckBox *m_exportPlaneImagesCheckBox;
     QComboBox *m_presetCombo;
     QPushButton *m_savePresetButton;
+    QPushButton *m_resetPresetButton;
     PresetManager *m_presetManager;
     ImageSettingsManager *m_imageSettingsManager;
     bool m_presetComboGuard = false;
@@ -180,8 +177,6 @@ private:
     QSpinBox *m_previewShadowRangeSpinBox;
     QSpinBox *m_previewSaturationSpinBox;
     QSpinBox *m_previewSharpeningSpinBox;
-    QSpinBox *m_previewHighlightCompressionSpinBox;
-    QSpinBox *m_previewToneBalanceSpinBox;
     QSpinBox *m_previewBalanceBiasSpinBox;
     QImage m_currentPreviewImage;
     QImage m_adjustedDisplayImage;
