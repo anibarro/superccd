@@ -77,7 +77,6 @@ private:
         Whites,
         Blacks,
         Gamma,
-        Temperature,
         Tint,
         Vibrance,
         Saturation,
@@ -113,7 +112,7 @@ private:
     void setDevelopValue(Develop id, int value);
     double developValue(Develop id) const;
     superccd::EditParams currentEditParams() const;
-    void updateTemperatureLabel(const superccd::EditParams &params);
+    void setTemperatureKelvin(int kelvin);
     void setCurrentScene(superccd::SceneImagePtr scene, const QString &inputPath);
 
     void updateControls(bool busy);
@@ -196,7 +195,10 @@ private:
     TransitionCurveWidget *m_transitionCurveWidget;
     QSpinBox *m_previewZoomSpinBox;
     std::array<DevelopControl, static_cast<size_t>(Develop::Count)> m_developControls;
-    QLabel *m_temperatureLabel = nullptr;
+    QSlider *m_temperatureSlider = nullptr;
+    QSpinBox *m_temperatureSpinBox = nullptr;
+    QPushButton *m_temperatureAsShotButton = nullptr;
+    int m_temperatureKelvin = 0; // 0 keeps the white balance as shot
     QCheckBox *m_reconstructCheckBox = nullptr;
     superccd::SceneImagePtr m_scene;
     QImage m_adjustedDisplayImage;

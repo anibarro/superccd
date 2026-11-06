@@ -69,6 +69,28 @@ constexpr double kDefaultMergeWidth = 0.20;
 constexpr int kDefaultPreviewZoomSliderValue = 35;
 constexpr bool kDefaultAutoPreview = true;
 constexpr int kPreviewExportSixMpShortSide = 2016;
+constexpr int kMinimumKelvin = 2000;
+constexpr int kMaximumKelvin = 20000;
+constexpr int kTemperatureSliderSteps = 1000;
+
+// The Temperature slider is uniform in mired, because equal Kelvin steps are huge
+// color changes at low temperatures and invisible ones at high temperatures.
+int kelvinFromSlider(int position)
+{
+    const double low = 1.0e6 / kMaximumKelvin;
+    const double high = 1.0e6 / kMinimumKelvin;
+    const double t = static_cast<double>(position) / kTemperatureSliderSteps;
+    const double kelvin = 1.0e6 / (high + (low - high) * t);
+    return static_cast<int>(std::lround(kelvin / 10.0) * 10);
+}
+
+int sliderFromKelvin(int kelvin)
+{
+    const double low = 1.0e6 / kMaximumKelvin;
+    const double high = 1.0e6 / kMinimumKelvin;
+    const double mired = 1.0e6 / std::clamp(kelvin, kMinimumKelvin, kMaximumKelvin);
+    return static_cast<int>(std::lround((high - mired) / (high - low) * kTemperatureSliderSteps));
+}
 constexpr int kItemPreviewRotationRole = Qt::UserRole + 1;
 
 enum class PreviewExportSize {
@@ -711,13 +733,45 @@ MainWindow::MainWindow(QWidget *parent)
                       30, 300, 100, 100.0, 2, toneLayout);
 
     QVBoxLayout *colorLayout = addDevelopGroup(tr("Color"));
-    addDevelopControl(Develop::Temperature, "developTemperature", tr("Temperature:"),
-                      tr("Relative to the white balance as shot. Positive is warmer."),
-                      -200, 200, 0, 1.0, 0, colorLayout);
-    m_temperatureLabel = new QLabel(this);
-    m_temperatureLabel->setAlignment(Qt::AlignRight);
-    m_temperatureLabel->setStyleSheet(QStringLiteral("color: #b0b0b0; font-size: 10px;"));
-    colorLayout->addWidget(m_temperatureLabel);
+    m_temperatureSlider = new QSlider(Qt::Horizontal, this);
+    m_temperatureSlider->setRange(0, kTemperatureSliderSteps);
+    m_temperatureSlider->setToolTip(
+        tr("Color temperature of the light in the scene. Higher values make the image "
+           "warmer. The slider moves evenly in perceived color, not in Kelvin."));
+    m_temperatureSpinBox = new QSpinBox(this);
+    m_temperatureSpinBox->setRange(kMinimumKelvin, kMaximumKelvin);
+    m_temperatureSpinBox->setSingleStep(50);
+    m_temperatureSpinBox->setSuffix(QStringLiteral(" K"));
+    m_temperatureSpinBox->setGroupSeparatorShown(false);
+    m_temperatureSpinBox->setLocale(QLocale::C);
+    m_temperatureAsShotButton = new QPushButton(tr("As Shot"), this);
+    m_temperatureAsShotButton->setToolTip(tr("Returns to the white balance of the camera."));
+    {
+        QHBoxLayout *row = new QHBoxLayout;
+        row->setContentsMargins(0, 0, 0, 0);
+        row->setSpacing(4);
+        QLabel *rowLabel = new QLabel(tr("Temperature:"), this);
+        rowLabel->setMinimumWidth(90);
+        row->addWidget(rowLabel);
+        row->addWidget(m_temperatureSlider, 1);
+        row->addWidget(m_temperatureSpinBox, 0);
+        row->addWidget(m_temperatureAsShotButton, 0);
+        colorLayout->addLayout(row);
+    }
+    connect(m_temperatureSlider, &QSlider::valueChanged, this, [this](int position) {
+        setTemperatureKelvin(kelvinFromSlider(position));
+        onDevelopChanged();
+    });
+    connect(m_temperatureSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this,
+            [this](int kelvin) {
+        setTemperatureKelvin(kelvin);
+        onDevelopChanged();
+    });
+    connect(m_temperatureAsShotButton, &QPushButton::clicked, this, [this]() {
+        setTemperatureKelvin(0);
+        onDevelopChanged();
+    });
+    setTemperatureKelvin(0);
     addDevelopControl(Develop::Tint, "developTint", tr("Tint:"),
                       tr("Relative to the white balance as shot. Positive is more magenta."),
                       -100, 100, 0, 1.0, 0, colorLayout);
@@ -1586,6 +1640,7 @@ void MainWindow::setCurrentScene(superccd::SceneImagePtr scene, const QString &i
 {
     m_scene = std::move(scene);
     m_previewLabel->setScene(m_scene);
+    setTemperatureKelvin(m_temperatureKelvin);
     m_lastPreviewedInputPath = inputPath;
     m_previewWindow->setWindowTitle(
         tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
@@ -1826,6 +1881,9 @@ void MainWindow::updateControls(bool busy)
         control.spinBox->setEnabled(!busy);
     }
     m_reconstructCheckBox->setEnabled(!busy);
+    m_temperatureSlider->setEnabled(!busy);
+    m_temperatureSpinBox->setEnabled(!busy);
+    m_temperatureAsShotButton->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_correctPreviewOutliersCheckBox->setEnabled(!busy);
     m_showPreviewButton->setEnabled(true);
@@ -1977,7 +2035,6 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
 
     const superccd::EditParams params = currentEditParams();
     m_previewLabel->setDisplayState(zoom, params);
-    updateTemperatureLabel(params);
     m_previewLabel->setCursor(
         m_whiteBalancePickerButton->isChecked() ? Qt::CrossCursor : Qt::OpenHandCursor);
 
@@ -2007,26 +2064,27 @@ void MainWindow::showStatus(const QString &message)
 void MainWindow::applyWhiteBalancePickerSample()
 {
     const QRect sampleRect = m_previewLabel->whiteBalancePickerSourceRect();
-    double temperature = 0.0;
+    double kelvin = 0.0;
     double tint = 0.0;
     if (!m_scene || !superccd::estimateNeutralWhiteBalance(*m_scene,
                                                           sampleRect.x(),
                                                           sampleRect.y(),
                                                           sampleRect.width(),
                                                           sampleRect.height(),
-                                                          temperature,
+                                                          kelvin,
                                                           tint)) {
         showStatus(tr("The selected area could not be used for white balance."));
         return;
     }
 
-    setDevelopValue(Develop::Temperature, static_cast<int>(std::lround(temperature)));
+    setTemperatureKelvin(std::clamp(static_cast<int>(std::lround(kelvin)),
+                                    kMinimumKelvin, kMaximumKelvin));
     setDevelopValue(Develop::Tint, static_cast<int>(std::lround(tint)));
     markPresetModified();
     updatePreviewDisplay();
 
-    showStatus(tr("White balance sampled: temperature %1, tint %2.")
-                   .arg(developControl(Develop::Temperature).slider->value())
+    showStatus(tr("White balance sampled: %1 K, tint %2.")
+                   .arg(m_temperatureKelvin)
                    .arg(developControl(Develop::Tint).slider->value()));
 }
 
@@ -2169,6 +2227,7 @@ void MainWindow::loadPreset(const QString &name)
         for (const DevelopControl &control : m_developControls) {
             setDevelopValue(control.id, control.defaultValue);
         }
+        setTemperatureKelvin(0);
         {
             const QSignalBlocker reconstructBlocker(m_reconstructCheckBox);
             m_reconstructCheckBox->setChecked(true);
@@ -2206,6 +2265,7 @@ void MainWindow::applyJsonPreset(const QJsonObject &presetData)
         setDevelopValue(control.id,
                         presetData.value(QLatin1String(control.key)).toInt(control.defaultValue));
     }
+    setTemperatureKelvin(presetData.value(QStringLiteral("developTemperatureKelvin")).toInt(0));
     const QSignalBlocker reconstructBlocker(m_reconstructCheckBox);
     m_reconstructCheckBox->setChecked(
         presetData.value(QStringLiteral("developReconstruct")).toBool(true));
@@ -2226,6 +2286,7 @@ QJsonObject MainWindow::collectCurrentStateAsJson() const
         presetData[QLatin1String(control.key)] = control.slider->value();
     }
     presetData[QStringLiteral("developReconstruct")] = m_reconstructCheckBox->isChecked();
+    presetData[QStringLiteral("developTemperatureKelvin")] = m_temperatureKelvin;
     return presetData;
 }
 
@@ -2512,7 +2573,7 @@ superccd::EditParams MainWindow::currentEditParams() const
     params.whites = developValue(Develop::Whites);
     params.blacks = developValue(Develop::Blacks);
     params.gamma = developValue(Develop::Gamma);
-    params.temperature = developValue(Develop::Temperature);
+    params.kelvin = m_temperatureKelvin;
     params.tint = developValue(Develop::Tint);
     params.vibrance = developValue(Develop::Vibrance);
     params.saturation = developValue(Develop::Saturation);
@@ -2523,17 +2584,20 @@ superccd::EditParams MainWindow::currentEditParams() const
     return params;
 }
 
-void MainWindow::updateTemperatureLabel(const superccd::EditParams &params)
+void MainWindow::setTemperatureKelvin(int kelvin)
 {
-    if (!m_scene) {
-        m_temperatureLabel->clear();
-        return;
+    m_temperatureKelvin = kelvin;
+    // As shot shows the camera's own value, read from the current photo.
+    int shown = kelvin;
+    if (shown <= 0) {
+        shown = m_scene
+            ? static_cast<int>(std::lround(superccd::solveWhiteBalance(*m_scene, 0.0, 0.0).kelvin))
+            : 5500;
     }
-    const superccd::WhiteBalanceSolution solution =
-        superccd::solveWhiteBalance(*m_scene, params.temperature, params.tint);
-    m_temperatureLabel->setText(solution.kelvin > 0.0
-        ? tr("about %1 K").arg(static_cast<int>(std::lround(solution.kelvin / 50.0) * 50))
-        : QString());
+    const QSignalBlocker sliderBlocker(m_temperatureSlider);
+    const QSignalBlocker spinBoxBlocker(m_temperatureSpinBox);
+    m_temperatureSlider->setValue(sliderFromKelvin(shown));
+    m_temperatureSpinBox->setValue(shown);
 }
 
 ConversionSettings MainWindow::currentSettings() const

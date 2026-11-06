@@ -79,6 +79,7 @@ struct LinearToOklab {
     std::array<float, 9> toLab{};
     std::array<float, 9> fromLab{};
     std::array<float, 9> rec709FromRec2020{};
+    std::array<float, 9> rec2020FromRec709{};
 
     LinearToOklab()
     {
@@ -87,12 +88,14 @@ struct LinearToOklab {
         const Matrix3 labFromLms = kOklabFromLms;
         const Matrix3 lmsFromLab = inverse(labFromLms);
         const Matrix3 toRec709 = multiply(inverse(kXyzFromRec709), kXyzFromRec2020);
+        const Matrix3 fromRec709 = inverse(toRec709);
         for (size_t i = 0; i < 9; ++i) {
             toLms[i] = static_cast<float>(lmsFromWork[i]);
             fromLms[i] = static_cast<float>(workFromLms[i]);
             toLab[i] = static_cast<float>(labFromLms[i]);
             fromLab[i] = static_cast<float>(lmsFromLab[i]);
             rec709FromRec2020[i] = static_cast<float>(toRec709[i]);
+            rec2020FromRec709[i] = static_cast<float>(fromRec709[i]);
         }
     }
 };
@@ -222,8 +225,6 @@ std::array<double, 3> xyzFromLocus(const LocusPosition &position)
     return {x / y, 1.0, (1.0 - x - y) / y};
 }
 
-// Temperature steps are uniform in mired, which is how color differences scale.
-constexpr double kMiredPerSliderUnit = 1.5;
 // Same scale as the DNG specification's tint value.
 constexpr double kTintScale = 3000.0;
 
@@ -245,11 +246,8 @@ constexpr double kDisplayGrayLog2 = -2.4739; // log2(0.18)
 constexpr double kBaseSlope = 1.33;
 constexpr double kShoulderOffset = 0.49;   // Stops above gray where roll-off begins
 
-// A per-channel camera curve raises saturation in the midtones and takes it away
-// toward white. The tone curve here keeps channel ratios, so that behavior is
-// added back as a chroma gain following the display level.
-constexpr double kBaseChroma = 1.30;
-constexpr double kWhiteChroma = 0.45;
+// The per-channel curve lands a little below the saturation of the camera JPEGs.
+constexpr float kBaseChroma = 1.20f;
 
 constexpr float kLutMinimum = -24.0f;
 constexpr float kLutMaximum = 12.0f;
@@ -607,7 +605,7 @@ float SceneNoiseModel::sigma(float level) const
 
 bool EditParams::operator==(const EditParams &other) const
 {
-    return exposureEv == other.exposureEv && temperature == other.temperature &&
+    return exposureEv == other.exposureEv && kelvin == other.kelvin &&
            tint == other.tint && contrast == other.contrast &&
            highlights == other.highlights && shadows == other.shadows &&
            whites == other.whites && blacks == other.blacks && gamma == other.gamma &&
@@ -624,20 +622,21 @@ double sceneMiddleGray()
 }
 
 WhiteBalanceSolution solveWhiteBalance(const SceneImage &scene,
-                                       double temperature,
+                                       double kelvin,
                                        double tint)
 {
     WhiteBalanceSolution solution;
     if (!scene.hasColorMatrix) {
-        // Without a matrix, move along the blue-amber and green-magenta axes.
+        // Kelvin has no meaning without a matrix, which leaves the green-magenta axis.
         solution.mul = {
-            scene.asShotMul[0] * std::exp2(temperature / 200.0),
+            scene.asShotMul[0],
             scene.asShotMul[1] * std::exp2(-tint / 200.0),
-            scene.asShotMul[2] * std::exp2(-temperature / 200.0)};
+            scene.asShotMul[2]};
     } else {
         LocusPosition position = asShotLocus(scene);
-        position.mired = std::clamp(position.mired - temperature * kMiredPerSliderUnit,
-                                    kMinimumMired, kMaximumMired);
+        if (kelvin > 0.0) {
+            position.mired = std::clamp(1.0e6 / kelvin, kMinimumMired, kMaximumMired);
+        }
         position.duv += tint / kTintScale;
         const std::array<double, 3> neutral = transformVector(scene.xyzToCam, xyzFromLocus(position));
         for (size_t i = 0; i < 3; ++i) {
@@ -658,7 +657,7 @@ bool estimateNeutralWhiteBalance(const SceneImage &scene,
                                  int y,
                                  int width,
                                  int height,
-                                 double &temperature,
+                                 double &kelvin,
                                  double &tint)
 {
     const int left = std::clamp(x, 0, scene.width);
@@ -685,16 +684,16 @@ bool estimateNeutralWhiteBalance(const SceneImage &scene,
     if (!scene.hasColorMatrix) {
         const double red = sum[1] / sum[0] / scene.asShotMul[0];
         const double blue = sum[1] / sum[2] / scene.asShotMul[2];
-        temperature = 100.0 * (std::log2(red) - std::log2(blue));
+        kelvin = 0.0;
         tint = -100.0 * (std::log2(red) + std::log2(blue));
     } else {
         const LocusPosition target = locusFromXyz(
             transformVector(inverse(scene.xyzToCam), {sum[0], sum[1], sum[2]}));
         const LocusPosition base = asShotLocus(scene);
-        temperature = (base.mired - target.mired) / kMiredPerSliderUnit;
+        kelvin = 1.0e6 / target.mired;
         tint = (target.duv - base.duv) * kTintScale;
     }
-    return std::isfinite(temperature) && std::isfinite(tint);
+    return std::isfinite(kelvin) && std::isfinite(tint);
 }
 
 void rotateScene(SceneImage &scene, int degrees)
@@ -751,7 +750,7 @@ SceneRenderer::SceneRenderer(const SceneImage &scene, const EditParams &params)
     , m_params(params)
 {
     const WhiteBalanceSolution balance =
-        solveWhiteBalance(scene, params.temperature, params.tint);
+        solveWhiteBalance(scene, params.kelvin, params.tint);
     const Matrix3 workFromCamera = workFromCameraMatrix(scene);
     const double exposure = std::exp2(params.exposureEv);
     m_exposureLog2 = static_cast<float>(params.exposureEv);
@@ -800,7 +799,6 @@ SceneRenderer::SceneRenderer(const SceneImage &scene, const EditParams &params)
     m_toneLut.resize(kLutSize);
     m_deltaLut.resize(kLutSize);
     m_detailLut.resize(kLutSize);
-    m_chromaLut.resize(kLutSize);
     for (int i = 0; i < kLutSize; ++i) {
         const double x = kLutMinimum + static_cast<double>(i) / kLutPerStop;
 
@@ -810,8 +808,6 @@ SceneRenderer::SceneRenderer(const SceneImage &scene, const EditParams &params)
             linear = srgbDecode(std::pow(srgbEncode(std::min(linear, 1.0)), 1.0 / gamma));
         }
         m_toneLut[static_cast<size_t>(i)] = static_cast<float>(linear);
-        m_chromaLut[static_cast<size_t>(i)] = static_cast<float>(
-            kBaseChroma + (kWhiteChroma - kBaseChroma) * smoothstep(0.40, 0.92, linear));
 
         // Highlights and Shadows work on the base layer, so the amount of
         // lift or compression follows areas rather than single pixels.
@@ -992,9 +988,28 @@ void SceneRenderer::shadeRow(const float *camera,
             noiseCodes[i] = codes;
         }
 
-        red *= ratio;
-        green *= ratio;
-        blue *= ratio;
+        // The curve runs on each display channel, as in a camera. Saturation then
+        // rises in the midtones, a bright orange keeps its strength and turns
+        // yellow as red fills up, and near-neutral highlights go pale by themselves.
+        // Local adjustments arrive as a shift, so texture and tone stay the same.
+        {
+            const std::array<float, 9> &to = lab.rec709FromRec2020;
+            const std::array<float, 9> &from = lab.rec2020FromRec709;
+            const float shift = toned - logNorm;
+            const float linear[3] = {
+                to[0] * red + to[1] * green + to[2] * blue,
+                to[3] * red + to[4] * green + to[5] * blue,
+                to[6] * red + to[7] * green + to[8] * blue};
+            float curved[3];
+            for (int channel = 0; channel < 3; ++channel) {
+                curved[channel] = linear[channel] > 1.0e-7f
+                    ? lookup(m_toneLut, std::log2(linear[channel]) + shift)
+                    : linear[channel] * ratio;
+            }
+            red = from[0] * curved[0] + from[1] * curved[1] + from[2] * curved[2];
+            green = from[3] * curved[0] + from[4] * curved[1] + from[5] * curved[2];
+            blue = from[6] * curved[0] + from[7] * curved[1] + from[8] * curved[2];
+        }
 
         {
             const float l = lab.toLms[0] * red + lab.toLms[1] * green + lab.toLms[2] * blue;
@@ -1007,7 +1022,7 @@ void SceneRenderer::shadeRow(const float *camera,
             float chromaA = lab.toLab[3] * lRoot + lab.toLab[4] * mRoot + lab.toLab[5] * sRoot;
             float chromaB = lab.toLab[6] * lRoot + lab.toLab[7] * mRoot + lab.toLab[8] * sRoot;
 
-            float scale = m_saturationScale * lookup(m_chromaLut, toned);
+            float scale = m_saturationScale * kBaseChroma;
             if (m_vibrance != 0.0f) {
                 // Vibrance favors muted colors and goes easy on skin tones,
                 // which sit around 45 degrees in the a/b plane.

@@ -12,7 +12,7 @@
     "developSaturation": 0,
     "developShadows": 0,
     "developSharpenAmount": 0,
-    "developTemperature": 0,
+    "developTemperatureKelvin": 0,
     "developTint": 0,
     "developVibrance": 0,
     "developWhites": 0,
@@ -20,5 +20,5 @@
     "rTransitionDelay": 0.2,
     "rTransitionSmoothness": 0.5,
     "rTransitionStart": 0.9,
-    "version": "2.0.0"
+    "version": "2.0.1"
 }

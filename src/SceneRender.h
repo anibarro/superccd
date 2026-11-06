@@ -76,7 +76,7 @@ using SceneImagePtr = std::shared_ptr<const SceneImage>;
 // as-shot rendering unchanged.
 struct EditParams {
     double exposureEv = 0.0;   // -5..5 stops
-    double temperature = 0.0;  // -200..200, relative to as shot, + is warmer
+    double kelvin = 0.0;       // Color temperature; 0 keeps the white balance as shot
     double tint = 0.0;         // -100..100, relative to as shot, + is magenta
     double contrast = 0.0;     // -100..100
     double highlights = 0.0;   // -100..100, - recovers
@@ -102,17 +102,17 @@ struct WhiteBalanceSolution {
 };
 
 WhiteBalanceSolution solveWhiteBalance(const SceneImage &scene,
-                                       double temperature,
+                                       double kelvin,
                                        double tint);
 
-// Finds the Temperature and Tint that make the given area neutral. Returns false
+// Finds the Kelvin and Tint that make the given area neutral. Returns false
 // when the area has no usable signal.
 bool estimateNeutralWhiteBalance(const SceneImage &scene,
                                  int x,
                                  int y,
                                  int width,
                                  int height,
-                                 double &temperature,
+                                 double &kelvin,
                                  double &tint);
 
 // Rotates clockwise by 90, 180 or 270 degrees.
@@ -189,7 +189,6 @@ private:
     std::vector<float> m_toneLut;
     std::vector<float> m_deltaLut;
     std::vector<float> m_detailLut;
-    std::vector<float> m_chromaLut;
 };
 
 // Middle gray in scene units (1.0 = S white), as used by the base tone curve.

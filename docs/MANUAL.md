@@ -138,10 +138,13 @@ algorithms, not Adobe's.
 ### Color
 
 The image is converted from camera color with the color matrix of the camera, so
-colors are correct at neutral settings without any added saturation.
+neutral settings give natural colors. As in a camera, the tone curve works on each
+channel separately, so bright saturated colors keep their strength and shift toward
+yellow or white as they fill up.
 
-- `Temperature`: relative to the white balance as shot, and positive is warmer. The
-  resulting color temperature is shown under the slider.
+- `Temperature`: the color temperature of the light, in Kelvin. Each photo opens at
+  the value of the camera; higher values make the image warmer. The slider moves evenly
+  in perceived color. `As Shot` returns to the camera's white balance.
 - `Tint`: relative to the white balance as shot, and positive is more magenta.
 - `WB picker`: turn it on, move the box over something neutral, use the mouse wheel
   to resize the box, and left-click to set Temperature and Tint.

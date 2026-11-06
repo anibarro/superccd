@@ -1,3 +1,11 @@
+superccd2dng (2.0.1) stable; urgency=low
+
+  * Apply the tone curve per channel so bright saturated colors follow the
+    rendering of the camera
+  * Change Temperature to a Kelvin control with an As Shot button
+
+ -- Eduardo Anibarro <anibarro@example.com>  Fri, 06 Nov 2026 18:00:00 +0100
+
 superccd2dng (2.0.0) stable; urgency=low
 
   * Rewrite the develop pipeline on a linear float scene that keeps the full
