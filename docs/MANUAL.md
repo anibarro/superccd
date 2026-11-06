@@ -84,10 +84,10 @@ Saves the currently rendered preview as a `JPEG` or lossless 16-bit RGB `TIFF`.
 - can export at `12 MP` or resized as `6 MP`
 - writes JPEG files as `*_preview_12MP.jpg` or `*_preview_6MP.jpg`
 - writes TIFF files as `*_preview_12MP.tif` or `*_preview_6MP.tif`
-- exports the same preview adjustments currently shown in the app, including highlight compression and sharpening
+- exports the same preview adjustments currently shown in the app, including shadow/highlight recovery and sharpening
 - requires the selected RAF file to have an up-to-date preview first
 
-The preview source is rendered internally at 16-bit precision. Preview exports apply adjustments to that 16-bit source, and TIFF preserves the resulting 16-bit RGB values without JPEG compression. For responsive controls, the on-screen image is first scaled to the selected zoom and then adjusted with fast 8-bit lookup tables, so the live Preview can show more visible banding and lower apparent quality than the final `JPEG` or `TIFF` export.
+The preview source is rendered internally at 16-bit precision. Preview exports apply adjustments to that 16-bit source, and TIFF preserves the resulting 16-bit RGB values without JPEG compression. For responsive controls, the on-screen preview is first scaled to the selected zoom and then rendered to 8-bit RGB, so it can show more visible banding than the final `JPEG` or `TIFF` export.
 
 Important behavior:
 
@@ -100,111 +100,84 @@ Important behavior:
 
 When enabled, parameter changes trigger preview regeneration automatically after a short delay.
 
-### Preview Exposure
+### How the image is developed
 
-Preview-only control.
+The preview and the preview exports are developed from a linear floating-point
+image, where 1.0 is the point at which the `S` photosites clip and the `R` data
+carries on above it, up to about +2.7 EV at ISO 100 and +4 EV at high ISO.
 
-- does not affect export
-- useful because the highlight-safe raw opens dark by design
+Nothing in the pipeline looks at the image to decide how bright it should be. A
+frame opens at the exposure it was shot at: the base rendering was fitted to the
+response of the JPEG engine of the camera, and it lands within about 0.2 EV of
+the embedded camera JPEG on the S3 Pro test frames. A frame shot two stops under
+looks two stops under.
 
-### Preview Gamma
+All the data above `S` white stays in the image while you edit. The tone curve
+approaches display white without reaching it, so no control can clip the
+highlights: pushing them only compresses them.
 
-Preview-only gamma correction adjustment.
+### Tone
 
-- range: 0.0 to 3.0 (default 2.2)
-- lower values brighten shadows, higher values increase contrast
-- does not affect export
+All controls start at 0 (Gamma at 1.00), which is the image as shot. Their ranges
+and behavior follow Adobe Camera Raw, but these are this application's own
+algorithms, not Adobe's.
 
-### Preview Contrast
+- `Exposure`: exposure compensation in stops, from -5 to +5.
+- `Contrast`: steepens or flattens the midtones, pivoting on middle gray.
+- `Highlights`: negative values bring the bright areas down and reveal the `R`
+  detail above `S` white. It follows areas of the image rather than single pixels,
+  so texture keeps its contrast as the tones come down.
+- `Shadows`: positive values lift the dark areas, also by area. The lift fades out
+  below the sensor noise floor, where there is nothing left to recover but noise,
+  and fine detail near that floor is held back so lifted shadows stay clean.
+- `Whites`: moves the point where tones start rolling off into white.
+- `Blacks`: sets the black point. Negative deepens, positive lifts.
+- `Gamma`: midtone gamma, as in Levels. 1.00 leaves the image unchanged and higher
+  values brighten the midtones. It does not move black or white.
 
-Preview-only contrast adjustment.
+### Color
 
-- range: -200 to +200 (default 0)
-- negative values reduce contrast, positive values increase contrast
-- does not affect export
+The image is converted from camera color with the color matrix of the camera, so
+colors are correct at neutral settings without any added saturation.
 
-### Preview Saturation
+- `Temperature`: relative to the white balance as shot, and positive is warmer. The
+  resulting color temperature is shown under the slider.
+- `Tint`: relative to the white balance as shot, and positive is more magenta.
+- `WB picker`: turn it on, move the box over something neutral, use the mouse wheel
+  to resize the box, and left-click to set Temperature and Tint.
+- `Vibrance`: raises muted colors the most and protects skin tones.
+- `Saturation`: scales all colors evenly, at constant lightness.
 
-Preview-only saturation adjustment.
+### Highlight reconstruction
 
-- range: -100 to +100 (default 0)
-- negative values desaturate, positive values increase color intensity
-- does not affect export
+Where even the `R` photosites saturate, on the sun, a bright cloud, a lamp or a strong
+reflection, each channel stops at its own ceiling and the white balance pulls them
+apart, which turns those highlights pink. The ceiling is measured in each file. Each
+capped channel is rebuilt from the other two, and areas with two or more capped
+channels fade toward neutral. Colors below their ceilings are real data and stay as
+they are, however bright. The controls update live and do not re-run the merge.
 
-### Preview Sharpening
+- `Rebuild saturated highlights`: turn it off to see what the sensor recorded.
+- `Threshold`: how close to the ceiling, in percent, the repair begins. Lower it if
+  pink edges remain, which can happen on frames where no ceiling could be measured.
+  Raise it if bright colors near the ceiling lose saturation.
+- `Neutralize`: how far areas with two or more saturated channels go toward white.
+  0 keeps the recorded hue, which for a blue lamp is cyan. 100 gives pure white.
 
-Applies a luminance-only sharpening adjustment to the live preview and exported preview files.
+### Detail
 
-- range: 0% to 100% (default 0%)
-- sharpens the scaled on-screen image after a short idle delay so other sliders remain responsive
-- sharpens JPEG and 16-bit TIFF exports at their final 6 MP or 12 MP resolution
-- preserves RGB color differences to avoid introducing colored edge artifacts
-- does not affect DNG export
+`Sharpening` is one light luminance pass on the finished image, at output size and
+as the very last step, so colors are not touched and it shows at every zoom level.
+6 MP exports are resized first and sharpened afterwards.
+
+It eases off in the two places where it would mostly raise noise: the deep shadows,
+and highlights that come from the noisier `R` photosites. Midtone texture is sharpened
+at full strength.
 
 ### Correct isolated light/dark pixels
 
-Disabled by default. Detects strongly isolated light or dark pixels in the
-finished 16-bit preview and replaces only those pixels with a robust local
-estimate.
-
-- affects the live preview and JPEG/TIFF preview exports
-- never changes the RAW CFA data or the preview demosaicing result globally
-- leaves every pixel not classified as an isolated outlier unchanged
-- requires the pixel to be separated from every immediate neighbor, protecting
-  supported edges, gradients, texture, and highlights
-- can be disabled to compare the uncorrected sensor rendering
-- does not alter DNG export
-
-### Preview White Balance
-
-Preview-only white-balance bias.
-
-- negative values cool the preview
-- positive values warm the preview
-- affects preview display and JPEG/TIFF preview exports, not DNG output
-
-### Preview Tint
-
-Preview-only tint adjustment for green channel balance.
-
-- negative values shift toward magenta
-- positive values shift toward green
-- affects preview display and JPEG/TIFF preview exports, not DNG output
-
-### Preview Shadows
-
-Preview-only shadow recovery control.
-
-- range: 0 to 100 (default 0)
-- lifts the dark tones of the rendered preview without affecting highlights
-- applied in both the live preview display path and the exported preview
-  path, so `JPEG` and `16-bit TIFF` preview exports match the on-screen
-  tonal lift
-- does not affect DNG export
-
-### Preview Shadow range
-
-Preview-only control for the width of the shadow range that the
-`Preview Shadows` slider affects.
-
-- range: 0 to 100 (default 100)
-- lower values restrict the recovery to the deepest shadows, higher values
-  extend it further into the midtones
-- applied alongside `Preview Shadows` for the live preview and the exported
-  preview files
-- does not affect DNG export
-
-### White Balance Picker
-
-The checkable white balance picker sets the preview white balance and tint from
-an area that should be neutral gray.
-
-- turn the picker on and move the box over the preview
-- use the mouse wheel to resize the sample box
-- left-click to calculate and apply white balance and tint
-- turn the picker off to restore normal wheel zoom and drag-to-pan controls
-- the calculation uses the full-resolution 16-bit preview pixels inside the box
-- affects the live preview and JPEG/TIFF preview exports, not DNG output
+Corrects only strongly isolated light or dark pixels. Other pixels stay unchanged. It
+affects the live preview and preview exports, but not the DNG.
 
 ### Preview Rotation
 
@@ -216,20 +189,15 @@ Rotates the preview display for orientation checking.
 
 ### Preview Method
 
-Selects the preview rendering path used to display the merged 6 MP preview
-and the AMaZE preview.
+Selects how the merged S/R CFA is turned into the preview and preview exports.
 
-- `Reconstruction` is the established preview path. It uses the existing
-  reconstruction-based render of the merged S/R CFA and supports the full
-  preview / preview export workflow at `12 MP` and `6 MP`.
-- `Amaze debayer` demosaics the merged S/R CFA through the AMaZE
-  algorithm for a different detail / color tradeoff during evaluation.
-  This method renders the preview at the native 6 MP geometry and limits
-  the preview export to the supported `6 MP` output.
+- `Amaze debayer` is the default. It demosaics with the AMaZE algorithm at the native
+  6 MP of the sensor and keeps fine color detail best. Previews and exports are `6 MP`.
+- `Reconstruction` renders on the `12 MP` diagonal grid and exports at `12 MP` or
+  `6 MP`. It takes about half the time to update after a merge change.
 
-The selected method is stored in defaults and restored on startup. It only
-affects preview rendering and preview exports; it does not change the
-`6MP Raw CFA DNG` conversion path.
+The app starts on `Amaze debayer` each time. The method only affects the preview and
+preview exports; it does not change the `6MP Raw CFA DNG` conversion.
 
 ### Preview zoom
 
@@ -329,8 +297,11 @@ state is remembered between sessions.
 
 ### Merge start
 
-The `S` brightness (as a percentage of the channel white point) at which the
+The `S` brightness (as a percentage of the channel clip level) at which the
 `S -> R` merge begins. Pixels darker than this are kept as pure `S`.
+
+The default is 90%. `S` stays linear right up to clipping and has about 8 times less
+noise than `R` at the same brightness, so a later start gives cleaner highlights.
 
 Use it when:
 
@@ -365,6 +336,19 @@ range, so the slider stays meaningful across its full range.
 The transition width and the merge start work together smoothly. As the
 merge start approaches 100% the window simply narrows toward the top of
 the S brightness range; there is no abrupt cutoff.
+
+### R noise reduction
+
+Smooths the `R` pixels before merging, scaled to their measured noise. `R` has about 8
+times the noise of `S`, so recovered highlights are grainy at high ISO. At 0 nothing is
+filtered, which is the default. Higher values give cleaner, softer highlights. It only
+touches pixels where `R` is used, and it also applies to the DNG.
+
+### Chroma noise reduction
+
+Smooths color noise in noisy areas, meaning shadows and, at high ISO, `R` highlights.
+Clean detail keeps its color. At 0 nothing is filtered, which is the default. It only
+affects the `Amaze debayer` preview and its exports, not the DNG.
 
 ### Smoothness
 
@@ -429,11 +413,7 @@ Saved values include:
 - `Merge start`
 - `Transition width`
 - `Smoothness`
-- preview exposure
-- preview white balance
-- preview tint
-- preview shadows
-- preview shadow range
+- the Tone, Color and Detail controls
 - preview method
 - preview rotation
 - auto-preview state
@@ -495,9 +475,11 @@ According to RawPedia, dynamic rules are evaluated from top to bottom, all match
 
 ## Important Behavior
 
-- The merged DNG is intentionally highlight-safe.
-- That means the raw may open darker than a normal camera raw.
-- This is a deliberate tradeoff to preserve highlight recovery.
+- The merged DNG stores the full `S + R` range and is scaled to fit 16 bits.
+- Its `BaselineExposure` tag tells raw converters where `S` white is, so it opens at
+  the exposure as shot with the extra highlight range available for recovery.
+- Develop settings made in versions before 2.0 used different units and are not
+  carried over. Their merge settings are kept.
 
 ## Known Limitations
 
@@ -509,7 +491,8 @@ According to RawPedia, dynamic rules are evaluated from top to bottom, all match
 
 ### Preview is dark
 
-Increase `Preview exposure`.
+The preview shows the exposure as shot, so an underexposed frame looks underexposed.
+Raise `Exposure` or `Shadows`.
 
 ### Thumbnail says `No thumb`
 
@@ -536,7 +519,9 @@ operation.
 
 ### The merged DNG opens darker than expected
 
-That is normal for the highlight-safe workflow. Adjust exposure in the raw editor.
+Files converted by versions before 2.0 have no `BaselineExposure`, so they open dark.
+Convert again, or adjust the exposure in the raw editor. A raw editor that ignores
+`BaselineExposure` will also show the file dark.
 
 ## Frequently Asked Questions
 
@@ -546,7 +531,7 @@ The Fujifilm Super CCD SR II is a sensor technology found in the FinePix S3 Pro 
 
 ### Why does the output look dark?
 
-The merged DNG is intentionally highlight-safe. It preserves highlight detail by keeping the image darker overall, expecting you to adjust exposure in your raw processor. This is a deliberate tradeoff for improved dynamic range.
+The merged DNG holds the full highlight range and uses `BaselineExposure` to open at the exposure as shot. No dynamic range is given up for this.
 
 ### Why is the image rotated?
 

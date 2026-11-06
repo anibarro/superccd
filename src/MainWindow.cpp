@@ -5,7 +5,6 @@
 #include "ImageSettingsManager.h"
 #include "PreviewCanvas.h"
 #include "PreviewImageProcessing.h"
-#include "PreviewPixelCorrection.h"
 #include "TransitionCurveWidget.h"
 
 #include <QAction>
@@ -58,23 +57,15 @@
 #include <cstdint>
 
 namespace {
-constexpr int kDefaultDelaySliderValue = 50;
+constexpr int kDefaultDelaySliderValue = 20;
 constexpr int kDefaultSmoothnessSliderValue = 50;
-// Default slider position for Merge start. The slider is non-linear:
-// 0..80 maps linearly to start=0..0.99 and 80..100 is a smoothstep
-// from 0.99 to 1.0. Position 60 corresponds to start ~= 0.7425, so
-// the visible default is roughly the original 75% behavior.
-constexpr int kDefaultStartSliderValue = 60;
-constexpr int kDefaultPreviewExposureSliderValue = 0; // tenths of a percent
-constexpr int kDefaultPreviewWhiteBalanceSliderValue = 0;
-constexpr int kDefaultPreviewTintSliderValue = 0;
-constexpr int kDefaultPreviewGammaSliderValue = 220; // 2.2, standard gamma
-constexpr int kDefaultPreviewContrastSliderValue = 38;
-constexpr int kDefaultPreviewShadowsSliderValue = 0;
-constexpr int kDefaultPreviewShadowRangeSliderValue = 0;
-constexpr int kDefaultPreviewSaturationSliderValue = 64;
-constexpr int kDefaultPreviewSharpeningSliderValue = 0;
-constexpr int kDefaultPreviewBalanceBiasSliderValue = 50;
+// Default slider position for Merge start. The slider is non-linear: 0..80 maps
+// linearly to start = 0..0.9985 and 80..100 is a smoothstep up to 1.0. Position
+// 72 is start ~= 0.90: S stays linear until it clips and has about 8x less noise
+// than R, so R only takes over just below clipping.
+constexpr int kDefaultStartSliderValue = 72;
+constexpr double kDefaultMergeStart = 0.90;
+constexpr double kDefaultMergeWidth = 0.20;
 constexpr int kDefaultPreviewZoomSliderValue = 35;
 constexpr bool kDefaultAutoPreview = true;
 constexpr int kPreviewExportSixMpShortSide = 2016;
@@ -353,18 +344,9 @@ MainWindow::MainWindow(QWidget *parent)
     , m_rTransitionDelaySlider(new QSlider(Qt::Horizontal, this))
     , m_rTransitionSmoothnessSlider(new QSlider(Qt::Horizontal, this))
     , m_rLumaNoiseReductionSlider(new QSlider(Qt::Horizontal, this))
+    , m_chromaNoiseReductionSlider(new QSlider(Qt::Horizontal, this))
     , m_previewZoomSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewExposureSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewWhiteBalanceSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewTintSlider(new QSlider(Qt::Horizontal, this))
     , m_whiteBalancePickerButton(new QPushButton(tr("White Balance Picker: Off"), this))
-    , m_previewGammaSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewContrastSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewShadowsSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewShadowRangeSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewSaturationSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewSharpeningSlider(new QSlider(Qt::Horizontal, this))
-    , m_previewBalanceBiasSlider(new QSlider(Qt::Horizontal, this))
     , m_previewRotationCombo(new QComboBox(this))
     , m_previewMethodRow(new QWidget(this))
     , m_previewMethodReconstructionButton(new QRadioButton(tr("Reconstruction"), this))
@@ -392,24 +374,14 @@ MainWindow::MainWindow(QWidget *parent)
     , m_statusLabel(new QLabel(tr("Ready."), this))
     , m_statusClearTimer(new QTimer(this))
     , m_autoPreviewTimer(new QTimer(this))
-    , m_previewSharpeningTimer(new QTimer(this))
     , m_exposureScopeTimer(new QTimer(this))
     , m_rTransitionStartSpinBox(new QSpinBox(this))
     , m_rTransitionDelaySpinBox(new QSpinBox(this))
     , m_rTransitionSmoothnessSpinBox(new QSpinBox(this))
     , m_rLumaNoiseReductionSpinBox(new QSpinBox(this))
+    , m_chromaNoiseReductionSpinBox(new QSpinBox(this))
     , m_transitionCurveWidget(new TransitionCurveWidget(this))
     , m_previewZoomSpinBox(new QSpinBox(this))
-    , m_previewExposureSpinBox(new QDoubleSpinBox(this))
-    , m_previewWhiteBalanceSpinBox(new QSpinBox(this))
-    , m_previewTintSpinBox(new QSpinBox(this))
-    , m_previewGammaSpinBox(new QDoubleSpinBox(this))
-    , m_previewContrastSpinBox(new QSpinBox(this))
-    , m_previewShadowsSpinBox(new QSpinBox(this))
-    , m_previewShadowRangeSpinBox(new QSpinBox(this))
-    , m_previewSaturationSpinBox(new QSpinBox(this))
-    , m_previewSharpeningSpinBox(new QSpinBox(this))
-    , m_previewBalanceBiasSpinBox(new QSpinBox(this))
 {
     setWindowTitle(tr("SuperCCD RAF to DNG Converter v%1").arg(QString::fromLatin1(APP_VERSION_STRING)));
     resize(900, 760);
@@ -461,62 +433,30 @@ MainWindow::MainWindow(QWidget *parent)
     m_rLumaNoiseReductionSlider->setRange(0, 100);
     m_rLumaNoiseReductionSlider->setValue(0);
     m_rLumaNoiseReductionSlider->setToolTip(
-        tr("Noise reduction strength applied to the R (secondary) pixels "
-           "before merging. 0 = off, 100 = maximum reduction. Helps suppress "
-           "noise in the R pixels without losing fine detail."));
+        tr("Noise reduction of the R pixels before merging, scaled to their measured "
+           "noise. 0 = off. Stronger settings smooth recovered highlights more, and it "
+           "also applies to the DNG."));
+    m_chromaNoiseReductionSlider->setRange(0, 100);
+    m_chromaNoiseReductionSlider->setValue(0);
+    m_chromaNoiseReductionSlider->setToolTip(
+        tr("Smooths color noise in noisy areas: shadows, and R highlights at high ISO. "
+           "0 = off. Only affects the Amaze debayer preview and its exports, not the DNG."));
     m_previewZoomSlider->setRange(5, 400);
     m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
-    m_previewExposureSlider->setRange(-1000, 5000); // tenths of a percent (-100% to +500%)
-    m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
-    m_previewExposureSlider->setToolTip(
-        tr("Exposure adjustment as a linear percentage of brightness. "
-           "Slider step is 0.1%; +100% means twice as bright."));
-    m_previewWhiteBalanceSlider->setRange(-100, 100);
-    m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
-    m_previewTintSlider->setRange(-100, 100);
-    m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
     m_whiteBalancePickerButton->setCheckable(true);
     m_whiteBalancePickerButton->setToolTip(
         tr("Turn on the picker, move the box over a neutral gray area, use the "
            "mouse wheel to resize it, and left-click to set white balance and tint."));
-    // Gamma slider: range 10-400 (0.10 to 4.00), default 220 (gamma 2.2)
-    m_previewGammaSlider->setRange(10, 400);
-    m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
-    m_previewGammaSlider->setToolTip(
-        tr("Gamma encoding curve. Standard values such as 1.8, 2.0, 2.2 and 2.4 are available."));
-    // Flat contrast slider: positive contrast only.
-    m_previewContrastSlider->setRange(0, 100);
-    m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
-    // Shadows slider: range 0 to 100, default 0
-    m_previewShadowsSlider->setRange(0, 100);
-    m_previewShadowsSlider->setValue(kDefaultPreviewShadowsSliderValue);
-    // Highlight clip percentage: range 0 to 100, default 0
-    m_previewShadowRangeSlider->setRange(0, 100);
-    m_previewShadowRangeSlider->setValue(kDefaultPreviewShadowRangeSliderValue);
-    // Saturation slider: range -200 to +200, default 0
-    m_previewSaturationSlider->setRange(-200, 200);
-    m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
-    // Sharpening is deliberately limited to a luma-only unsharp pass.
-    m_previewSharpeningSlider->setRange(0, 100);
-    m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
-    // Balance bias slider: range 0 to 100, default 50 (center)
-    // 0 = bias toward shadow preservation (more highlight preservation)
-    // 50 = balanced
-    // 100 = bias toward highlight preservation (more shadow lift)
-    m_previewBalanceBiasSlider->setRange(0, 100);
-    m_previewBalanceBiasSlider->setValue(kDefaultPreviewBalanceBiasSliderValue);
-    m_previewBalanceBiasSlider->setToolTip(
-        tr("Shifts the tone curve pivot. Lower values preserve more highlights; "
-           "higher values preserve more shadows. 50 = neutral."));
     m_previewRotationCombo->addItem(tr("Normal"), 0);
     m_previewRotationCombo->addItem(tr("Rotate 90 CW"), 90);
     m_previewRotationCombo->addItem(tr("Rotate 180"), 180);
     m_previewRotationCombo->addItem(tr("Rotate 90 CCW"), 270);
     m_previewMethodGroup->addButton(m_previewMethodReconstructionButton, static_cast<int>(PreviewMethod::Reconstruction));
     m_previewMethodGroup->addButton(m_previewMethodAmazeButton, static_cast<int>(PreviewMethod::AmazeDebayer));
-    m_previewMethodReconstructionButton->setChecked(true);
+    m_previewMethodAmazeButton->setChecked(true);
     m_previewMethodAmazeButton->setToolTip(
-        tr("Experimental 6 MP pipeline that demosaics the merged S/R CFA with AMaZE. Faster, keeps more chroma fidelity, but only outputs 6 MP previews."));
+        tr("Demosaics the merged S/R CFA with AMaZE at the native 6 MP of the sensor. "
+           "Keeps fine color detail best. Previews and exports are 6 MP."));
     {
         QHBoxLayout *methodLayout = new QHBoxLayout(m_previewMethodRow);
         methodLayout->setContentsMargins(0, 0, 0, 0);
@@ -551,8 +491,6 @@ MainWindow::MainWindow(QWidget *parent)
     m_statusClearTimer->setSingleShot(true);
     m_autoPreviewTimer->setSingleShot(true);
     m_autoPreviewTimer->setInterval(250);
-    m_previewSharpeningTimer->setSingleShot(true);
-    m_previewSharpeningTimer->setInterval(100);
     m_exposureScopeTimer->setSingleShot(true);
     // 75 ms is fast enough to feel live (≈13 Hz) while reducing the
     // number of full-image applyDisplayAdjustments() rebuilds per
@@ -588,6 +526,9 @@ MainWindow::MainWindow(QWidget *parent)
     m_rLumaNoiseReductionSpinBox->setRange(0, 100);
     m_rLumaNoiseReductionSpinBox->setValue(0);
     m_rLumaNoiseReductionSpinBox->setSingleStep(1);
+    m_chromaNoiseReductionSpinBox->setRange(0, 100);
+    m_chromaNoiseReductionSpinBox->setValue(0);
+    m_chromaNoiseReductionSpinBox->setSingleStep(1);
 
     // Zoom spinbox: 5% to 400%
     m_previewZoomSpinBox->setRange(5, 400);
@@ -595,67 +536,17 @@ MainWindow::MainWindow(QWidget *parent)
     m_previewZoomSpinBox->setSuffix(QStringLiteral("%"));
     m_previewZoomSpinBox->setSingleStep(5);
     
-    // Exposure spinbox: -100% to +500%, step 0.1%
-    m_previewExposureSpinBox->setRange(-100.0, 500.0);
-    m_previewExposureSpinBox->setValue(kDefaultPreviewExposureSliderValue / 10.0);
-    m_previewExposureSpinBox->setSuffix(QStringLiteral("%"));
-    m_previewExposureSpinBox->setDecimals(1);
-    m_previewExposureSpinBox->setSingleStep(0.1);
-    // Force "C" locale so a dot is always the decimal separator; otherwise
-    // system locales that use a comma can turn "0.1" into 1.0.
-    m_previewExposureSpinBox->setLocale(QLocale::C);
-    m_previewExposureSpinBox->setGroupSeparatorShown(false);
 
-    // White balance spinbox: -100 to +100
-    m_previewWhiteBalanceSpinBox->setRange(-100, 100);
-    m_previewWhiteBalanceSpinBox->setValue(kDefaultPreviewWhiteBalanceSliderValue);
-    m_previewWhiteBalanceSpinBox->setSingleStep(1);
 
-    // Tint spinbox: -100 to +100
-    m_previewTintSpinBox->setRange(-100, 100);
-    m_previewTintSpinBox->setValue(kDefaultPreviewTintSliderValue);
-    m_previewTintSpinBox->setSingleStep(1);
-
-    // Gamma spinbox: 0.10 to 4.00, step 0.01, showing standard gamma values
-    m_previewGammaSpinBox->setRange(0.10, 4.00);
-    m_previewGammaSpinBox->setValue(kDefaultPreviewGammaSliderValue / 100.0);
-    m_previewGammaSpinBox->setDecimals(2);
-    m_previewGammaSpinBox->setSingleStep(0.01);
-    // Keep decimal entry consistent with a dot separator on all locales.
-    m_previewGammaSpinBox->setLocale(QLocale::C);
-    m_previewGammaSpinBox->setGroupSeparatorShown(false);
-    
-    // Contrast spinbox: -200 to +200
-    m_previewContrastSpinBox->setRange(-200, 200);
-    m_previewContrastSpinBox->setValue(kDefaultPreviewContrastSliderValue);
-    m_previewContrastSpinBox->setSingleStep(5);
-
-    // Shadows spinbox: 0 to 100
-    m_previewShadowsSpinBox->setRange(0, 100);
-    m_previewShadowsSpinBox->setValue(kDefaultPreviewShadowsSliderValue);
-    m_previewShadowsSpinBox->setSingleStep(5);
-
-    // Shadow range spinbox: 0 to 100
-    m_previewShadowRangeSpinBox->setRange(0, 100);
-    m_previewShadowRangeSpinBox->setValue(kDefaultPreviewShadowRangeSliderValue);
-    m_previewShadowRangeSpinBox->setSingleStep(5);
 
     
-    // Saturation spinbox: -200 to +200
-    m_previewSaturationSpinBox->setRange(-200, 200);
-    m_previewSaturationSpinBox->setValue(kDefaultPreviewSaturationSliderValue);
-    m_previewSaturationSpinBox->setSingleStep(5);
+
+
+
+
     
-    // Sharpening spinbox: 0% to 100%
-    m_previewSharpeningSpinBox->setRange(0, 100);
-    m_previewSharpeningSpinBox->setValue(kDefaultPreviewSharpeningSliderValue);
-    m_previewSharpeningSpinBox->setSuffix(QStringLiteral("%"));
-    m_previewSharpeningSpinBox->setSingleStep(1);
     
-    // Balance bias spinbox: 0 to 100
-    m_previewBalanceBiasSpinBox->setRange(0, 100);
-    m_previewBalanceBiasSpinBox->setValue(kDefaultPreviewBalanceBiasSliderValue);
-    m_previewBalanceBiasSpinBox->setSingleStep(5);
+    
 
     QHBoxLayout *fileButtonsLayout = new QHBoxLayout;
     fileButtonsLayout->addWidget(addFilesButton);
@@ -700,6 +591,11 @@ MainWindow::MainWindow(QWidget *parent)
     lumaNRLayout->addWidget(m_rLumaNoiseReductionSlider, 1);
     lumaNRLayout->addWidget(m_rLumaNoiseReductionSpinBox, 0);
     transitionLayout->addRow(tr("R noise reduction:"), lumaNRLayout);
+
+    QHBoxLayout *chromaNRLayout = new QHBoxLayout;
+    chromaNRLayout->addWidget(m_chromaNoiseReductionSlider, 1);
+    chromaNRLayout->addWidget(m_chromaNoiseReductionSpinBox, 0);
+    transitionLayout->addRow(tr("Chroma noise reduction:"), chromaNRLayout);
 
     QLabel *transitionCurveLabel = new QLabel(tr("Merge curve:"), this);
     transitionLayout->addRow(transitionCurveLabel, m_transitionCurveWidget);
@@ -763,155 +659,68 @@ MainWindow::MainWindow(QWidget *parent)
     // window (Histogram, Waveform).
     previewControlsLayout->addRow(m_showExposureToolsCheckBox);
 
-    QHBoxLayout *exposureLayout = new QHBoxLayout;
-    exposureLayout->addWidget(m_previewExposureSlider, 1);
-    exposureLayout->addWidget(m_previewExposureSpinBox, 0);
     previewControlsLayout->addRow(tr("Method:"), m_previewMethodRow);
-    previewControlsLayout->addRow(tr("Flat exposure:"), exposureLayout);
-    
-    QHBoxLayout *gammaLayout = new QHBoxLayout;
-    gammaLayout->addWidget(m_previewGammaSlider, 1);
-    gammaLayout->addWidget(m_previewGammaSpinBox, 0);
-    previewControlsLayout->addRow(tr("Display gamma:"), gammaLayout);
-    
-    // Contrast group: amount and pivot.
-    QFrame *toneGroupFrame = new QFrame(this);
-    toneGroupFrame->setFrameShape(QFrame::StyledPanel);
-    toneGroupFrame->setStyleSheet(QStringLiteral(
-        "QFrame#toneGroupFrame {"
-        "  background: rgba(255,255,255,0.03);"
-        "  border: 1px solid rgba(255,255,255,0.08);"
-        "  border-radius: 4px;"
-        "  margin: 0px;"
-        "  padding: 4px;"
-        "}"));
-    toneGroupFrame->setObjectName(QStringLiteral("toneGroupFrame"));
-    QVBoxLayout *toneGroupLayout = new QVBoxLayout(toneGroupFrame);
-    toneGroupLayout->setContentsMargins(4, 4, 4, 4);
-    toneGroupLayout->setSpacing(4);
 
-    QLabel *toneGroupTitle = new QLabel(tr("Contrast"), this);
-    toneGroupTitle->setStyleSheet(QStringLiteral(
-        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
-    toneGroupLayout->addWidget(toneGroupTitle);
+    const auto addDevelopGroup = [&](const QString &title) {
+        QFrame *frame = new QFrame(this);
+        frame->setObjectName(QStringLiteral("developGroupFrame"));
+        frame->setFrameShape(QFrame::StyledPanel);
+        frame->setStyleSheet(QStringLiteral(
+            "QFrame#developGroupFrame {"
+            "  background: rgba(255,255,255,0.03);"
+            "  border: 1px solid rgba(255,255,255,0.08);"
+            "  border-radius: 4px;"
+            "  margin: 0px;"
+            "  padding: 4px;"
+            "}"));
+        QVBoxLayout *layout = new QVBoxLayout(frame);
+        layout->setContentsMargins(4, 4, 4, 4);
+        layout->setSpacing(4);
+        QLabel *titleLabel = new QLabel(title, this);
+        titleLabel->setStyleSheet(QStringLiteral(
+            "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
+        layout->addWidget(titleLabel);
+        previewControlsLayout->addRow(frame);
+        return layout;
+    };
 
-    QHBoxLayout *contrastAmountRow = new QHBoxLayout;
-    contrastAmountRow->setContentsMargins(0, 0, 0, 0);
-    contrastAmountRow->setSpacing(4);
-    QLabel *contrastAmountLabel = new QLabel(tr("Contrast amount:"), this);
-    contrastAmountLabel->setMinimumWidth(90);
-    contrastAmountRow->addWidget(contrastAmountLabel);
-    contrastAmountRow->addWidget(m_previewContrastSlider, 1);
-    contrastAmountRow->addWidget(m_previewContrastSpinBox, 0);
-    toneGroupLayout->addLayout(contrastAmountRow);
+    QVBoxLayout *toneLayout = addDevelopGroup(tr("Tone"));
+    addDevelopControl(Develop::Exposure, "developExposure", tr("Exposure:"),
+                      tr("Exposure compensation in stops. 0 is the exposure as shot."),
+                      -500, 500, 0, 100.0, 2, toneLayout);
+    addDevelopControl(Develop::Contrast, "developContrast", tr("Contrast:"),
+                      tr("Steepens or flattens the midtones around middle gray."),
+                      -100, 100, 0, 1.0, 0, toneLayout);
+    addDevelopControl(Develop::Highlights, "developHighlights", tr("Highlights:"),
+                      tr("Negative values bring the bright areas down, revealing the "
+                         "detail held by the R photosites. Local contrast is kept."),
+                      -100, 100, 0, 1.0, 0, toneLayout);
+    addDevelopControl(Develop::Shadows, "developShadows", tr("Shadows:"),
+                      tr("Positive values lift the dark areas while keeping local "
+                         "contrast. The lift fades out below the sensor noise floor."),
+                      -100, 100, 0, 1.0, 0, toneLayout);
+    addDevelopControl(Develop::Whites, "developWhites", tr("Whites:"),
+                      tr("Moves the point where tones roll off into white."),
+                      -100, 100, 0, 1.0, 0, toneLayout);
+    addDevelopControl(Develop::Blacks, "developBlacks", tr("Blacks:"),
+                      tr("Sets the black point: negative deepens, positive lifts."),
+                      -100, 100, 0, 1.0, 0, toneLayout);
+    addDevelopControl(Develop::Gamma, "developGamma", tr("Gamma:"),
+                      tr("Midtone gamma, as in Levels. 1.00 leaves the image unchanged; "
+                         "higher values brighten the midtones."),
+                      30, 300, 100, 100.0, 2, toneLayout);
 
-    QHBoxLayout *balanceBiasRow = new QHBoxLayout;
-    balanceBiasRow->setContentsMargins(0, 0, 0, 0);
-    balanceBiasRow->setSpacing(4);
-    QLabel *balanceBiasLabel = new QLabel(tr("Contrast pivot:"), this);
-    balanceBiasLabel->setMinimumWidth(90);
-    balanceBiasRow->addWidget(balanceBiasLabel);
-    balanceBiasRow->addWidget(m_previewBalanceBiasSlider, 1);
-    balanceBiasRow->addWidget(m_previewBalanceBiasSpinBox, 0);
-    toneGroupLayout->addLayout(balanceBiasRow);
-
-    previewControlsLayout->addRow(toneGroupFrame);
-
-    // Visual group: Shadow Recovery (Shadows + Shadow range)
-    QFrame *shadowGroupFrame = new QFrame(this);
-    shadowGroupFrame->setFrameShape(QFrame::StyledPanel);
-    shadowGroupFrame->setStyleSheet(QStringLiteral(
-        "QFrame#shadowGroupFrame {"
-        "  background: rgba(255,255,255,0.03);"
-        "  border: 1px solid rgba(255,255,255,0.08);"
-        "  border-radius: 4px;"
-        "  margin: 0px;"
-        "  padding: 4px;"
-        "}"));
-    shadowGroupFrame->setObjectName(QStringLiteral("shadowGroupFrame"));
-    QVBoxLayout *shadowGroupLayout = new QVBoxLayout(shadowGroupFrame);
-    shadowGroupLayout->setContentsMargins(4, 4, 4, 4);
-    shadowGroupLayout->setSpacing(4);
-
-    QLabel *shadowGroupTitle = new QLabel(tr("Exposure protection"), this);
-    shadowGroupTitle->setStyleSheet(QStringLiteral(
-        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
-    shadowGroupLayout->addWidget(shadowGroupTitle);
-
-    QHBoxLayout *shadowRow = new QHBoxLayout;
-    shadowRow->setContentsMargins(0, 0, 0, 0);
-    shadowRow->setSpacing(4);
-    QLabel *shadowsLabel = new QLabel(tr("Shadow black %:"), this);
-    shadowsLabel->setMinimumWidth(90);
-    shadowRow->addWidget(shadowsLabel);
-    shadowRow->addWidget(m_previewShadowsSlider, 1);
-    shadowRow->addWidget(m_previewShadowsSpinBox, 0);
-    shadowGroupLayout->addLayout(shadowRow);
-
-    QHBoxLayout *shadowRangeRow = new QHBoxLayout;
-    shadowRangeRow->setContentsMargins(0, 0, 0, 0);
-    shadowRangeRow->setSpacing(4);
-    QLabel *shadowRangeLabel = new QLabel(tr("Highlight clip %:"), this);
-    shadowRangeLabel->setMinimumWidth(90);
-    shadowRangeRow->addWidget(shadowRangeLabel);
-    shadowRangeRow->addWidget(m_previewShadowRangeSlider, 1);
-    shadowRangeRow->addWidget(m_previewShadowRangeSpinBox, 0);
-    shadowGroupLayout->addLayout(shadowRangeRow);
-
-
-    previewControlsLayout->addRow(shadowGroupFrame);
-
-    // Visual group: Color (Saturation + White Balance + Tint + White balance picker)
-    QFrame *colorGroupFrame = new QFrame(this);
-    colorGroupFrame->setFrameShape(QFrame::StyledPanel);
-    colorGroupFrame->setStyleSheet(QStringLiteral(
-        "QFrame#colorGroupFrame {"
-        "  background: rgba(255,255,255,0.03);"
-        "  border: 1px solid rgba(255,255,255,0.08);"
-        "  border-radius: 4px;"
-        "  margin: 0px;"
-        "  padding: 4px;"
-        "}"));
-    colorGroupFrame->setObjectName(QStringLiteral("colorGroupFrame"));
-    QVBoxLayout *colorGroupLayout = new QVBoxLayout(colorGroupFrame);
-    colorGroupLayout->setContentsMargins(4, 4, 4, 4);
-    colorGroupLayout->setSpacing(4);
-
-    QLabel *colorGroupTitle = new QLabel(tr("Color"), this);
-    colorGroupTitle->setStyleSheet(QStringLiteral(
-        "color: #b0b0b0; font-weight: bold; font-size: 10px;"));
-    colorGroupLayout->addWidget(colorGroupTitle);
-
-    QHBoxLayout *saturationRow = new QHBoxLayout;
-    saturationRow->setContentsMargins(0, 0, 0, 0);
-    saturationRow->setSpacing(4);
-    QLabel *saturationLabel = new QLabel(tr("Saturation:"), this);
-    saturationLabel->setMinimumWidth(90);
-    saturationRow->addWidget(saturationLabel);
-    saturationRow->addWidget(m_previewSaturationSlider, 1);
-    saturationRow->addWidget(m_previewSaturationSpinBox, 0);
-    colorGroupLayout->addLayout(saturationRow);
-
-    QHBoxLayout *whiteBalanceRow = new QHBoxLayout;
-    whiteBalanceRow->setContentsMargins(0, 0, 0, 0);
-    whiteBalanceRow->setSpacing(4);
-    QLabel *whiteBalanceLabel = new QLabel(tr("White balance:"), this);
-    whiteBalanceLabel->setMinimumWidth(90);
-    whiteBalanceRow->addWidget(whiteBalanceLabel);
-    whiteBalanceRow->addWidget(m_previewWhiteBalanceSlider, 1);
-    whiteBalanceRow->addWidget(m_previewWhiteBalanceSpinBox, 0);
-    colorGroupLayout->addLayout(whiteBalanceRow);
-
-    QHBoxLayout *tintRow = new QHBoxLayout;
-    tintRow->setContentsMargins(0, 0, 0, 0);
-    tintRow->setSpacing(4);
-    QLabel *tintLabel = new QLabel(tr("Tint:"), this);
-    tintLabel->setMinimumWidth(90);
-    tintRow->addWidget(tintLabel);
-    tintRow->addWidget(m_previewTintSlider, 1);
-    tintRow->addWidget(m_previewTintSpinBox, 0);
-    colorGroupLayout->addLayout(tintRow);
-
+    QVBoxLayout *colorLayout = addDevelopGroup(tr("Color"));
+    addDevelopControl(Develop::Temperature, "developTemperature", tr("Temperature:"),
+                      tr("Relative to the white balance as shot. Positive is warmer."),
+                      -200, 200, 0, 1.0, 0, colorLayout);
+    m_temperatureLabel = new QLabel(this);
+    m_temperatureLabel->setAlignment(Qt::AlignRight);
+    m_temperatureLabel->setStyleSheet(QStringLiteral("color: #b0b0b0; font-size: 10px;"));
+    colorLayout->addWidget(m_temperatureLabel);
+    addDevelopControl(Develop::Tint, "developTint", tr("Tint:"),
+                      tr("Relative to the white balance as shot. Positive is more magenta."),
+                      -100, 100, 0, 1.0, 0, colorLayout);
     QHBoxLayout *pickerRow = new QHBoxLayout;
     pickerRow->setContentsMargins(0, 0, 0, 0);
     pickerRow->setSpacing(4);
@@ -920,14 +729,42 @@ MainWindow::MainWindow(QWidget *parent)
     pickerRow->addWidget(pickerLabel);
     pickerRow->addWidget(m_whiteBalancePickerButton, 0);
     pickerRow->addStretch();
-    colorGroupLayout->addLayout(pickerRow);
+    colorLayout->addLayout(pickerRow);
+    addDevelopControl(Develop::Vibrance, "developVibrance", tr("Vibrance:"),
+                      tr("Raises muted colors most and protects skin tones."),
+                      -100, 100, 0, 1.0, 0, colorLayout);
+    addDevelopControl(Develop::Saturation, "developSaturation", tr("Saturation:"),
+                      tr("Scales all colors evenly, at constant lightness."),
+                      -100, 100, 0, 1.0, 0, colorLayout);
 
-    previewControlsLayout->addRow(colorGroupFrame);
+    QVBoxLayout *highlightLayout = addDevelopGroup(tr("Highlight reconstruction"));
+    m_reconstructCheckBox = new QCheckBox(tr("Rebuild saturated highlights"), this);
+    m_reconstructCheckBox->setChecked(true);
+    m_reconstructCheckBox->setToolTip(
+        tr("Where even the R photosites saturated, rebuilds the capped channels from "
+           "the others. Turn it off to see what the sensor recorded."));
+    highlightLayout->addWidget(m_reconstructCheckBox);
+    connect(m_reconstructCheckBox, &QCheckBox::toggled, this, [this](bool) {
+        onDevelopChanged();
+    });
+    addDevelopControl(Develop::ReconstructThreshold, "developReconstructThreshold",
+                      tr("Threshold:"),
+                      tr("How close to the measured sensor ceiling, in percent, the repair "
+                         "begins. Lower it if pink edges remain; raise it if bright "
+                         "colors near the ceiling lose saturation."),
+                      80, 99, 92, 1.0, 0, highlightLayout);
+    addDevelopControl(Develop::ReconstructNeutralize, "developReconstructNeutralize",
+                      tr("Neutralize:"),
+                      tr("How far areas with two or more saturated channels go toward "
+                         "white. 0 keeps the recorded hue; 100 gives pure white."),
+                      0, 100, 60, 1.0, 0, highlightLayout);
 
-    QHBoxLayout *sharpeningLayout = new QHBoxLayout;
-    sharpeningLayout->addWidget(m_previewSharpeningSlider, 1);
-    sharpeningLayout->addWidget(m_previewSharpeningSpinBox, 0);
-    previewControlsLayout->addRow(tr("Sharpening:"), sharpeningLayout);
+    QVBoxLayout *detailLayout = addDevelopGroup(tr("Detail"));
+    addDevelopControl(Develop::SharpenAmount, "developSharpenAmount", tr("Sharpening:"),
+                      tr("Luminance sharpening of the finished image. It eases off in "
+                         "deep shadows and in highlights that come from the noisier "
+                         "R photosites."),
+                      0, 100, 0, 1.0, 0, detailLayout);
 
     previewControlsLayout->addRow(tr("Rotation:"), m_previewRotationCombo);
     
@@ -1056,10 +893,6 @@ MainWindow::MainWindow(QWidget *parent)
             this, &MainWindow::onResetPresetClicked);
     connect(m_statusClearTimer, &QTimer::timeout, m_statusLabel, &QLabel::clear);
     connect(m_autoPreviewTimer, &QTimer::timeout, this, &MainWindow::onAutoPreviewTimer);
-    connect(m_previewSharpeningTimer,
-            &QTimer::timeout,
-            this,
-            &MainWindow::updateSharpenedPreviewDisplay);
     connect(m_exposureScopeTimer,
             &QTimer::timeout,
             this,
@@ -1078,6 +911,9 @@ MainWindow::MainWindow(QWidget *parent)
         queueAutoPreview();
     });
     connect(m_rLumaNoiseReductionSlider, &QSlider::sliderReleased, this, [this]() {
+        queueAutoPreview();
+    });
+    connect(m_chromaNoiseReductionSlider, &QSlider::sliderReleased, this, [this]() {
         queueAutoPreview();
     });
     // Keep the visual merge curve in sync with the sliders.
@@ -1118,20 +954,10 @@ MainWindow::MainWindow(QWidget *parent)
             this, [refreshExposureToolsIfVisible](int) { refreshExposureToolsIfVisible(); });
     connect(m_previewScrollArea->verticalScrollBar(), &QScrollBar::valueChanged,
             this, [refreshExposureToolsIfVisible](int) { refreshExposureToolsIfVisible(); });
-    connect(m_previewExposureSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewExposureChanged);
-    connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewWhiteBalanceChanged);
-    connect(m_previewTintSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewTintChanged);
     connect(m_whiteBalancePickerButton,
             &QPushButton::toggled,
             this,
             &MainWindow::onWhiteBalancePickerToggled);
-    connect(m_previewGammaSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewGammaChanged);
-    connect(m_previewContrastSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewContrastChanged);
-    connect(m_previewShadowsSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewShadowsChanged);
-    connect(m_previewShadowRangeSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewShadowRangeChanged);
-    connect(m_previewSaturationSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSaturationChanged);
-    connect(m_previewSharpeningSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewSharpeningChanged);
-    connect(m_previewBalanceBiasSlider, &QSlider::valueChanged, this, &MainWindow::onPreviewBalanceBiasChanged);
     connect(m_previewRotationCombo, &QComboBox::currentIndexChanged, this, [this](int) {
         queueAutoPreview();
     });
@@ -1168,38 +994,11 @@ MainWindow::MainWindow(QWidget *parent)
     connect(m_rLumaNoiseReductionSlider, &QSlider::valueChanged, this, [this](int value) {
         m_rLumaNoiseReductionSpinBox->setValue(value);
     });
+    connect(m_chromaNoiseReductionSlider, &QSlider::valueChanged, this, [this](int value) {
+        m_chromaNoiseReductionSpinBox->setValue(value);
+    });
     connect(m_previewZoomSlider, &QSlider::valueChanged, this, [this](int value) {
         m_previewZoomSpinBox->setValue(value);
-    });
-    connect(m_previewExposureSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewExposureSpinBox->setValue(value / 10.0);
-    });
-    connect(m_previewWhiteBalanceSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewWhiteBalanceSpinBox->setValue(value);
-    });
-    connect(m_previewTintSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewTintSpinBox->setValue(value);
-    });
-    connect(m_previewGammaSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewGammaSpinBox->setValue(value / 100.0);
-    });
-    connect(m_previewContrastSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewContrastSpinBox->setValue(value);
-    });
-    connect(m_previewShadowsSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewShadowsSpinBox->setValue(value);
-    });
-    connect(m_previewShadowRangeSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewShadowRangeSpinBox->setValue(value);
-    });
-    connect(m_previewSaturationSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewSaturationSpinBox->setValue(value);
-    });
-    connect(m_previewSharpeningSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewSharpeningSpinBox->setValue(value);
-    });
-    connect(m_previewBalanceBiasSlider, &QSlider::valueChanged, this, [this](int value) {
-        m_previewBalanceBiasSpinBox->setValue(value);
     });
 
     // When spinbox changes, update slider (no auto preview for preview adjustments)
@@ -1227,61 +1026,15 @@ MainWindow::MainWindow(QWidget *parent)
             queueAutoPreview();
         }
     });
+    connect(m_chromaNoiseReductionSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
+        if (m_chromaNoiseReductionSlider->value() != value) {
+            m_chromaNoiseReductionSlider->setValue(value);
+            queueAutoPreview();
+        }
+    });
     connect(m_previewZoomSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
         if (m_previewZoomSlider->value() != value) {
             m_previewZoomSlider->setValue(value);
-        }
-    });
-    connect(m_previewExposureSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        const int sliderValue = qRound(value * 10.0);
-        if (m_previewExposureSlider->value() != sliderValue) {
-            m_previewExposureSlider->setValue(sliderValue);
-        }
-    });
-    connect(m_previewWhiteBalanceSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewWhiteBalanceSlider->value() != value) {
-            m_previewWhiteBalanceSlider->setValue(value);
-        }
-    });
-    connect(m_previewTintSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewTintSlider->value() != value) {
-            m_previewTintSlider->setValue(value);
-        }
-    });
-    connect(m_previewGammaSpinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this, [this](double value) {
-        const int sliderValue = qRound(value * 100.0);
-        if (m_previewGammaSlider->value() != sliderValue) {
-            m_previewGammaSlider->setValue(sliderValue);
-        }
-    });
-    connect(m_previewContrastSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewContrastSlider->value() != value) {
-            m_previewContrastSlider->setValue(value);
-        }
-    });
-    connect(m_previewShadowsSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewShadowsSlider->value() != value) {
-            m_previewShadowsSlider->setValue(value);
-        }
-    });
-    connect(m_previewShadowRangeSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewShadowRangeSlider->value() != value) {
-            m_previewShadowRangeSlider->setValue(value);
-        }
-    });
-    connect(m_previewSaturationSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewSaturationSlider->value() != value) {
-            m_previewSaturationSlider->setValue(value);
-        }
-    });
-    connect(m_previewSharpeningSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewSharpeningSlider->value() != value) {
-            m_previewSharpeningSlider->setValue(value);
-        }
-    });
-    connect(m_previewBalanceBiasSpinBox, QOverload<int>::of(&QSpinBox::valueChanged), this, [this](int value) {
-        if (m_previewBalanceBiasSlider->value() != value) {
-            m_previewBalanceBiasSlider->setValue(value);
         }
     });
 
@@ -1355,7 +1108,7 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event)
         }
     }
 
-    if ((watched == m_previewLabel || watched == m_previewScrollArea->viewport()) && !m_currentPreviewImage.isNull()) {
+    if ((watched == m_previewLabel || watched == m_previewScrollArea->viewport()) && m_scene) {
         const bool pickerActive =
             m_whiteBalancePickerButton->isChecked() && hasCurrentPreview();
         switch (event->type()) {
@@ -1613,13 +1366,11 @@ void MainWindow::onRemoveSelectedFiles()
     }
 
     if (m_fileList->count() == 0) {
-        m_currentPreviewImage = QImage();
+        m_scene.reset();
+        m_scopeScene.reset();
         m_adjustedDisplayImage = QImage();
-        m_cachedScopeAdjustmentsImage = QImage();
-        m_lastPushedAdjustments = PreviewAdjustmentValues();
-        m_previewSharpeningTimer->stop();
         m_exposureScopeTimer->stop();
-        m_previewLabel->clearSourceImage();
+        m_previewLabel->clearScene();
         m_previewLabel->clear();
         m_previewLabel->setText(tr("Preview not generated."));
         m_previewLabel->unsetCursor();
@@ -1679,28 +1430,15 @@ void MainWindow::onConvertCurrent()
         updateControls(true);
         QCoreApplication::processEvents();
 
-        QImage preview;
         QString error;
-        if (!m_processor.renderPreview(inputPath, currentSettings(), preview, error)) {
+        superccd::SceneImagePtr scene;
+        if (!m_processor.renderScene(inputPath, currentSettings(), scene, error)) {
             showStatus(tr("Preview failed: %1").arg(error));
             m_busy = false;
             updateControls(false);
             return;
         }
-
-        m_currentPreviewImage = preview;
-        PreviewImageProcessing::suppressFalseColor16(m_currentPreviewImage);
-        if (m_correctPreviewOutliersCheckBox->isChecked()) {
-            PreviewPixelCorrection::suppressIsolatedLumaOutliers(
-                m_currentPreviewImage);
-        }
-        m_previewLabel->setSourceImage(m_currentPreviewImage);
-        m_lastPreviewedInputPath = inputPath;
-        m_previewWindow->setWindowTitle(
-            tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
-        m_adjustedDisplayImage = QImage();
-        m_cachedScopeAdjustmentsImage = QImage();
-        m_lastPushedAdjustments = PreviewAdjustmentValues();
+        setCurrentScene(std::move(scene), inputPath);
         updatePreviewDisplay();
         showStatus(tr("Preview rendered. Proceeding with conversion..."));
     }
@@ -1820,11 +1558,11 @@ void MainWindow::onUpdatePreview()
     showStatus(tr("Rendering preview for %1...").arg(QFileInfo(inputPath).fileName()));
     QCoreApplication::processEvents();
 
-    QImage preview;
     QString error;
-    if (!m_processor.renderPreview(inputPath, currentSettings(), preview, error)) {
+    superccd::SceneImagePtr scene;
+    if (!m_processor.renderScene(inputPath, currentSettings(), scene, error)) {
         m_whiteBalancePickerButton->setChecked(false);
-        m_previewLabel->clearSourceImage();
+        m_previewLabel->clearScene();
         m_previewLabel->setText(tr("Preview failed."));
         m_previewWindow->setWindowTitle(tr("Preview - Failed"));
         showStatus(tr("Preview failed: %1").arg(error));
@@ -1833,33 +1571,32 @@ void MainWindow::onUpdatePreview()
         return;
     }
 
-    const bool shouldResetViewport = m_currentPreviewImage.isNull()
-        || m_currentPreviewImage.size() != preview.size()
+    const bool shouldResetViewport = !m_scene
+        || m_scene->width != scene->width
+        || m_scene->height != scene->height
         || m_lastPreviewedInputPath != inputPath;
-
-    m_currentPreviewImage = preview;
-    PreviewImageProcessing::suppressFalseColor16(m_currentPreviewImage);
-    if (m_correctPreviewOutliersCheckBox->isChecked()) {
-        PreviewPixelCorrection::suppressIsolatedLumaOutliers(
-            m_currentPreviewImage);
-    }
-    m_previewLabel->setSourceImage(m_currentPreviewImage);
-    m_lastPreviewedInputPath = inputPath;
-    m_previewWindow->setWindowTitle(
-        tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
-    m_adjustedDisplayImage = QImage();
-    m_cachedScopeAdjustmentsImage = QImage();
-    m_lastPushedAdjustments = PreviewAdjustmentValues();
+    setCurrentScene(std::move(scene), inputPath);
     updatePreviewDisplay(!shouldResetViewport);
     showStatus(tr("Preview updated."));
     m_busy = false;
     updateControls(false);
 }
 
+void MainWindow::setCurrentScene(superccd::SceneImagePtr scene, const QString &inputPath)
+{
+    m_scene = std::move(scene);
+    m_previewLabel->setScene(m_scene);
+    m_lastPreviewedInputPath = inputPath;
+    m_previewWindow->setWindowTitle(
+        tr("Preview - %1").arg(QFileInfo(inputPath).fileName()));
+    m_adjustedDisplayImage = QImage();
+    m_scopeScene.reset();
+}
+
 void MainWindow::onExportPreview()
 {
     QListWidgetItem *current = m_fileList->currentItem();
-    if (!current || m_currentPreviewImage.isNull()) {
+    if (!current || !m_scene) {
         showStatus(tr("Please render a preview before exporting."));
         return;
     }
@@ -1929,7 +1666,7 @@ void MainWindow::onExportPreview()
         sizeComboBox->setEnabled(false);
     } else {
         sizeComboBox->addItem(tr("12 MP"), static_cast<int>(PreviewExportSize::FullSize));
-        if (std::min(m_currentPreviewImage.width(), m_currentPreviewImage.height()) > kPreviewExportSixMpShortSide) {
+        if (std::min(m_scene->width, m_scene->height) > kPreviewExportSixMpShortSide) {
             sizeComboBox->addItem(tr("6 MP"), static_cast<int>(PreviewExportSize::SixMp));
         }
     }
@@ -2000,7 +1737,19 @@ void MainWindow::onExportPreview()
         }
     }
 
-    QImage exportImage = buildAdjustedPreviewImage16();
+    // Sharpening is the last step at the final size, so an image that gets resized
+    // is sharpened afterwards. One already at its final size, such as AMaZE, is
+    // sharpened by the renderer, with the noise protection the preview shows.
+    superccd::EditParams exportParams = currentEditParams();
+    const double sharpening = exportParams.sharpenAmount;
+    const bool resizing = m_scene && exportSize != PreviewExportSize::FullSize
+        && std::min(m_scene->width, m_scene->height) > kPreviewExportSixMpShortSide;
+    if (resizing) {
+        exportParams.sharpenAmount = 0.0;
+    }
+    QImage exportImage = m_scene
+        ? PreviewImageProcessing::renderFull16(*m_scene, exportParams)
+        : QImage();
     if (exportImage.isNull()) {
         showStatus(tr("Preview export failed."));
         return;
@@ -2011,9 +1760,9 @@ void MainWindow::onExportPreview()
         showStatus(tr("Preview export resize failed."));
         return;
     }
-    PreviewImageProcessing::applyLumaSharpening16(
-        exportImage,
-        m_previewSharpeningSlider->value());
+    if (resizing) {
+        PreviewImageProcessing::sharpen16(exportImage, sharpening);
+    }
 
     SuperCCDMetadata exportMetadata;
     const SuperCCDMetadata *exportMetadataPtr = nullptr;
@@ -2071,33 +1820,18 @@ void MainWindow::updateControls(bool busy)
     m_rTransitionSmoothnessSpinBox->setEnabled(!busy);
     m_previewZoomSlider->setEnabled(!busy);
     m_previewZoomSpinBox->setEnabled(!busy);
-    m_previewExposureSlider->setEnabled(!busy);
-    m_previewExposureSpinBox->setEnabled(!busy);
-    m_previewWhiteBalanceSlider->setEnabled(!busy);
-    m_previewWhiteBalanceSpinBox->setEnabled(!busy);
-    m_previewTintSlider->setEnabled(!busy);
-    m_previewTintSpinBox->setEnabled(!busy);
     m_whiteBalancePickerButton->setEnabled(!busy && hasCurrentPreview());
-    m_previewGammaSlider->setEnabled(!busy);
-    m_previewGammaSpinBox->setEnabled(!busy);
-    m_previewContrastSlider->setEnabled(!busy);
-    m_previewContrastSpinBox->setEnabled(!busy);
-    m_previewShadowsSlider->setEnabled(!busy);
-    m_previewShadowsSpinBox->setEnabled(!busy);
-    m_previewShadowRangeSlider->setEnabled(!busy);
-    m_previewShadowRangeSpinBox->setEnabled(!busy);
-    m_previewSaturationSlider->setEnabled(!busy);
-    m_previewSaturationSpinBox->setEnabled(!busy);
-    m_previewSharpeningSlider->setEnabled(!busy);
-    m_previewSharpeningSpinBox->setEnabled(!busy);
-    m_previewBalanceBiasSlider->setEnabled(!busy);
-    m_previewBalanceBiasSpinBox->setEnabled(!busy);
+    for (const DevelopControl &control : m_developControls) {
+        control.slider->setEnabled(!busy);
+        control.spinBox->setEnabled(!busy);
+    }
+    m_reconstructCheckBox->setEnabled(!busy);
     m_previewRotationCombo->setEnabled(!busy);
     m_correctPreviewOutliersCheckBox->setEnabled(!busy);
     m_showPreviewButton->setEnabled(true);
     m_previewButton->setEnabled(!busy);
     const bool hasCurrentPreview = m_fileList->currentItem() != nullptr
-        && !m_currentPreviewImage.isNull()
+        && m_scene
         && listItemPath(m_fileList->currentItem()) == m_lastPreviewedInputPath;
     m_exportPreviewButton->setEnabled(!busy && hasCurrentPreview);
     m_autoPreviewCheckBox->setEnabled(!busy);
@@ -2141,16 +1875,17 @@ void MainWindow::onShowExposureToolsToggled(bool enabled)
 
 QRect MainWindow::currentPreviewVisibleRect() const
 {
-    if (m_currentPreviewImage.isNull() || m_previewLabel->width() <= 0
+    if (!m_scene || m_previewLabel->width() <= 0
         || m_previewLabel->height() <= 0) {
         return QRect();
     }
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
     if (zoom <= 0.0) {
-        return m_currentPreviewImage.rect();
+        return QRect(0, 0, m_scene->width, m_scene->height);
     }
     // The scroll area's horizontal/vertical scroll values tell us which
     // portion of the canvas is on screen. Convert that to image coords.
+    const QRect sceneRect(0, 0, m_scene->width, m_scene->height);
     const QPoint topLeftCanvas(
         m_previewScrollArea->horizontalScrollBar()->value(),
         m_previewScrollArea->verticalScrollBar()->value());
@@ -2162,72 +1897,31 @@ QRect MainWindow::currentPreviewVisibleRect() const
     const int bottom = static_cast<int>(
         std::ceil((topLeftCanvas.y() + viewportSize.height()) / zoom));
     return QRect(QPoint(left, top), QPoint(right - 1, bottom - 1))
-        .intersected(m_currentPreviewImage.rect());
+        .intersected(sceneRect);
 }
 
 void MainWindow::pushExposureToolsFromCache()
 {
-    if (m_currentPreviewImage.isNull()) {
+    if (!m_scene) {
         return;
     }
 
-    // Collect the current preview-control adjustments so we can decide
-    // whether the cached m_adjustedDisplayImage is still up to date.
-    // When it is, we still need to push it to the scopes (in case the
-    // visible-rect changed due to scroll/zoom) but we can skip the
-    // expensive full-image rebuild.
-    PreviewAdjustmentValues currentAdjustments;
-    currentAdjustments.exposureTenths = m_previewExposureSlider->value();
-    currentAdjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
-    currentAdjustments.tint = m_previewTintSlider->value();
-    currentAdjustments.gammaHundredths = m_previewGammaSlider->value();
-    currentAdjustments.contrast = m_previewContrastSlider->value();
-    currentAdjustments.shadows = m_previewShadowsSlider->value();
-    currentAdjustments.shadowRange = m_previewShadowRangeSlider->value();
-    currentAdjustments.saturation = m_previewSaturationSlider->value();
-    currentAdjustments.balanceBias = m_previewBalanceBiasSlider->value();
-    currentAdjustments.flatExposureEnabled = true;
-    currentAdjustments.flatBlackPoint =
-        PreviewImageProcessing::previewLuminancePercentile(
-            m_currentPreviewImage, currentAdjustments.shadows / 100.0);
-    currentAdjustments.flatWhitePoint =
-        PreviewImageProcessing::previewMaximumChannelPercentile(
-            m_currentPreviewImage,
-            1.0 - currentAdjustments.shadowRange / 100.0);
-    currentAdjustments.flatContrastPivot = currentAdjustments.balanceBias;
-    const int sharpening = m_previewSharpeningSlider->value();
-
-    const bool cacheStale = m_adjustedDisplayImage.isNull()
-        || m_adjustedDisplayImage.size() != m_currentPreviewImage.size()
-        || m_lastPushedAdjustments.exposureTenths
-            != currentAdjustments.exposureTenths
-        || m_lastPushedAdjustments.whiteBalance
-            != currentAdjustments.whiteBalance
-        || m_lastPushedAdjustments.tint != currentAdjustments.tint
-        || m_lastPushedAdjustments.gammaHundredths
-            != currentAdjustments.gammaHundredths
-        || m_lastPushedAdjustments.contrast != currentAdjustments.contrast
-        || m_lastPushedAdjustments.shadows != currentAdjustments.shadows
-        || m_lastPushedAdjustments.shadowRange
-            != currentAdjustments.shadowRange
-        || m_lastPushedAdjustments.saturation != currentAdjustments.saturation
-        || m_lastPushedAdjustments.balanceBias
-            != currentAdjustments.balanceBias
-        || m_cachedScopeAdjustmentsImage.isNull()
-        || m_cachedScopeAdjustmentsImage.size()
-            != m_currentPreviewImage.size();
-
-    if (cacheStale) {
-        m_adjustedDisplayImage = buildAdjustedDisplayImage8();
-        m_cachedScopeAdjustmentsImage = m_currentPreviewImage;
-        m_lastPushedAdjustments = currentAdjustments;
+    // The scopes read tones, which sharpening does not move, so they skip it.
+    superccd::EditParams params = currentEditParams();
+    params.sharpenAmount = 0.0;
+    const bool stale = m_adjustedDisplayImage.isNull()
+        || m_scopeScene != m_scene
+        || m_scopeParams != params;
+    if (stale) {
+        m_adjustedDisplayImage = PreviewImageProcessing::renderFull8(*m_scene, params);
+        m_scopeScene = m_scene;
+        m_scopeParams = params;
     }
     if (m_adjustedDisplayImage.isNull()) {
         return;
     }
     m_exposureToolsWindow->setSourceImage(
         m_adjustedDisplayImage, currentPreviewVisibleRect());
-    (void)sharpening; // buildAdjustedDisplayImage8 already accounts for it
 }
 
 void MainWindow::onPreviewZoomChanged(int value)
@@ -2236,23 +1930,8 @@ void MainWindow::onPreviewZoomChanged(int value)
     updatePreviewDisplay();
 }
 
-void MainWindow::onPreviewExposureChanged(int value)
+void MainWindow::onDevelopChanged()
 {
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewWhiteBalanceChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewTintChanged(int value)
-{
-    Q_UNUSED(value);
     markPresetModified();
     updatePreviewDisplay();
 }
@@ -2273,130 +1952,13 @@ void MainWindow::onWhiteBalancePickerToggled(bool enabled)
         showStatus(tr("White balance picker active. Wheel resizes the box; left-click samples neutral gray."));
     } else {
         m_previewLabel->setCursor(
-            m_currentPreviewImage.isNull() ? Qt::ArrowCursor : Qt::OpenHandCursor);
+            !m_scene ? Qt::ArrowCursor : Qt::OpenHandCursor);
     }
-}
-
-void MainWindow::onPreviewGammaChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewContrastChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewShadowsChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewShadowRangeChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewSaturationChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewSharpeningChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-void MainWindow::onPreviewBalanceBiasChanged(int value)
-{
-    Q_UNUSED(value);
-    markPresetModified();
-    updatePreviewDisplay();
-}
-
-QImage MainWindow::buildAdjustedPreviewImage16() const
-{
-    if (m_currentPreviewImage.isNull()) {
-        return QImage();
-    }
-
-    PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenths = m_previewExposureSlider->value();
-    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
-    adjustments.tint = m_previewTintSlider->value();
-    adjustments.gammaHundredths = m_previewGammaSlider->value();
-    adjustments.contrast = m_previewContrastSlider->value();
-    adjustments.shadows = m_previewShadowsSlider->value();
-    adjustments.shadowRange = m_previewShadowRangeSlider->value();
-    adjustments.saturation = m_previewSaturationSlider->value();
-    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
-    adjustments.flatExposureEnabled = true;
-    adjustments.flatBlackPoint =
-        PreviewImageProcessing::previewLuminancePercentile(
-            m_currentPreviewImage, adjustments.shadows / 100.0);
-    adjustments.flatWhitePoint =
-        PreviewImageProcessing::previewMaximumChannelPercentile(
-            m_currentPreviewImage,
-            1.0 - adjustments.shadowRange / 100.0);
-    adjustments.flatContrastPivot = adjustments.balanceBias;
-    return PreviewImageProcessing::applyExportAdjustments16(
-        m_currentPreviewImage,
-        adjustments);
-}
-
-QImage MainWindow::buildAdjustedDisplayImage8() const
-{
-    if (m_currentPreviewImage.isNull()) {
-        return QImage();
-    }
-
-    PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenths = m_previewExposureSlider->value();
-    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
-    adjustments.tint = m_previewTintSlider->value();
-    adjustments.gammaHundredths = m_previewGammaSlider->value();
-    adjustments.contrast = m_previewContrastSlider->value();
-    adjustments.shadows = m_previewShadowsSlider->value();
-    adjustments.shadowRange = m_previewShadowRangeSlider->value();
-    adjustments.saturation = m_previewSaturationSlider->value();
-    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
-    adjustments.flatExposureEnabled = true;
-    adjustments.flatBlackPoint =
-        PreviewImageProcessing::previewLuminancePercentile(
-            m_currentPreviewImage, adjustments.shadows / 100.0);
-    adjustments.flatWhitePoint =
-        PreviewImageProcessing::previewMaximumChannelPercentile(
-            m_currentPreviewImage,
-            1.0 - adjustments.shadowRange / 100.0);
-    adjustments.flatContrastPivot = adjustments.balanceBias;
-
-    // applyDisplayAdjustments performs the same path the preview canvas
-    // uses, so the exposure tools (histogram, waveform)
-    // always show the same pixels the user is looking at.
-    QImage image = PreviewImageProcessing::applyDisplayAdjustments(
-        m_currentPreviewImage, adjustments);
-    const int sharpening = m_previewSharpeningSlider->value();
-    if (sharpening > 0) {
-        PreviewImageProcessing::applyLumaSharpening8(image, sharpening);
-    }
-    return image;
 }
 
 void MainWindow::updatePreviewDisplay(bool preserveViewport)
 {
-    if (m_currentPreviewImage.isNull()) {
+    if (!m_scene) {
         return;
     }
 
@@ -2413,26 +1975,9 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
 
     const double zoom = static_cast<double>(m_previewZoomSlider->value()) / 100.0;
 
-    PreviewAdjustmentValues adjustments;
-    adjustments.exposureTenths = m_previewExposureSlider->value();
-    adjustments.whiteBalance = m_previewWhiteBalanceSlider->value();
-    adjustments.tint = m_previewTintSlider->value();
-    adjustments.gammaHundredths = m_previewGammaSlider->value();
-    adjustments.contrast = m_previewContrastSlider->value();
-    adjustments.shadows = m_previewShadowsSlider->value();
-    adjustments.shadowRange = m_previewShadowRangeSlider->value();
-    adjustments.saturation = m_previewSaturationSlider->value();
-    adjustments.balanceBias = m_previewBalanceBiasSlider->value();
-    adjustments.flatExposureEnabled = true;
-    adjustments.flatBlackPoint =
-        PreviewImageProcessing::previewLuminancePercentile(
-            m_currentPreviewImage, adjustments.shadows / 100.0);
-    adjustments.flatWhitePoint =
-        PreviewImageProcessing::previewMaximumChannelPercentile(
-            m_currentPreviewImage,
-            1.0 - adjustments.shadowRange / 100.0);
-    adjustments.flatContrastPivot = adjustments.balanceBias;
-    m_previewLabel->setDisplayState(zoom, adjustments, 0);
+    const superccd::EditParams params = currentEditParams();
+    m_previewLabel->setDisplayState(zoom, params);
+    updateTemperatureLabel(params);
     m_previewLabel->setCursor(
         m_whiteBalancePickerButton->isChecked() ? Qt::CrossCursor : Qt::OpenHandCursor);
 
@@ -2443,66 +1988,13 @@ void MainWindow::updatePreviewDisplay(bool preserveViewport)
     m_previewScrollArea->horizontalScrollBar()->setValue(std::max(0, newHValue));
     m_previewScrollArea->verticalScrollBar()->setValue(std::max(0, newVValue));
 
-    // Build the same display-adjusted 8-bit image the preview canvas paints
-    // and push it to the exposure tools, so the histogram / waveform
-    // always reflect what the user is actually seeing.
-    //
-    // Skip the rebuild (and the deferred sharpening re-push) when the
-    // exposure tools window is hidden: the window caches the most recent
-    // image internally and re-pushes it on showEvent(), so the scopes
-    // will catch up the moment the user opens the window. Rebuilding
-    // here on every preview-control change would otherwise run the full
-    // display-adjustment pipeline on the entire preview image on every
-    // slider tick, which makes even basic Exposure tweaks feel sluggish
-    // on a Raspberry Pi when the scopes are not in use.
-    //
-    // When the scopes are visible, we still defer the full-image rebuild
-    // to m_exposureScopeTimer (a 75 ms single-shot). While the user is
-    // dragging a slider the timer keeps restarting and only fires after
-    // they pause, so a continuous drag coalesces dozens of
-    // valueChanged events into a single full-image rebuild per
-    // drag-pause. The canvas itself still updates live via
-    // m_previewLabel->setDisplayState() above; only the scope path is
-    // debounced.
-    if (m_exposureToolsWindow->isVisible()) {
-        if (m_previewSharpeningSlider->value() > 0) {
-            // Defer the heavier re-push to the sharpening timer; that
-            // callback calls back into updateSharpenedPreviewDisplay()
-            // which rebuilds the cache and pushes to the scopes.
-            m_previewSharpeningTimer->start();
-        } else {
-            m_previewSharpeningTimer->stop();
-            m_exposureScopeTimer->start();
-        }
-    } else {
-        m_previewSharpeningTimer->stop();
-        m_exposureScopeTimer->stop();
-    }
-}
-
-void MainWindow::updateSharpenedPreviewDisplay()
-{
-    if (m_currentPreviewImage.isNull()) {
-        return;
-    }
-    if (m_previewSharpeningSlider->value() <= 0) {
-        m_previewLabel->setSharpening(0);
-        return;
-    }
-    m_previewLabel->setSharpening(m_previewSharpeningSlider->value());
-    // Rebuild the cached display image with the new sharpening amount and
-    // push it to the exposure tools. Skip the rebuild entirely if the
-    // exposure tools window is hidden -- it caches the most recent image
-    // and re-pushes it on showEvent(), so the scopes will catch up the
-    // moment the user opens the window.
-    //
-    // The full-image rebuild and scope push is debounced through
-    // m_exposureScopeTimer, same as updatePreviewDisplay(). The
-    // sharpening timer fires on slider-release, so this path is the
-    // one that handles the "user paused dragging a sharpening slider"
-    // case.
+    // The scopes rebuild a full image, so that is debounced: a continuous drag
+    // coalesces into one rebuild per pause, while the canvas still updates live
+    // above. Hidden scopes catch up when they are next shown.
     if (m_exposureToolsWindow->isVisible()) {
         m_exposureScopeTimer->start();
+    } else {
+        m_exposureScopeTimer->stop();
     }
 }
 
@@ -2515,43 +2007,27 @@ void MainWindow::showStatus(const QString &message)
 void MainWindow::applyWhiteBalancePickerSample()
 {
     const QRect sampleRect = m_previewLabel->whiteBalancePickerSourceRect();
-    const std::optional<PreviewWhiteBalanceEstimate> estimate =
-        PreviewImageProcessing::estimateNeutralWhiteBalance(
-            m_currentPreviewImage,
-            sampleRect);
-    if (!estimate) {
+    double temperature = 0.0;
+    double tint = 0.0;
+    if (!m_scene || !superccd::estimateNeutralWhiteBalance(*m_scene,
+                                                          sampleRect.x(),
+                                                          sampleRect.y(),
+                                                          sampleRect.width(),
+                                                          sampleRect.height(),
+                                                          temperature,
+                                                          tint)) {
         showStatus(tr("The selected area could not be used for white balance."));
         return;
     }
 
-    const int whiteBalance = std::clamp(
-        static_cast<int>(std::lround(estimate->whiteBalance)),
-        m_previewWhiteBalanceSlider->minimum(),
-        m_previewWhiteBalanceSlider->maximum());
-    const int tint = std::clamp(
-        static_cast<int>(std::lround(estimate->tint)),
-        m_previewTintSlider->minimum(),
-        m_previewTintSlider->maximum());
-
-    const bool oldWhiteBalanceSignals =
-        m_previewWhiteBalanceSlider->blockSignals(true);
-    const bool oldTintSignals = m_previewTintSlider->blockSignals(true);
-    const bool oldWhiteBalanceSpinSignals =
-        m_previewWhiteBalanceSpinBox->blockSignals(true);
-    const bool oldTintSpinSignals = m_previewTintSpinBox->blockSignals(true);
-    m_previewWhiteBalanceSlider->setValue(whiteBalance);
-    m_previewTintSlider->setValue(tint);
-    m_previewWhiteBalanceSpinBox->setValue(whiteBalance);
-    m_previewTintSpinBox->setValue(tint);
-    m_previewWhiteBalanceSlider->blockSignals(oldWhiteBalanceSignals);
-    m_previewTintSlider->blockSignals(oldTintSignals);
-    m_previewWhiteBalanceSpinBox->blockSignals(oldWhiteBalanceSpinSignals);
-    m_previewTintSpinBox->blockSignals(oldTintSpinSignals);
+    setDevelopValue(Develop::Temperature, static_cast<int>(std::lround(temperature)));
+    setDevelopValue(Develop::Tint, static_cast<int>(std::lround(tint)));
+    markPresetModified();
     updatePreviewDisplay();
 
-    showStatus(tr("White balance sampled: %1, tint: %2.")
-                   .arg(whiteBalance)
-                   .arg(tint));
+    showStatus(tr("White balance sampled: temperature %1, tint %2.")
+                   .arg(developControl(Develop::Temperature).slider->value())
+                   .arg(developControl(Develop::Tint).slider->value()));
 }
 
 QPointF MainWindow::previewCanvasPosition(
@@ -2569,7 +2045,7 @@ QPointF MainWindow::previewCanvasPosition(
 bool MainWindow::hasCurrentPreview() const
 {
     return m_fileList->currentItem() != nullptr
-        && !m_currentPreviewImage.isNull()
+        && m_scene
         && listItemPath(m_fileList->currentItem()) == m_lastPreviewedInputPath;
 }
 
@@ -2579,6 +2055,8 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
     const bool oldDelaySignals = m_rTransitionDelaySlider->blockSignals(true);
     const bool oldSmoothnessSignals = m_rTransitionSmoothnessSlider->blockSignals(true);
     const bool oldLumaNRSignals = m_rLumaNoiseReductionSlider->blockSignals(true);
+    const bool oldChromaNRSignals = m_chromaNoiseReductionSlider->blockSignals(true);
+    const bool oldChromaNRSpinSignals = m_chromaNoiseReductionSpinBox->blockSignals(true);
     const bool oldStartSpinSignals = m_rTransitionStartSpinBox->blockSignals(true);
     const bool oldDelaySpinSignals = m_rTransitionDelaySpinBox->blockSignals(true);
     const bool oldSmoothnessSpinSignals =
@@ -2610,12 +2088,18 @@ void MainWindow::applyParameterSettings(const ConversionSettings &settings)
     m_rTransitionSmoothnessSpinBox->setValue(smoothnessValue);
     m_rLumaNoiseReductionSlider->setValue(lumaNRValue);
     m_rLumaNoiseReductionSpinBox->setValue(lumaNRValue);
+    const int chromaNRValue =
+        std::clamp(static_cast<int>(settings.chromaNoiseReduction * 100.0 + 0.5), 0, 100);
+    m_chromaNoiseReductionSlider->setValue(chromaNRValue);
+    m_chromaNoiseReductionSpinBox->setValue(chromaNRValue);
     m_correctPreviewOutliersCheckBox->setChecked(
         settings.correctPreviewOutliers);
     m_rTransitionStartSlider->blockSignals(oldStartSignals);
     m_rTransitionDelaySlider->blockSignals(oldDelaySignals);
     m_rTransitionSmoothnessSlider->blockSignals(oldSmoothnessSignals);
     m_rLumaNoiseReductionSlider->blockSignals(oldLumaNRSignals);
+    m_chromaNoiseReductionSlider->blockSignals(oldChromaNRSignals);
+    m_chromaNoiseReductionSpinBox->blockSignals(oldChromaNRSpinSignals);
     m_rTransitionStartSpinBox->blockSignals(oldStartSpinSignals);
     m_rTransitionDelaySpinBox->blockSignals(oldDelaySpinSignals);
     m_rTransitionSmoothnessSpinBox->blockSignals(oldSmoothnessSpinSignals);
@@ -2675,26 +2159,23 @@ void MainWindow::loadPreset(const QString &name)
         // Fall back to factory defaults if preset is missing or invalid
         ConversionSettings defaults;
         defaults.exportMode = ExportMode::RawCfa6MP;
-        defaults.rTransitionStart = 0.75;
-        defaults.rTransitionDelay = 0.5;
+        defaults.rTransitionStart = kDefaultMergeStart;
+        defaults.rTransitionDelay = kDefaultMergeWidth;
         defaults.rTransitionSmoothness = 0.5;
         defaults.rLumaNoiseReduction = 0.0;
         defaults.correctPreviewOutliers = false;
         applyParameterSettings(defaults);
         m_previewZoomSlider->setValue(kDefaultPreviewZoomSliderValue);
-        m_previewExposureSlider->setValue(kDefaultPreviewExposureSliderValue);
-        m_previewWhiteBalanceSlider->setValue(kDefaultPreviewWhiteBalanceSliderValue);
-        m_previewTintSlider->setValue(kDefaultPreviewTintSliderValue);
-        m_previewGammaSlider->setValue(kDefaultPreviewGammaSliderValue);
-        m_previewContrastSlider->setValue(kDefaultPreviewContrastSliderValue);
-        m_previewShadowsSlider->setValue(kDefaultPreviewShadowsSliderValue);
-        m_previewShadowRangeSlider->setValue(kDefaultPreviewShadowRangeSliderValue);
-        m_previewSaturationSlider->setValue(kDefaultPreviewSaturationSliderValue);
-        m_previewSharpeningSlider->setValue(kDefaultPreviewSharpeningSliderValue);
-        m_previewBalanceBiasSlider->setValue(kDefaultPreviewBalanceBiasSliderValue);
+        for (const DevelopControl &control : m_developControls) {
+            setDevelopValue(control.id, control.defaultValue);
+        }
+        {
+            const QSignalBlocker reconstructBlocker(m_reconstructCheckBox);
+            m_reconstructCheckBox->setChecked(true);
+        }
         m_previewRotationCombo->setCurrentIndex(0);
         m_autoPreviewCheckBox->setChecked(kDefaultAutoPreview);
-        m_previewMethodReconstructionButton->setChecked(true);
+        m_previewMethodAmazeButton->setChecked(true);
         m_loadedPresetData = collectCurrentStateAsJson();
     } else {
         applyJsonPreset(jsonData);
@@ -2711,103 +2192,23 @@ void MainWindow::applyJsonPreset(const QJsonObject &presetData)
     // Conversion settings
     ConversionSettings settings;
     settings.exportMode = ExportMode::RawCfa6MP;
-    settings.rTransitionStart = presetData.value(QStringLiteral("rTransitionStart")).toDouble(0.75);
-    settings.rTransitionDelay = presetData.value(QStringLiteral("rTransitionDelay")).toDouble(0.5);
+    settings.rTransitionStart = presetData.value(QStringLiteral("rTransitionStart")).toDouble(kDefaultMergeStart);
+    settings.rTransitionDelay = presetData.value(QStringLiteral("rTransitionDelay")).toDouble(kDefaultMergeWidth);
     settings.rTransitionSmoothness = presetData.value(QStringLiteral("rTransitionSmoothness")).toDouble(0.5);
     settings.rLumaNoiseReduction = presetData.value(QStringLiteral("rLumaNoiseReduction")).toDouble(0.0);
+    settings.chromaNoiseReduction = presetData.value(QStringLiteral("chromaNoiseReduction")).toDouble(0.0);
     settings.correctPreviewOutliers = presetData.value(QStringLiteral("correctPreviewOutliers")).toBool(false);
     applyParameterSettings(settings);
 
-    // Block signals on preview sliders to prevent markPresetModified() from being called
-    const bool oldExposureSignals = m_previewExposureSlider->blockSignals(true);
-    const bool oldWhiteBalanceSignals = m_previewWhiteBalanceSlider->blockSignals(true);
-    const bool oldTintSignals = m_previewTintSlider->blockSignals(true);
-    const bool oldGammaSignals = m_previewGammaSlider->blockSignals(true);
-    const bool oldContrastSignals = m_previewContrastSlider->blockSignals(true);
-    const bool oldShadowsSignals = m_previewShadowsSlider->blockSignals(true);
-    const bool oldShadowRangeSignals = m_previewShadowRangeSlider->blockSignals(true);
-    const bool oldSaturationSignals = m_previewSaturationSlider->blockSignals(true);
-    const bool oldSharpeningSignals = m_previewSharpeningSlider->blockSignals(true);
-    const bool oldBalanceBiasSignals = m_previewBalanceBiasSlider->blockSignals(true);
-    
-    // Also block spinbox signals
-    const bool oldExposureSpinSignals = m_previewExposureSpinBox->blockSignals(true);
-    const bool oldWhiteBalanceSpinSignals = m_previewWhiteBalanceSpinBox->blockSignals(true);
-    const bool oldTintSpinSignals = m_previewTintSpinBox->blockSignals(true);
-    const bool oldGammaSpinSignals = m_previewGammaSpinBox->blockSignals(true);
-    const bool oldContrastSpinSignals = m_previewContrastSpinBox->blockSignals(true);
-    const bool oldShadowsSpinSignals = m_previewShadowsSpinBox->blockSignals(true);
-    const bool oldShadowRangeSpinSignals = m_previewShadowRangeSpinBox->blockSignals(true);
-    const bool oldSaturationSpinSignals = m_previewSaturationSpinBox->blockSignals(true);
-    const bool oldSharpeningSpinSignals = m_previewSharpeningSpinBox->blockSignals(true);
-    const bool oldBalanceBiasSpinSignals = m_previewBalanceBiasSpinBox->blockSignals(true);
-
-    // Preview sliders
-    m_previewExposureSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewExposureSlider")).toInt(kDefaultPreviewExposureSliderValue),
-                   m_previewExposureSlider->minimum(), m_previewExposureSlider->maximum()));
-    m_previewWhiteBalanceSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewWhiteBalanceSlider")).toInt(kDefaultPreviewWhiteBalanceSliderValue),
-                   m_previewWhiteBalanceSlider->minimum(), m_previewWhiteBalanceSlider->maximum()));
-    m_previewTintSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewTintSlider")).toInt(kDefaultPreviewTintSliderValue),
-                   m_previewTintSlider->minimum(), m_previewTintSlider->maximum()));
-    m_previewGammaSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewGammaSlider")).toInt(kDefaultPreviewGammaSliderValue),
-                   m_previewGammaSlider->minimum(), m_previewGammaSlider->maximum()));
-    m_previewContrastSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewContrastAmount")).toInt(kDefaultPreviewContrastSliderValue),
-                   m_previewContrastSlider->minimum(), m_previewContrastSlider->maximum()));
-    m_previewShadowsSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewShadowsSlider")).toInt(kDefaultPreviewShadowsSliderValue),
-                   m_previewShadowsSlider->minimum(), m_previewShadowsSlider->maximum()));
-    m_previewShadowRangeSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewShadowRangeSlider")).toInt(kDefaultPreviewShadowRangeSliderValue),
-                   m_previewShadowRangeSlider->minimum(), m_previewShadowRangeSlider->maximum()));
-    m_previewSaturationSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewSaturationSlider")).toInt(kDefaultPreviewSaturationSliderValue),
-                   m_previewSaturationSlider->minimum(), m_previewSaturationSlider->maximum()));
-    m_previewSharpeningSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewSharpeningSlider")).toInt(kDefaultPreviewSharpeningSliderValue),
-                   m_previewSharpeningSlider->minimum(), m_previewSharpeningSlider->maximum()));
-    m_previewBalanceBiasSlider->setValue(
-        std::clamp(presetData.value(QStringLiteral("previewContrastPivot")).toInt(kDefaultPreviewBalanceBiasSliderValue),
-                   m_previewBalanceBiasSlider->minimum(), m_previewBalanceBiasSlider->maximum()));
-    
-    // Restore signals
-    m_previewExposureSlider->blockSignals(oldExposureSignals);
-    m_previewWhiteBalanceSlider->blockSignals(oldWhiteBalanceSignals);
-    m_previewTintSlider->blockSignals(oldTintSignals);
-    m_previewGammaSlider->blockSignals(oldGammaSignals);
-    m_previewContrastSlider->blockSignals(oldContrastSignals);
-    m_previewShadowsSlider->blockSignals(oldShadowsSignals);
-    m_previewShadowRangeSlider->blockSignals(oldShadowRangeSignals);
-    m_previewSaturationSlider->blockSignals(oldSaturationSignals);
-    m_previewSharpeningSlider->blockSignals(oldSharpeningSignals);
-    m_previewBalanceBiasSlider->blockSignals(oldBalanceBiasSignals);
-    
-    m_previewExposureSpinBox->blockSignals(oldExposureSpinSignals);
-    m_previewWhiteBalanceSpinBox->blockSignals(oldWhiteBalanceSpinSignals);
-    m_previewTintSpinBox->blockSignals(oldTintSpinSignals);
-    m_previewGammaSpinBox->blockSignals(oldGammaSpinSignals);
-    m_previewContrastSpinBox->blockSignals(oldContrastSpinSignals);
-    m_previewShadowsSpinBox->blockSignals(oldShadowsSpinSignals);
-    m_previewShadowRangeSpinBox->blockSignals(oldShadowRangeSpinSignals);
-    m_previewSaturationSpinBox->blockSignals(oldSaturationSpinSignals);
-    m_previewSharpeningSpinBox->blockSignals(oldSharpeningSpinSignals);
-    m_previewBalanceBiasSpinBox->blockSignals(oldBalanceBiasSpinSignals);
-    
-    // Sync spinboxes with slider values (signals were blocked during setValue)
-    m_previewExposureSpinBox->setValue(m_previewExposureSlider->value() / 10.0);
-    m_previewWhiteBalanceSpinBox->setValue(m_previewWhiteBalanceSlider->value());
-    m_previewTintSpinBox->setValue(m_previewTintSlider->value());
-    m_previewGammaSpinBox->setValue(m_previewGammaSlider->value() / 100.0);
-    m_previewContrastSpinBox->setValue(m_previewContrastSlider->value());
-    m_previewShadowsSpinBox->setValue(m_previewShadowsSlider->value());
-    m_previewShadowRangeSpinBox->setValue(m_previewShadowRangeSlider->value());
-    m_previewSaturationSpinBox->setValue(m_previewSaturationSlider->value());
-    m_previewSharpeningSpinBox->setValue(m_previewSharpeningSlider->value());
-    m_previewBalanceBiasSpinBox->setValue(m_previewBalanceBiasSlider->value());
+    // Develop settings saved by versions before 2.0 used different keys and
+    // units, so they do not apply here and such files open with neutral values.
+    for (const DevelopControl &control : m_developControls) {
+        setDevelopValue(control.id,
+                        presetData.value(QLatin1String(control.key)).toInt(control.defaultValue));
+    }
+    const QSignalBlocker reconstructBlocker(m_reconstructCheckBox);
+    m_reconstructCheckBox->setChecked(
+        presetData.value(QStringLiteral("developReconstruct")).toBool(true));
 }
 
 QJsonObject MainWindow::collectCurrentStateAsJson() const
@@ -2819,17 +2220,12 @@ QJsonObject MainWindow::collectCurrentStateAsJson() const
     presetData[QStringLiteral("rTransitionDelay")] = settings.rTransitionDelay;
     presetData[QStringLiteral("rTransitionSmoothness")] = settings.rTransitionSmoothness;
     presetData[QStringLiteral("rLumaNoiseReduction")] = settings.rLumaNoiseReduction;
+    presetData[QStringLiteral("chromaNoiseReduction")] = settings.chromaNoiseReduction;
     presetData[QStringLiteral("correctPreviewOutliers")] = settings.correctPreviewOutliers;
-    presetData[QStringLiteral("previewExposureSlider")] = m_previewExposureSlider->value();
-    presetData[QStringLiteral("previewWhiteBalanceSlider")] = m_previewWhiteBalanceSlider->value();
-    presetData[QStringLiteral("previewTintSlider")] = m_previewTintSlider->value();
-    presetData[QStringLiteral("previewGammaSlider")] = m_previewGammaSlider->value();
-    presetData[QStringLiteral("previewContrastAmount")] = m_previewContrastSlider->value();
-    presetData[QStringLiteral("previewShadowsSlider")] = m_previewShadowsSlider->value();
-    presetData[QStringLiteral("previewShadowRangeSlider")] = m_previewShadowRangeSlider->value();
-    presetData[QStringLiteral("previewSaturationSlider")] = m_previewSaturationSlider->value();
-    presetData[QStringLiteral("previewSharpeningSlider")] = m_previewSharpeningSlider->value();
-    presetData[QStringLiteral("previewContrastPivot")] = m_previewBalanceBiasSlider->value();
+    for (const DevelopControl &control : m_developControls) {
+        presetData[QLatin1String(control.key)] = control.slider->value();
+    }
+    presetData[QStringLiteral("developReconstruct")] = m_reconstructCheckBox->isChecked();
     return presetData;
 }
 
@@ -3006,6 +2402,9 @@ void MainWindow::onSavePresetClicked()
 
 void MainWindow::queueAutoPreview()
 {
+    // The merge controls all come through here, and their changes have to reach the
+    // per-image settings like the develop sliders do.
+    markPresetModified();
     if (m_busy || !m_autoPreviewCheckBox->isChecked()) {
         return;
     }
@@ -3023,16 +2422,130 @@ void MainWindow::onAutoPreviewTimer()
     onUpdatePreview();
 }
 
+MainWindow::DevelopControl &MainWindow::developControl(Develop id)
+{
+    return m_developControls[static_cast<size_t>(id)];
+}
+
+const MainWindow::DevelopControl &MainWindow::developControl(Develop id) const
+{
+    return m_developControls[static_cast<size_t>(id)];
+}
+
+void MainWindow::addDevelopControl(Develop id,
+                                   const char *key,
+                                   const QString &label,
+                                   const QString &toolTip,
+                                   int minimum,
+                                   int maximum,
+                                   int defaultValue,
+                                   double scale,
+                                   int decimals,
+                                   QVBoxLayout *layout)
+{
+    DevelopControl &control = developControl(id);
+    control.id = id;
+    control.key = key;
+    control.defaultValue = defaultValue;
+    control.scale = scale;
+    control.slider = new QSlider(Qt::Horizontal, this);
+    control.spinBox = new QDoubleSpinBox(this);
+
+    QSlider *slider = control.slider;
+    QDoubleSpinBox *spinBox = control.spinBox;
+    slider->setRange(minimum, maximum);
+    slider->setValue(defaultValue);
+    slider->setToolTip(toolTip);
+    spinBox->setDecimals(decimals);
+    spinBox->setRange(minimum / scale, maximum / scale);
+    spinBox->setSingleStep(1.0 / scale);
+    spinBox->setValue(defaultValue / scale);
+    spinBox->setToolTip(toolTip);
+    // A dot is always the decimal separator, whatever the system locale.
+    spinBox->setLocale(QLocale::C);
+    spinBox->setGroupSeparatorShown(false);
+
+    QHBoxLayout *row = new QHBoxLayout;
+    row->setContentsMargins(0, 0, 0, 0);
+    row->setSpacing(4);
+    QLabel *rowLabel = new QLabel(label, this);
+    rowLabel->setMinimumWidth(90);
+    row->addWidget(rowLabel);
+    row->addWidget(slider, 1);
+    row->addWidget(spinBox, 0);
+    layout->addLayout(row);
+
+    connect(slider, &QSlider::valueChanged, this, [this, slider, spinBox, scale](int value) {
+        const QSignalBlocker blocker(spinBox);
+        spinBox->setValue(value / scale);
+        onDevelopChanged();
+        Q_UNUSED(slider);
+    });
+    connect(spinBox, QOverload<double>::of(&QDoubleSpinBox::valueChanged), this,
+            [slider, scale](double value) {
+        slider->setValue(static_cast<int>(std::lround(value * scale)));
+    });
+}
+
+void MainWindow::setDevelopValue(Develop id, int value)
+{
+    DevelopControl &control = developControl(id);
+    const QSignalBlocker sliderBlocker(control.slider);
+    const QSignalBlocker spinBoxBlocker(control.spinBox);
+    control.slider->setValue(value);
+    control.spinBox->setValue(control.slider->value() / control.scale);
+}
+
+double MainWindow::developValue(Develop id) const
+{
+    const DevelopControl &control = developControl(id);
+    return control.slider->value() / control.scale;
+}
+
+superccd::EditParams MainWindow::currentEditParams() const
+{
+    superccd::EditParams params;
+    params.exposureEv = developValue(Develop::Exposure);
+    params.contrast = developValue(Develop::Contrast);
+    params.highlights = developValue(Develop::Highlights);
+    params.shadows = developValue(Develop::Shadows);
+    params.whites = developValue(Develop::Whites);
+    params.blacks = developValue(Develop::Blacks);
+    params.gamma = developValue(Develop::Gamma);
+    params.temperature = developValue(Develop::Temperature);
+    params.tint = developValue(Develop::Tint);
+    params.vibrance = developValue(Develop::Vibrance);
+    params.saturation = developValue(Develop::Saturation);
+    params.sharpenAmount = developValue(Develop::SharpenAmount);
+    params.reconstructHighlights = m_reconstructCheckBox->isChecked();
+    params.reconstructThreshold = developValue(Develop::ReconstructThreshold);
+    params.reconstructNeutralize = developValue(Develop::ReconstructNeutralize);
+    return params;
+}
+
+void MainWindow::updateTemperatureLabel(const superccd::EditParams &params)
+{
+    if (!m_scene) {
+        m_temperatureLabel->clear();
+        return;
+    }
+    const superccd::WhiteBalanceSolution solution =
+        superccd::solveWhiteBalance(*m_scene, params.temperature, params.tint);
+    m_temperatureLabel->setText(solution.kelvin > 0.0
+        ? tr("about %1 K").arg(static_cast<int>(std::lround(solution.kelvin / 50.0) * 50))
+        : QString());
+}
+
 ConversionSettings MainWindow::currentSettings() const
 {
     ConversionSettings settings;
     settings.exportMode = ExportMode::RawCfa6MP;
     settings.previewMethod = currentPreviewMethod();
-    settings.previewMaxSize = 0;
     settings.rTransitionStart = mergeStartFromSlider(m_rTransitionStartSlider->value());
     settings.rTransitionDelay = static_cast<double>(m_rTransitionDelaySlider->value()) / 100.0;
     settings.rTransitionSmoothness = static_cast<double>(m_rTransitionSmoothnessSlider->value()) / 100.0;
     settings.rLumaNoiseReduction = static_cast<double>(m_rLumaNoiseReductionSlider->value()) / 100.0;
+    settings.chromaNoiseReduction = static_cast<double>(m_chromaNoiseReductionSlider->value()) / 100.0;
     settings.previewRotation = m_previewRotationCombo->currentData().toInt();
     settings.linearChromaSuppression = 1.0;
     settings.correctPreviewOutliers =

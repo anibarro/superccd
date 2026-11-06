@@ -7,7 +7,8 @@
 #include "CfaPlaneAlignment.h"
 #include "DngWriter.h"
 #include "ParallelProcessing.h"
-#include "PreviewColorNormalization.h"
+#include "PreviewPixelCorrection.h"
+#include "SrMerge.h"
 
 #include <libraw/libraw.h>
 #include <QFileInfo>
@@ -65,12 +66,6 @@ struct LinearShotPlanes {
     int height = 0;
     int expandedWidth = 0;
 };
-
-bool applyPreviewRotationAndScale(const QImage &source,
-                                  int previewRotation,
-                                  int maxSize,
-                                  QImage &preview,
-                                  QString &error);
 
 void populateBasicMetadata(LibRaw &raw, SuperCCDMetadata &metadata)
 {
@@ -915,728 +910,186 @@ std::vector<OffsetScore> deriveSameColorOffsets(const std::vector<uint16_t> &pri
     return scores;
 }
 
-// Upsample CFA to 2x resolution by interpolation
-// Each original pixel becomes a 2x2 block, creating a full-resolution image
-// where all color positions have valid values
-bool upsampleCfa2x(const std::vector<uint16_t> &cfa,
-                  const std::vector<uint8_t> &channels,
-                  int width,
-                  int height,
-                  std::vector<uint16_t> &upsampled,
-                  std::vector<uint8_t> &upsampledChannels,
-                  int &outWidth,
-                  int &outHeight,
-                  QString &logLabel)
+// Scales the merged linear CFA so that outputRange lands on 65535.
+void quantizeMerged(const std::vector<float> &merged,
+                    double outputRange,
+                    std::vector<uint16_t> &codes)
 {
-    outWidth = width * 2;
-    outHeight = height * 2;
-    upsampled.assign(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight), 0);
-    upsampledChannels.assign(static_cast<size_t>(outWidth) * static_cast<size_t>(outHeight), 0);
-    
-    // For each original pixel, create a 2x2 block in the output
-    // We use bilinear interpolation from neighboring original pixels
+    codes.resize(merged.size());
+    const float scale = static_cast<float>(65535.0 / outputRange);
+    superccd::parallel::forRanges(0, merged.size(), 131072, [&](size_t begin, size_t end, unsigned) {
+        for (size_t i = begin; i < end; ++i) {
+            codes[i] = static_cast<uint16_t>(std::min(merged[i] * scale + 0.5f, 65535.0f));
+        }
+    });
+}
+
+// Suppresses the false color the diagonal lattice produces at fine detail.
+//
+// Chroma is filtered as log ratios to green. In that form a bright edge carries
+// the same chroma weight as a dark one, so color cannot bleed from highlights into
+// shadows the way it does with absolute differences. Luminance is restored
+// afterwards, so sharpness is unaffected. The data must be white balanced.
+void suppressFalseColor(std::vector<float> &rgb, int width, int height)
+{
+    if (width < 8 || height < 8) {
+        return;
+    }
+    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
+    constexpr float kFloor = 1.0f / 8192.0f;
+
+    std::vector<float> logGreen(pixelCount);
+    std::vector<float> chromaRed(pixelCount);
+    std::vector<float> chromaBlue(pixelCount);
     superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
-            const size_t srcIdx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const uint16_t srcValue = cfa[srcIdx];
-            const uint8_t srcChannel = channels[srcIdx];
-            
-            // Destination block: 2x2 pixels
-            // Position (2x, 2y) in output corresponds to (x, y) in input
-            // Each output pixel at (ox, oy) maps back to input (ox/2, oy/2)
-            
-            for (int dy = 0; dy < 2; ++dy) {
-                for (int dx = 0; dx < 2; ++dx) {
-                    const int ox = x * 2 + dx;
-                    const int oy = y * 2 + dy;
-                    const size_t dstIdx = static_cast<size_t>(oy) * static_cast<size_t>(outWidth) + static_cast<size_t>(ox);
-                    
-                    // Set the channel for this upsampled pixel
-                    upsampledChannels[dstIdx] = srcChannel;
-                    
-                    // Interpolate from neighbors with same channel
-                    // Check 4 neighbors at half-pixel offset in the upsampled grid
-                    const int nxOffsets[4] = {-1, 1, 0, 0};
-                    const int nyOffsets[4] = {0, 0, -1, 1};
-                    
-                    uint32_t sum = 0;
-                    int count = 0;
-                    
-                    // Look at the 4 neighboring original pixels (at 2x scale)
-                    for (int i = 0; i < 4; ++i) {
-                        const int nx = x + nxOffsets[i];
-                        const int ny = y + nyOffsets[i];
-                        
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                        
-                        const size_t nIdx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
-                        const uint8_t nChannel = channels[nIdx];
-                        
-                        if (nChannel != srcChannel) continue;  // Must be same color
-                        
-                        const uint16_t nValue = cfa[nIdx];
-                        if (nValue == 0) continue;
-                        
-                        sum += nValue;
-                        count++;
-                    }
-                    
-                    if (count > 0 && srcValue > 0) {
-                        // Average of neighbors plus contribution from original
-                        upsampled[dstIdx] = static_cast<uint16_t>((sum + srcValue) / (count + 1));
-                    } else if (srcValue > 0) {
-                        upsampled[dstIdx] = srcValue;
-                    }
-                }
-            }
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float green = std::log2(std::max(rgb[index * 3 + 1], kFloor));
+            logGreen[index] = green;
+            chromaRed[index] = std::log2(std::max(rgb[index * 3 + 0], kFloor)) - green;
+            chromaBlue[index] = std::log2(std::max(rgb[index * 3 + 2], kFloor)) - green;
         }
     });
-    
-    logLabel = QStringLiteral("Upsampled 2x: %1x%2 -> %3x%4").arg(width).arg(height).arg(outWidth).arg(outHeight);
-    return true;
-}
 
-bool interpolateCfaToFullResolution(const std::vector<uint16_t> &cfa,
-                                   const std::vector<uint8_t> &channels,
-                                   int width,
-                                   int height,
-                                   std::vector<uint16_t> &fullRes,
-                                   QString &logLabel)
-{
-    // For each position, if we have a value, keep it
-    // If we don't have a value (different channel originally at that position), 
-    // interpolate from same-color neighbors (respecting CFA pattern)
-    
-    const int dx[4] = {-1, 1, 0, 0};
-    const int dy[4] = {0, 0, -1, 1};
-    
-    fullRes.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
-    
-    superccd::parallel::forRows(height, 16, [&](int y, unsigned) {
-        for (int x = 0; x < width; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const uint8_t channel = channels[idx];
-            
-            if (cfa[idx] != 0) {
-                // We have a value at this position
-                fullRes[idx] = cfa[idx];
-            } else {
-                // Need to interpolate from same-color neighbors
-                uint32_t sum = 0;
-                int count = 0;
-                for (int i = 0; i < 4; ++i) {
-                    const int nx = x + dx[i];
-                    const int ny = y + dy[i];
-                    if (nx < 0 || nx >= width || ny < 0 || ny >= height) continue;
-                    
-                    const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
-                    if (channels[nidx] != channel) continue;  // Must be same color
-                    if (cfa[nidx] == 0) continue;
-                    
-                    sum += cfa[nidx];
-                    count++;
-                }
-                if (count > 0) {
-                    fullRes[idx] = static_cast<uint16_t>(sum / count);
-                }
-            }
-        }
-    });
-    
-    logLabel = QStringLiteral("Interpolated CFA to full resolution");
-    return true;
-}
-
-bool projectSecondaryOntoPrimary(const std::vector<uint16_t> &primary,
-                                 const std::vector<uint8_t> &primaryChannels,
-                                 const std::vector<uint16_t> &secondary,
-                                 [[maybe_unused]] const std::vector<uint8_t> &secondaryChannels,
-                                 int width,
-                                 int height,
-                                 std::vector<uint16_t> &projected,
-                                 QString &logLabel)
-{
-    Q_UNUSED(primaryChannels);
-    Q_UNUSED(secondaryChannels);
-
-    projected.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
-
-    // Simple adjacent pixel sampling - R and S are interleaved in a checkerboard pattern
-    // For each primary pixel, sample the 4 adjacent secondary pixels and average
-    // This avoids boundary artifacts from the offset search method
-    // NOTE: We do NOT check channel matching here because adjacent R and S pixels
-    // naturally have different channels. We rely on the gain estimation to handle this.
-    
-    const int dx[4] = {-1, 1, 0, 0};  // left, right
-    const int dy[4] = {0, 0, -1, 1};  // up, down
-    
-    logLabel = QStringLiteral("Adjacent sampling: use 4-neighbor average (no channel filter)");
-
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            if (primary[idx] == 0) {
-                continue;
-            }
-
-            // Collect all adjacent secondary pixels (any channel)
-            // The gain estimation will handle channel mismatches
-            uint32_t sum = 0;
-            int count = 0;
-            for (int i = 0; i < 4; ++i) {
-                const int nx = x + dx[i];
-                const int ny = y + dy[i];
-                if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-                    continue;
-                }
-                const size_t nidx = static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
-                const uint16_t sample = secondary[nidx];
-                if (sample == 0) {
-                    continue;
-                }
-                sum += sample;
-                count++;
-            }
-
-            if (count > 0) {
-                projected[idx] = static_cast<uint16_t>(sum / count);
-            }
-        }
-    }
-
-    return true;
-}
-
-void estimateProjectedGain(const std::vector<uint16_t> &primary,
-                           const std::vector<uint8_t> &primaryChannels,
-                           const std::vector<uint16_t> &projectedSecondary,
-                           int width,
-                           int height,
-                           double gains[4],
-                           QString &logLabel)
-{
-    Q_UNUSED(width);
-    Q_UNUSED(height);
-
-    long double sumPrimary[4] = {0.0, 0.0, 0.0, 0.0};
-    long double sumSecondary[4] = {0.0, 0.0, 0.0, 0.0};
-    uint16_t maxPrimary[4] = {0, 0, 0, 0};
-
-    const size_t pixelCount = primary.size();
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const uint8_t channel = primaryChannels[i];
-        if (channel > 3) {
-            continue;
-        }
-        if (primary[i] > maxPrimary[channel]) {
-            maxPrimary[channel] = primary[i];
-        }
-    }
-
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const uint8_t channel = primaryChannels[i];
-        if (channel > 3) {
-            continue;
-        }
-        const uint16_t s = primary[i];
-        const uint16_t r = projectedSecondary[i];
-        if (s == 0 || r == 0) {
-            continue;
-        }
-
-        const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
-        const double normalized = static_cast<double>(s) / white;
-        // Include highlight pixels (up to 0.95) in gain estimation so gains better
-        // reflect R/S relationship in highlight areas where blending matters most
-        if (normalized < 0.10 || normalized > 0.95) {
-            continue;
-        }
-
-        sumPrimary[channel] += s;
-        sumSecondary[channel] += r;
-    }
-
-    logLabel.clear();
-    for (int channel = 0; channel < 4; ++channel) {
-        gains[channel] = sumSecondary[channel] > 0.0
-                             ? static_cast<double>(sumPrimary[channel] / sumSecondary[channel])
-                             : 1.0;
-        logLabel += QStringLiteral("ch%1 gain=%2 white=%3 ")
-                        .arg(channel)
-                        .arg(gains[channel], 0, 'f', 5)
-                        .arg(maxPrimary[channel]);
-    }
-}
-
-// Advanced noise reduction for the R (secondary) CFA plane.
-//
-// Applies two independent filters:
-//   1. Luma NR:  edge-aware bilateral smoothing that preserves luminance edges
-//      while reducing grain.  Uses variance-adaptive range sigma so flat
-//      areas get stronger smoothing than edge regions.
-//   2. Color NR: chroma noise suppression via soft-thresholding of pixel
-//      deviations from local mean.  At CFA level, "color noise" manifests
-//      as random high-frequency pixel-to-pixel variations that become
-//      chroma artifacts after demosaicing.  We estimate local mean using
-//      spatial weights only (no range weighting), compute deviation, and
-//      apply a soft threshold: small deviations (noise) are suppressed,
-//      large deviations (detail/edges) are preserved.  This targets color
-//      noise without blurring luminance structure.
-//
-// Both filters operate on same-channel CFA neighbors at stride 2 within
-// a configurable radius, using pre-computed Gaussian spatial weights.
-//
-// The strength parameter (0..1) controls:
-//   - Luma NR: range sigma and blend factor
-//   - Color NR: soft threshold value (larger = more aggressive noise suppression)
-//
-// A luminance-dependent activity curve reduces NR in deep shadows
-// (where signal is unreliable) and specular highlights (already flat).
-static void applyRPlaneNoiseReduction(std::vector<uint16_t> &rPlane,
-                                      const std::vector<uint8_t> &channels,
-                                      int width,
-                                      int height,
-                                      double lumaNR)    // 0..1
-{
-    if (lumaNR <= 0.0) {
-        return;
-    }
-    const size_t pixelCount = static_cast<size_t>(width) * height;
-    if (rPlane.size() != pixelCount || channels.size() != pixelCount) {
-        return;
-    }
-
-    const double lumaStrength = std::clamp(lumaNR, 0.0, 1.0);
-
-    // Estimate white reference from the R plane for sigma normalization.
-    uint16_t maxVal = 0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-        if (rPlane[i] > maxVal) {
-            maxVal = rPlane[i];
-        }
-    }
-    const double whiteRef = maxVal > 0 ? static_cast<double>(maxVal) : 1.0;
-
-    // Range sigma for luma NR: controls edge preservation sensitivity.
-    // At strength 0.01 the sigma is very small (almost no smoothing),
-    // at strength 1.0 the sigma is large (aggressive smoothing).
-    const double lumaSigma = (0.002 + lumaStrength * 0.148) * whiteRef;
-    const double lumaInv2Sigma2 = 1.0 / (2.0 * lumaSigma * lumaSigma + 1e-12);
-
-    // Spatial kernel: radius 2 in CFA stride-2 coordinates gives up to
-    // 24 same-channel neighbors in a 5x5 CFA window.
-    constexpr int kRadius = 2;
-    constexpr double kSpatialSigma = 1.5;
-    constexpr double kSpatialInv2Sigma2 = 1.0 / (2.0 * kSpatialSigma * kSpatialSigma);
-
-    // Pre-compute spatial weight table for offsets in stride-2 CFA grid.
-    struct NeighborOffset {
-        int dx;           // pixel-space offset (already *2)
+    // A diamond window: it reaches both halves of the lattice, and its shape
+    // matches the frequencies a 45-degree sensor can actually record.
+    struct ChromaTap {
+        int dx;
         int dy;
-        double spatialW;  // pre-computed Gaussian spatial weight
+        std::ptrdiff_t offset;
+        float weight;
     };
-    std::array<NeighborOffset, 24> offsets;
-    int nOffsets = 0;
+    constexpr int kRadius = 3;
+    std::vector<ChromaTap> taps;
     for (int dy = -kRadius; dy <= kRadius; ++dy) {
         for (int dx = -kRadius; dx <= kRadius; ++dx) {
-            if (dx == 0 && dy == 0) continue;
-            const double dist2 = static_cast<double>(dx * dx + dy * dy);
-            const double sw = std::exp(-dist2 * kSpatialInv2Sigma2);
-            offsets[static_cast<size_t>(nOffsets++)] = {dx * 2, dy * 2, sw};
-        }
-    }
-
-    std::vector<uint16_t> output(rPlane);
-
-    // Process in parallel by horizontal bands.
-    superccd::parallel::forRanges(
-        0, height, 64,
-        [&](std::size_t yBegin, std::size_t yEnd, unsigned) {
-            for (int y = static_cast<int>(yBegin); y < static_cast<int>(yEnd); ++y) {
-                for (int x = 0; x < width; ++x) {
-                    const size_t idx = static_cast<size_t>(y) * width + x;
-                    const uint8_t ch = channels[idx];
-                    if (ch > 3 || rPlane[idx] == 0) {
-                        output[idx] = rPlane[idx];
-                        continue;
-                    }
-
-                    const double centerVal = static_cast<double>(rPlane[idx]);
-
-                    // Luminance-dependent activity curve: reduce NR effect
-                    // in deep shadows (< 3% of white) and specular highlights
-                    // (> 90% of white) where it's less useful or harmful.
-                    const double normalizedLuma = centerVal / whiteRef;
-                    double activity = 1.0;
-                    if (normalizedLuma < 0.03) {
-                        activity = normalizedLuma / 0.03;
-                        activity = activity * activity * (3.0 - 2.0 * activity);
-                    } else if (normalizedLuma > 0.90) {
-                        const double t = (normalizedLuma - 0.90) / 0.10;
-                        activity = 1.0 - t * t * (3.0 - 2.0 * t);
-                    }
-
-                    if (activity < 0.01) {
-                        output[idx] = rPlane[idx];
-                        continue;
-                    }
-
-                    double lumaSum = 0.0;
-                    double lumaWeightSum = 0.0;
-
-                    for (int k = 0; k < nOffsets; ++k) {
-                        const int nx = x + offsets[k].dx;
-                        const int ny = y + offsets[k].dy;
-                        if (nx < 0 || nx >= width || ny < 0 || ny >= height) {
-                            continue;
-                        }
-                        const size_t nidx = static_cast<size_t>(ny) * width + nx;
-                        if (channels[nidx] != ch || rPlane[nidx] == 0) {
-                            continue;
-                        }
-
-                        const double nVal = static_cast<double>(rPlane[nidx]);
-                        const double diff = centerVal - nVal;
-                        const double diff2 = diff * diff;
-                        const double sw = offsets[k].spatialW;
-
-                        // Bilateral filter with range weighting
-                        const double rangeW = std::exp(-diff2 * lumaInv2Sigma2);
-                        const double w = sw * rangeW;
-                        lumaSum += nVal * w;
-                        lumaWeightSum += w;
-                    }
-
-                    double result = centerVal;
-
-                    // Apply luma NR: blend original toward bilateral-smoothed value.
-                    if (lumaWeightSum > 1e-12) {
-                        const double smoothed = lumaSum / lumaWeightSum;
-                        const double blend = std::sqrt(lumaStrength) * activity;
-                        result = (1.0 - blend) * centerVal + blend * smoothed;
-                    }
-
-                    output[idx] = static_cast<uint16_t>(
-                        std::clamp<int>(static_cast<int>(result + 0.5), 0, 65535));
-                }
+            const int distance = std::abs(dx) + std::abs(dy);
+            if (distance <= kRadius) {
+                taps.push_back({dx, dy,
+                                static_cast<std::ptrdiff_t>(dy) * width + dx,
+                                static_cast<float>(kRadius + 1 - distance)});
             }
-        });
-
-    rPlane = std::move(output);
-}
-
-void mergePrimaryAndProjectedSecondary(const std::vector<uint16_t> &primary,
-                                       const std::vector<uint8_t> &primaryChannels,
-                                       const std::vector<uint16_t> &projectedSecondary,
-                                       int width,
-                                       int height,
-                                       double rHeadroomScale,
-                                       double rTransitionStart,
-                                       double rTransitionDelay,
-                                       double rTransitionSmoothness,
-                                       double rLumaNoiseReduction,
-                                       bool sDrivenHighlightsOnly,
-                                       std::vector<uint16_t> &merged,
-                                       QString &logLabel,
-                                       double *appliedOutputScale = nullptr)
-{
-    merged.assign(static_cast<size_t>(width) * static_cast<size_t>(height), 0);
-    const size_t pixelCount = primary.size();
-
-    // Apply noise reduction to a mutable copy of the R plane when requested.
-    std::vector<uint16_t> denoisedR = projectedSecondary;
-    if (rLumaNoiseReduction > 0.0) {
-        applyRPlaneNoiseReduction(denoisedR, primaryChannels, width, height,
-                                  rLumaNoiseReduction);
-    }
-
-    std::vector<double> desired(pixelCount, 0.0);
-
-    double gains[4] = {1.0, 1.0, 1.0, 1.0};
-    QString gainSummary;
-    estimateProjectedGain(primary, primaryChannels, projectedSecondary, width, height, gains, gainSummary);
-
-    uint16_t maxPrimary[4] = {0, 0, 0, 0};
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const uint8_t channel = primaryChannels[i];
-        if (channel > 3) {
-            continue;
-        }
-        if (primary[i] > maxPrimary[channel]) {
-            maxPrimary[channel] = primary[i];
         }
     }
-
-    uint64_t blendedCount = 0;
-    uint64_t replacedCount = 0;
-    double maxDesired = 0.0;
-    std::mutex mergeStatsMutex;
-    superccd::parallel::forRanges(
-        0,
-        pixelCount,
-        131072,
-        [&](size_t begin, size_t end, unsigned) {
-            uint64_t localBlendedCount = 0;
-            uint64_t localReplacedCount = 0;
-            double localMaxDesired = 0.0;
-            for (size_t i = begin; i < end; ++i) {
-                const uint8_t channel = primaryChannels[i];
-                const uint16_t s = primary[i];
-                if (channel > 3 || s == 0) {
-                    continue;
-                }
-
-                const uint16_t rProjected = denoisedR[i];
-                if (rProjected == 0) {
-                    merged[i] = s;
-                    desired[i] = static_cast<double>(s);
-                    continue;
-                }
-
-                const double white = maxPrimary[channel] > 0 ? static_cast<double>(maxPrimary[channel]) : 1.0;
-                const double scaledS = static_cast<double>(s);
-                const double normalizedS = static_cast<double>(s) / white;
-                const double normalizedR = white > 0 ? static_cast<double>(rProjected) / white : 0.0;
-
-                // Detect S clipping: when S is very bright but R is disproportionately dark,
-                // R is likely more accurate (S may be clipping in highlight areas)
-                // Also require rProjected > 200 to ensure the R projection itself is reliable
-                // TEMPORARILY DISABLED - conditions were too aggressive, causing artifacts
-                const bool sMayBeClipping =
-                    false && (normalizedS > 0.70) && (normalizedR < 0.05) && (rProjected > 200);
-
-                double scaledR;
-                if (sMayBeClipping) {
-                    // R is more reliable in extreme highlights; use R without gain boost
-                    scaledR = static_cast<double>(rProjected);
-                } else {
-                    scaledR = static_cast<double>(rProjected) * gains[channel];
-                }
-                const double start = std::clamp(rTransitionStart, 0.0, 1.0);
-                // "Delay" is now the width of the S->R transition in
-                // normalized S units. Cap it so the end never leaves the
-                // valid [0, 1] S-brightness range.
-                const double delayWidth = std::clamp(rTransitionDelay, 0.0, 1.0);
-                const double smoothness = std::clamp(rTransitionSmoothness, 0.0, 1.0);
-                double blendStart = 0.95;
-                double blendEnd = 1.02;
-                // blendScale fades the final blendT to 0 in the very
-                // last fraction of the Merge start slider (start in
-                // [0.9985, 1.0]). Without this, moving the slider from
-                // 99 to 100 is a binary jump from "all clipped pixels
-                // get R" to "no clipped pixels get R". With it, the
-                // amount of R blended into the brightest pixels
-                // gradually decreases from 100% (at start = 0.9985) to
-                // 0% (at start = 1.0).
-                double blendScale = 1.0;
-                if (!sDrivenHighlightsOnly) {
-                    // Map the slider 0..1 onto a usable width 0..0.4.
-                    // The 0.4 cap means even at the maximum the end of
-                    // the transition is start + 0.4 (so start must be
-                    // <= 0.6 for end to reach 1.0; otherwise end clamps
-                    // at 1.0).
-                    constexpr double kMergeStartFullWidthCeiling = 0.9985;
-                    constexpr double kMaxWidth = 0.40;
-                    if (start > kMergeStartFullWidthCeiling) {
-                        const double u = (start - kMergeStartFullWidthCeiling)
-                                         / (1.0 - kMergeStartFullWidthCeiling);
-                        // smoothstep: 0 at start=0.9985, 1 at start=1.0
-                        const double smoothU = u * u * (3.0 - 2.0 * u);
-                        blendScale = 1.0 - smoothU;
-                    }
-                    if (blendScale < 1e-6) {
-                        // Defensive: a 0 scale means "no merge at all"
-                        // -> pure S for every pixel.
-                        blendStart = 1.0;
-                        blendEnd = 1.0;
-                    } else {
-                        const double width = kMaxWidth * delayWidth;
-                        // Clamp blendStart to [0, 1.0). Then the window
-                        // is [blendStart, min(1.0, blendStart + width)].
-                        // We never use std::clamp with lo > hi here, so
-                        // the result is always well-defined and blendEnd
-                        // is always <= 1.0 (so the blend reaches 1.0 at
-                        // S=1.0, i.e. clipped highlights become pure R).
-                        blendStart = std::clamp(start, 0.0, 1.0);
-                        const double requestedEnd = blendStart + width;
-                        blendEnd = std::min(requestedEnd, 1.0);
-                        // Ensure a tiny minimum window so the math is
-                        // stable (avoid div-by-zero on blendEnd - blendStart).
-                        if (blendEnd - blendStart < 1e-6) {
-                            blendStart = 1.0;
-                            blendEnd = 1.0;
-                        }
-                    }
-                }
-
-                if (normalizedS <= blendStart) {
-                    merged[i] = static_cast<uint16_t>(
-                        std::clamp<int>(static_cast<int>(scaledS + 0.5), 0, 65535));
-                    desired[i] = scaledS;
-                    continue;
-                }
-
-                if (normalizedS >= blendEnd) {
-                    // Apply the fade-out scale here too: in the very
-                    // last fraction of the Merge start slider the R
-                    // contribution is gradually reduced to 0, so the
-                    // transition from "full R recovery" to "no R at
-                    // all" is smooth.
-                    const double rBlend = scaledR * blendScale
-                                          + scaledS * (1.0 - blendScale);
-                    merged[i] = static_cast<uint16_t>(
-                        std::clamp<int>(static_cast<int>(rBlend + 0.5), 0, 65535));
-                    desired[i] = rBlend;
-                    localReplacedCount++;
-                    localMaxDesired = std::max(localMaxDesired, rBlend);
-                    continue;
-                }
-
-                const double t = (normalizedS - blendStart) / (blendEnd - blendStart);
-                // t == 0 at the merge start, t == 1 at the R-only end.
-                const double smoothT = t * t * (3.0 - 2.0 * t);
-                // Ease-in / exponential shape: blendT = t ^ k, with
-                // k = exp(GAMMA * smoothness). smoothness=0 -> k=1 (straight
-                // line), smoothness=1 -> k~exp(2.0)~7.4 (sharp ~90deg).
-                constexpr double kEaseInGamma = 2.0;
-                const double easeInT = std::pow(std::max(t, 0.0), std::exp(kEaseInGamma * smoothness));
-                const double baseBlendT = sDrivenHighlightsOnly
-                                        ? smoothT
-                                        : easeInT;
-                // Apply the fade-out scale: in the very last fraction
-                // of the Merge start slider (start in [0.9985, 1.0])
-                // the blend is gradually reduced to 0, so the
-                // transition from "full R recovery" to "no R at all"
-                // is smooth instead of a binary jump.
-                const double blendT = baseBlendT * blendScale;
-                const double mergedValue = (1.0 - blendT) * scaledS + blendT * scaledR;
-                desired[i] = mergedValue;
-                merged[i] = static_cast<uint16_t>(
-                    std::clamp<int>(static_cast<int>(mergedValue + 0.5), 0, 65535));
-                localBlendedCount++;
-                localMaxDesired = std::max(localMaxDesired, mergedValue);
-            }
-
-            const std::lock_guard<std::mutex> lock(mergeStatsMutex);
-            blendedCount += localBlendedCount;
-            replacedCount += localReplacedCount;
-            maxDesired = std::max(maxDesired, localMaxDesired);
-        });
-
-    double outputScale = 1.0;
-    if (maxDesired > 65535.0) {
-        outputScale = 65535.0 / maxDesired;
-    }
-    outputScale *= rHeadroomScale;
-    if (outputScale < 1.0) {
-        superccd::parallel::forRanges(
-            0,
-            pixelCount,
-            131072,
-            [&](size_t begin, size_t end, unsigned) {
-                for (size_t i = begin; i < end; ++i) {
-                    if (desired[i] <= 0.0) {
-                        merged[i] = 0;
-                        continue;
-                    }
-                    const double outputValue = desired[i] * outputScale;
-                    merged[i] = static_cast<uint16_t>(
-                        std::clamp<int>(static_cast<int>(outputValue + 0.5), 0, 65535));
-                }
-            });
-    }
-
-    if (appliedOutputScale) {
-        *appliedOutputScale = outputScale;
-    }
-
-    logLabel = QStringLiteral("%1userScale=%2 start=%3 width=%4 smoothness=%5 maxDesired=%6 outputScale=%7 highlightsOnly=%8 blended=%9 replaced=%10")
-                   .arg(gainSummary)
-                   .arg(rHeadroomScale, 0, 'f', 3)
-                   .arg(rTransitionStart, 0, 'f', 3)
-                   .arg(rTransitionDelay, 0, 'f', 3)
-                   .arg(rTransitionSmoothness, 0, 'f', 3)
-                   .arg(maxDesired, 0, 'f', 2)
-                   .arg(outputScale, 0, 'f', 6)
-                   .arg(sDrivenHighlightsOnly ? 1 : 0)
-                   .arg(static_cast<qulonglong>(blendedCount))
-                   .arg(static_cast<qulonglong>(replacedCount));
-}
-
-void suppressPreviewFalseColor(std::vector<float> &rgb, int width, int height)
-{
-    if (width < 3 || height < 3 ||
-        rgb.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3) {
-        return;
-    }
-
-    const std::vector<float> source = rgb;
-    static constexpr int spatialWeights[5] = {1, 2, 3, 2, 1};
 
     superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
         for (int x = 0; x < width; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
-            const float centerG = source[idx * 3 + 1];
-            const float centerDr = source[idx * 3 + 0] - centerG;
-            const float centerDb = source[idx * 3 + 2] - centerG;
-            const float edgeThreshold = std::max(512.0f, centerG * 0.025f);
+            const size_t index = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
+            const float center = logGreen[index];
 
-            double sumDr = 0.0;
-            double sumDb = 0.0;
-            double sumWeight = 0.0;
-            for (int dy = -2; dy <= 2; ++dy) {
-                const int ny = std::clamp(y + dy, 0, height - 1);
-                for (int dx = -2; dx <= 2; ++dx) {
-                    const int nx = std::clamp(x + dx, 0, width - 1);
-                    const size_t neighborIdx =
-                        static_cast<size_t>(ny) * static_cast<size_t>(width) + static_cast<size_t>(nx);
-                    const float neighborG = source[neighborIdx * 3 + 1];
-                    if (std::abs(neighborG - centerG) > edgeThreshold) {
-                        continue;
-                    }
+            // Dark pixels have noisy logs, so the edge test has to loosen there
+            // or the noise would exclude every neighbor.
+            const float level = rgb[index * 3 + 1];
+            const float edgeLimit = std::min(0.08f + 0.002f / std::max(level, kFloor), 2.0f);
 
-                    const double weight =
-                        static_cast<double>(spatialWeights[dx + 2] * spatialWeights[dy + 2]);
-                    sumDr += static_cast<double>(source[neighborIdx * 3 + 0] - neighborG) * weight;
-                    sumDb += static_cast<double>(source[neighborIdx * 3 + 2] - neighborG) * weight;
-                    sumWeight += weight;
+            float sumRed = 0.0f;
+            float sumBlue = 0.0f;
+            float sumWeight = 0.0f;
+            const bool interior = x >= kRadius && x < width - kRadius &&
+                                  y >= kRadius && y < height - kRadius;
+            for (const ChromaTap &tap : taps) {
+                const size_t neighbor = interior
+                    ? static_cast<size_t>(static_cast<std::ptrdiff_t>(index) + tap.offset)
+                    : static_cast<size_t>(std::clamp(y + tap.dy, 0, height - 1)) *
+                          static_cast<size_t>(width) +
+                      static_cast<size_t>(std::clamp(x + tap.dx, 0, width - 1));
+                if (std::abs(logGreen[neighbor] - center) > edgeLimit) {
+                    continue;
                 }
+                sumRed += chromaRed[neighbor] * tap.weight;
+                sumBlue += chromaBlue[neighbor] * tap.weight;
+                sumWeight += tap.weight;
             }
-
-            if (sumWeight <= 0.0) {
+            if (sumWeight <= 0.0f) {
                 continue;
             }
 
-            const float filteredDr = static_cast<float>(sumDr / sumWeight);
-            const float filteredDb = static_cast<float>(sumDb / sumWeight);
-            const float chromaDeviation =
-                std::max(std::abs(centerDr - filteredDr), std::abs(centerDb - filteredDb));
-            const float artifactThreshold = std::max(256.0f, centerG * 0.02f);
-            const float artifactStrength =
-                std::clamp(chromaDeviation / artifactThreshold, 0.0f, 1.0f);
-            const float strength = 0.55f + artifactStrength * 0.4f;
-            const float mixedDr = centerDr + (filteredDr - centerDr) * strength;
-            const float mixedDb = centerDb + (filteredDb - centerDb) * strength;
+            const float filteredRed = sumRed / sumWeight;
+            const float filteredBlue = sumBlue / sumWeight;
+            const float deviation = std::max(std::abs(chromaRed[index] - filteredRed),
+                                             std::abs(chromaBlue[index] - filteredBlue));
+            const float strength = 0.55f + 0.40f * std::min(deviation / 0.05f, 1.0f);
+            const float mixedRed = chromaRed[index] + (filteredRed - chromaRed[index]) * strength;
+            const float mixedBlue = chromaBlue[index] + (filteredBlue - chromaBlue[index]) * strength;
 
-            rgb[idx * 3 + 0] = std::clamp(centerG + mixedDr, 0.0f, 65535.0f);
-            rgb[idx * 3 + 2] = std::clamp(centerG + mixedDb, 0.0f, 65535.0f);
+            float *pixel = rgb.data() + index * 3;
+            const float before = pixel[0] + 2.0f * pixel[1] + pixel[2];
+            const float green = std::exp2(center);
+            const float red = green * std::exp2(mixedRed);
+            const float blue = green * std::exp2(mixedBlue);
+            const float after = red + 2.0f * green + blue;
+            if (after > 0.0f && before > 0.0f) {
+                const float scale = before / after;
+                pixel[0] = red * scale;
+                pixel[1] = green * scale;
+                pixel[2] = blue * scale;
+            }
         }
     });
 }
 
-bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
-                              int width,
-                              int height,
-                              const SuperCCDMetadata &metadata,
-                              int maxSize,
-                              int previewRotation,
-                              double toneContrast,
-                              QImage &preview,
-                              QString &error)
+// AMaZE leaves little false color, and filtering all of its chroma would mute fine
+// colored detail. What it does leave is chroma noise, so the filter is applied in
+// proportion to the expected noise at each pixel: dark or high-ISO areas are cleaned
+// while clean detail keeps its color.
+void suppressNoisyChroma(superccd::SceneImage &scene, double amount)
+{
+    if (amount <= 0.0) {
+        return;
+    }
+    const float strength = static_cast<float>(std::min(amount, 1.0));
+    const size_t pixelCount =
+        static_cast<size_t>(scene.width) * static_cast<size_t>(scene.height);
+    const float mul[3] = {
+        static_cast<float>(scene.asShotMul[0]),
+        static_cast<float>(scene.asShotMul[1]),
+        static_cast<float>(scene.asShotMul[2])};
+
+    std::vector<float> filtered(scene.rgb.size());
+    superccd::parallel::forRanges(0, pixelCount, 65536, [&](size_t begin, size_t end, unsigned) {
+        for (size_t i = begin; i < end; ++i) {
+            filtered[i * 3 + 0] = scene.rgb[i * 3 + 0] * mul[0];
+            filtered[i * 3 + 1] = scene.rgb[i * 3 + 1] * mul[1];
+            filtered[i * 3 + 2] = scene.rgb[i * 3 + 2] * mul[2];
+        }
+    });
+    suppressFalseColor(filtered, scene.width, scene.height);
+
+    constexpr float kCleanNoise = 0.02f; // Relative noise with no filtering
+    constexpr float kNoisyNoise = 0.06f; // Relative noise with full filtering
+    superccd::parallel::forRanges(0, pixelCount, 65536, [&](size_t begin, size_t end, unsigned) {
+        for (size_t i = begin; i < end; ++i) {
+            float *pixel = scene.rgb.data() + i * 3;
+            const float level = std::max(pixel[1] * mul[1], 1.0e-5f);
+            const float t = std::clamp(
+                (scene.noise.sigma(level) / level - kCleanNoise) / (kNoisyNoise - kCleanNoise),
+                0.0f, 1.0f);
+            const float weight = strength * t * t * (3.0f - 2.0f * t);
+            for (size_t channel = 0; channel < 3; ++channel) {
+                pixel[channel] += (filtered[i * 3 + channel] / mul[channel] - pixel[channel]) * weight;
+            }
+        }
+    });
+}
+
+// Demosaics the merged CFA and rectifies the 45-degree lattice to the 12 MP grid.
+// The interpolation runs on white-balanced data, where the color-difference
+// steps work best. Values above 1.0 are the R highlights and pass through
+// untouched.
+bool demosaicToRectified(const std::vector<float> &cfa,
+                         int width,
+                         int height,
+                         const SuperCCDMetadata &metadata,
+                         double nominalWhite,
+                         const std::array<double, 3> &whiteBalance,
+                         std::vector<float> &rectifiedRgb,
+                         int &rectWidthOut,
+                         int &rectHeightOut,
+                         QString &error)
 {
     const size_t sourcePixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
     if (width < 2 || height < 2 || cfa.size() < sourcePixelCount) {
-        error = QStringLiteral("Invalid CFA data for preview.");
+        error = QStringLiteral("Invalid merged CFA data.");
         return false;
     }
 
@@ -1647,42 +1100,64 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
         return (x & 1) == 0 ? CfaColor::Red : CfaColor::Green;
     };
+    const float blackScale = static_cast<float>(1.0 / std::max(nominalWhite, 1.0));
     const float greenBlack = metadata.hasBlackLevels
-        ? static_cast<float>((metadata.blackLevels[0] + metadata.blackLevels[3]) * 0.5)
+        ? static_cast<float>((metadata.blackLevels[0] + metadata.blackLevels[3]) * 0.5) * blackScale
         : 0.0f;
     const float blueBlack = metadata.hasBlackLevels
-        ? static_cast<float>(metadata.blackLevels[1])
+        ? static_cast<float>(metadata.blackLevels[1]) * blackScale
         : 0.0f;
     const float redBlack = metadata.hasBlackLevels
-        ? static_cast<float>(metadata.blackLevels[2])
+        ? static_cast<float>(metadata.blackLevels[2]) * blackScale
         : 0.0f;
-    auto blackLevelForColor = [&](CfaColor color) -> float {
-        switch (color) {
-        case CfaColor::Red:
-            return redBlack;
-        case CfaColor::Blue:
-            return blueBlack;
-        case CfaColor::Green:
-            return greenBlack;
+    const float redGain = static_cast<float>(whiteBalance[0]);
+    const float greenGain = static_cast<float>(whiteBalance[1]);
+    const float blueGain = static_cast<float>(whiteBalance[2]);
+
+    // Black level and white balance are applied once up front, because the
+    // interpolation below reads every sample many times.
+    std::vector<float> balanced(sourcePixelCount);
+    superccd::parallel::forRows(height, 16, [&](int y, unsigned) {
+        const size_t rowOffset = static_cast<size_t>(y) * static_cast<size_t>(width);
+        const float evenBlack = (y & 1) == 0 ? greenBlack : redBlack;
+        const float evenGain = (y & 1) == 0 ? greenGain : redGain;
+        const float oddBlack = (y & 1) == 0 ? blueBlack : greenBlack;
+        const float oddGain = (y & 1) == 0 ? blueGain : greenGain;
+        for (int x = 0; x < width; ++x) {
+            const size_t index = rowOffset + static_cast<size_t>(x);
+            balanced[index] = (x & 1) == 0
+                ? std::max(0.0f, cfa[index] - evenBlack) * evenGain
+                : std::max(0.0f, cfa[index] - oddBlack) * oddGain;
         }
-        return 0.0f;
-    };
+    });
 
     auto sample = [&](int x, int y) -> float {
         x = std::clamp(x, 0, width - 1);
         y = std::clamp(y, 0, height - 1);
-        const float rawValue = static_cast<float>(
-            cfa[static_cast<size_t>(y) * static_cast<size_t>(width)
-                + static_cast<size_t>(x)]);
-        return std::max(0.0f, rawValue - blackLevelForColor(colorAt(x, y)));
+        return balanced[static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)];
     };
+
+    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
+    const int rectWidth = fujiWidth * 2 + 1;
+    const int rectHeight = (height - fujiWidth) * 2 + 1;
+    if (rectWidth <= 0 || rectHeight <= 0) {
+        error = QStringLiteral("Invalid Fuji sensor geometry.");
+        return false;
+    }
 
     // Green carries most edge detail. Reconstruct it first along the smoother
     // direction so red/blue can be interpolated as color differences instead
     // of as unrelated intensity planes.
     std::vector<float> green(sourcePixelCount, 0.0f);
     superccd::parallel::forRows(height, 8, [&](int y, unsigned) {
-        for (int x = 0; x < width; ++x) {
+        // Only the sensor diamond holds data, which is half of the canvas. The
+        // margin covers the neighbors read by the red and blue interpolation.
+        constexpr int kMargin = 3;
+        const int first = std::max(std::abs(fujiWidth - y) - kMargin, 0);
+        const int last = std::min({width,
+                                   rectHeight + fujiWidth - y + kMargin,
+                                   rectWidth - fujiWidth + y + kMargin});
+        for (int x = first; x < last; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x);
             const float center = sample(x, y);
             if (colorAt(x, y) == CfaColor::Green) {
@@ -1760,22 +1235,13 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
     });
 
-    const int fujiWidth = metadata.fujiWidth > 0 ? metadata.fujiWidth : width / 2;
-    const int rectWidth = fujiWidth * 2 + 1;
-    const int rectHeight = (height - fujiWidth) * 2 + 1;
-    if (rectWidth <= 0 || rectHeight <= 0) {
-        error = QStringLiteral("Invalid Fuji preview geometry.");
-        return false;
-    }
-
     const size_t rectPixelCount = static_cast<size_t>(rectWidth) * static_cast<size_t>(rectHeight);
-    std::vector<float> rectifiedRgb;
     std::vector<uint8_t> rectifiedMask;
     try {
         rectifiedRgb.assign(rectPixelCount * 3, 0.0f);
         rectifiedMask.assign(rectPixelCount, 0);
     } catch (const std::bad_alloc &) {
-        error = QStringLiteral("Failed to allocate rectified preview image.");
+        error = QStringLiteral("Failed to allocate rectified image.");
         return false;
     }
 
@@ -1863,9 +1329,9 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
             }
             break;
         }
-        r = std::clamp(r, 0.0f, 65535.0f);
-        g = std::clamp(g, 0.0f, 65535.0f);
-        b = std::clamp(b, 0.0f, 65535.0f);
+        r = std::max(r, 0.0f);
+        g = std::max(g, 0.0f);
+        b = std::max(b, 0.0f);
     };
 
     superccd::parallel::forRows(height, 8, [&](int row, unsigned) {
@@ -1890,6 +1356,7 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
 
     // The diagonal sensor mapping leaves a checkerboard of gaps. Fill those
     // before tone mapping, using the direction with the smallest green edge.
+    constexpr float kGapGradientFloor = 1.0f / 65535.0f;
     superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
         for (int x = 0; x < rectWidth; ++x) {
             const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
@@ -1923,8 +1390,8 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
                         const float gradientVertical =
                             std::abs(rectifiedRgb[(idx - static_cast<size_t>(rectWidth)) * 3 + 1] -
                                      rectifiedRgb[(idx + static_cast<size_t>(rectWidth)) * 3 + 1]);
-                        const float horizontalWeight = 1.0f / (1.0f + gradientHorizontal);
-                        const float verticalWeight = 1.0f / (1.0f + gradientVertical);
+                        const float horizontalWeight = 1.0f / (kGapGradientFloor + gradientHorizontal);
+                        const float verticalWeight = 1.0f / (kGapGradientFloor + gradientVertical);
                         rectifiedRgb[idx * 3 + static_cast<size_t>(channel)] =
                             (horizontal * horizontalWeight + vertical * verticalWeight) /
                             (horizontalWeight + verticalWeight);
@@ -1963,127 +1430,9 @@ bool buildPreviewImageFromCfa(const std::vector<uint16_t> &cfa,
         }
     });
 
-    green.clear();
-    green.shrink_to_fit();
-    suppressPreviewFalseColor(rectifiedRgb, rectWidth, rectHeight);
-
-    double sumR = 0.0;
-    double sumG = 0.0;
-    double sumB = 0.0;
-    for (size_t idx = 0; idx < rectPixelCount; ++idx) {
-        const double r = rectifiedRgb[idx * 3 + 0];
-        const double g = rectifiedRgb[idx * 3 + 1];
-        const double b = rectifiedRgb[idx * 3 + 2];
-        sumR += r;
-        sumG += g;
-        sumB += b;
-    }
-
-    const double pixelCount = static_cast<double>(rectPixelCount);
-    const double avgR = sumR / pixelCount;
-    const double avgG = sumG / pixelCount;
-    const double avgB = sumB / pixelCount;
-    const superccd::PreviewChannelGains gains =
-        superccd::derivePreviewChannelGains(avgR,
-                                            avgG,
-                                            avgB,
-                                            metadata.hasAsShotNeutral,
-                                            metadata.asShotNeutral,
-                                            metadata.asShotTint);
-    if (metadata.hasAsShotNeutral &&
-        metadata.asShotNeutral[0] > 0.0 &&
-        metadata.asShotNeutral[1] > 0.0 &&
-        metadata.asShotNeutral[2] > 0.0) {
-        logProcessing("WB from AsShotNeutral: R=%.4f G=%.4f B=%.4f tint=%.2f",
-                      gains.red, gains.green, gains.blue, metadata.asShotTint);
-    } else {
-        logProcessing("WB from average ratios: R=%.4f G=%.4f B=%.4f (no AsShotNeutral)",
-                      gains.red, gains.green, gains.blue);
-    }
-
-    QImage filled(rectWidth, rectHeight, QImage::Format_RGBX64);
-    if (filled.isNull()) {
-        error = QStringLiteral("Failed to allocate preview image.");
-        return false;
-    }
-    constexpr double kPreviewHighlightPercentile = 0.9995;
-    const double balancedSensorWhite = std::max(
-        {1.0,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - redBlack) * gains.red,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - greenBlack) * gains.green,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - blueBlack) * gains.blue});
-    std::vector<std::uint32_t> balancedHistogram(65536, 0);
-    std::uint64_t balancedSampleCount = 0;
-    for (size_t idx = 0; idx < rectPixelCount; ++idx) {
-        const double balancedLevel = std::max(
-            {0.0,
-             rectifiedRgb[idx * 3 + 0] * gains.red,
-             rectifiedRgb[idx * 3 + 1] * gains.green,
-             rectifiedRgb[idx * 3 + 2] * gains.blue});
-        const std::size_t bucket = static_cast<std::size_t>(std::clamp(
-            static_cast<int>(std::lround(balancedLevel)),
-            0,
-            65535));
-        balancedHistogram[bucket]++;
-        balancedSampleCount++;
-    }
-    const double highlightReference =
-        superccd::previewReferenceLevelFromHistogram(
-            balancedHistogram,
-            balancedSampleCount,
-            kPreviewHighlightPercentile);
-    // Use the sensor's white level as the reference so that different
-    // exposures produce visibly different previews.  The old behaviour
-    // normalised to the 99.95th-percentile highlight, which made every
-    // photo look equally bright regardless of the actual exposure.
-    // However, we must also consider the actual highlight content to
-    // preserve highlight recovery information from the R plane that
-    // may exceed the sensor's white level.
-    const double previewReference = std::max(balancedSensorWhite, highlightReference);
-    const double previewScale =
-        superccd::previewScaleToFit16Bit(previewReference);
-    logProcessing(
-        "Preview normalization: sensorWhite=%.2f highlightRef=%.2f reference=%.2f scale=%.6f",
-        balancedSensorWhite,
-        highlightReference,
-        previewReference,
-        previewScale);
-    const double contrastFactor = std::pow(2.0, toneContrast);
-    uchar *filledBits = filled.bits();
-    const qsizetype filledBytesPerLine = filled.bytesPerLine();
-    superccd::parallel::forRows(rectHeight, 8, [&](int y, unsigned) {
-        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(
-            filledBits + static_cast<qsizetype>(y) * filledBytesPerLine);
-        for (int x = 0; x < rectWidth; ++x) {
-            const size_t idx = static_cast<size_t>(y) * static_cast<size_t>(rectWidth) + static_cast<size_t>(x);
-            double linearR =
-                (rectifiedRgb[idx * 3 + 0] * gains.red * previewScale) / 65535.0;
-            double linearG =
-                (rectifiedRgb[idx * 3 + 1] * gains.green * previewScale) / 65535.0;
-            double linearB =
-                (rectifiedRgb[idx * 3 + 2] * gains.blue * previewScale) / 65535.0;
-
-            linearR = std::clamp(0.5 + (linearR - 0.5) * contrastFactor, 0.0, 1.0);
-            linearG = std::clamp(0.5 + (linearG - 0.5) * contrastFactor, 0.0, 1.0);
-            linearB = std::clamp(0.5 + (linearB - 0.5) * contrastFactor, 0.0, 1.0);
-
-            // Store the preview in linear light. The display pipeline applies
-            // the user-selected gamma curve, so the Gamma slider now behaves
-            // as a true display gamma (1.0 = linear, 2.2 = standard sRGB).
-            scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearR * 65535.0)), 0, 65535)),
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearG * 65535.0)), 0, 65535)),
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearB * 65535.0)), 0, 65535)),
-                65535);
-        }
-    });
-
-    return applyPreviewRotationAndScale(
-        filled,
-        previewRotation,
-        maxSize,
-        preview,
-        error);
+    rectWidthOut = rectWidth;
+    rectHeightOut = rectHeight;
+    return true;
 }
 
 bool buildLinearRgbFromCfa(const std::vector<uint16_t> &cfa,
@@ -2220,185 +1569,19 @@ double bilinearSamplePlaneD(const std::vector<double> &plane,
     return (1.0 - fy) * top + fy * bottom;
 }
 
-bool buildPreviewImageFromRgb(const std::vector<uint16_t> &rgb,
-                              int width,
-                              int height,
-                              const SuperCCDMetadata &metadata,
-                              int maxSize,
-                              QImage &preview,
-                              QString &error)
-{
-    if (width <= 0 || height <= 0 || rgb.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3) {
-        error = QStringLiteral("Invalid RGB data for preview.");
-        return false;
-    }
-
-    QImage image(width, height, QImage::Format_RGBX64);
-    if (image.isNull()) {
-        error = QStringLiteral("Failed to allocate preview image.");
-        return false;
-    }
-
-    double sumR = 0.0;
-    double sumG = 0.0;
-    double sumB = 0.0;
-    const double greenBlack = metadata.hasBlackLevels
-        ? (metadata.blackLevels[0] + metadata.blackLevels[3]) * 0.5
-        : 0.0;
-    const double blueBlack = metadata.hasBlackLevels ? metadata.blackLevels[1] : 0.0;
-    const double redBlack = metadata.hasBlackLevels ? metadata.blackLevels[2] : 0.0;
-    const size_t pixelCount = static_cast<size_t>(width) * static_cast<size_t>(height);
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const double r = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 0]) - redBlack);
-        const double g = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 1]) - greenBlack);
-        const double b = std::max(
-            0.0,
-            static_cast<double>(rgb[i * 3 + 2]) - blueBlack);
-        sumR += r;
-        sumG += g;
-        sumB += b;
-    }
-
-    const double avgR = sumR / static_cast<double>(pixelCount);
-    const double avgG = sumG / static_cast<double>(pixelCount);
-    const double avgB = sumB / static_cast<double>(pixelCount);
-    const superccd::PreviewChannelGains gains =
-        superccd::derivePreviewChannelGains(avgR,
-                                            avgG,
-                                            avgB,
-                                            metadata.hasAsShotNeutral,
-                                            metadata.asShotNeutral,
-                                            metadata.asShotTint);
-    if (metadata.hasAsShotNeutral &&
-        metadata.asShotNeutral[0] > 0.0 &&
-        metadata.asShotNeutral[1] > 0.0 &&
-        metadata.asShotNeutral[2] > 0.0) {
-    }
-    const double balancedSensorWhite = std::max(
-        {1.0,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - redBlack) * gains.red,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - greenBlack) * gains.green,
-         std::max(1.0, static_cast<double>(metadata.whiteLevel) - blueBlack) * gains.blue});
-    
-    // Compute the actual highlight level from the image content to preserve
-    // highlight recovery information from the R plane that may exceed the
-    // sensor's white level.
-    std::vector<std::uint32_t> balancedHistogram(65536, 0);
-    std::uint64_t balancedSampleCount = 0;
-    for (size_t i = 0; i < pixelCount; ++i) {
-        const double balancedLevel = std::max(
-            {0.0,
-             std::max(0.0, static_cast<double>(rgb[i * 3 + 0]) - redBlack) * gains.red,
-             std::max(0.0, static_cast<double>(rgb[i * 3 + 1]) - greenBlack) * gains.green,
-             std::max(0.0, static_cast<double>(rgb[i * 3 + 2]) - blueBlack) * gains.blue});
-        const std::size_t bucket = static_cast<std::size_t>(std::clamp(
-            static_cast<int>(std::lround(balancedLevel)),
-            0,
-            65535));
-        balancedHistogram[bucket]++;
-        balancedSampleCount++;
-    }
-    constexpr double kPreviewHighlightPercentile = 0.9995;
-    const double highlightReference =
-        superccd::previewReferenceLevelFromHistogram(
-            balancedHistogram,
-            balancedSampleCount,
-            kPreviewHighlightPercentile);
-    
-    // Preserve original exposure: use the sensor white level as reference
-    // instead of stretching to the image's actual highlight content.
-    // However, we must also consider the actual highlight content to
-    // preserve highlight recovery information from the R plane that
-    // may exceed the sensor's white level.
-    const double previewReference = std::max(balancedSensorWhite, highlightReference);
-    const double previewScale =
-        superccd::previewScaleToFit16Bit(previewReference);
-
-    for (int y = 0; y < height; ++y) {
-        QRgba64 *scanLine = reinterpret_cast<QRgba64 *>(image.scanLine(y));
-        for (int x = 0; x < width; ++x) {
-            const size_t idx = (static_cast<size_t>(y) * static_cast<size_t>(width) + static_cast<size_t>(x)) * 3;
-            const double linearR = std::clamp(
-                (std::max(0.0, static_cast<double>(rgb[idx + 0]) - redBlack)
-                 * gains.red * previewScale) / 65535.0,
-                0.0,
-                1.0);
-            const double linearG = std::clamp(
-                (std::max(0.0, static_cast<double>(rgb[idx + 1]) - greenBlack)
-                 * gains.green * previewScale) / 65535.0,
-                0.0,
-                1.0);
-            const double linearB = std::clamp(
-                (std::max(0.0, static_cast<double>(rgb[idx + 2]) - blueBlack)
-                 * gains.blue * previewScale) / 65535.0,
-                0.0,
-                1.0);
-            // Store the preview in linear light. The display pipeline applies
-            // the user-selected gamma curve, so the Gamma slider now behaves
-            // as a true display gamma (1.0 = linear, 2.2 = standard sRGB).
-            scanLine[x] = QRgba64::fromRgba64(
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearR * 65535.0)), 0, 65535)),
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearG * 65535.0)), 0, 65535)),
-                static_cast<quint16>(std::clamp(static_cast<int>(std::lround(linearB * 65535.0)), 0, 65535)),
-                65535);
-        }
-    }
-
-    if (maxSize > 0 && (image.width() > maxSize || image.height() > maxSize)) {
-        preview = image.scaled(maxSize, maxSize, Qt::KeepAspectRatio, Qt::SmoothTransformation);
-    } else {
-        preview = image;
-    }
-    return true;
-}
-
-bool applyPreviewRotationAndScale(const QImage &source,
-                                  int previewRotation,
-                                  int maxSize,
-                                  QImage &preview,
-                                  QString &error)
-{
-    if (source.isNull()) {
-        error = QStringLiteral("Invalid source image for preview.");
-        return false;
-    }
-
-    QTransform transform;
-    if (previewRotation == 90 || previewRotation == 180 || previewRotation == 270) {
-        transform.rotate(previewRotation);
-    }
-    QImage display = transform.isIdentity()
-        ? source
-        : source.transformed(transform, Qt::FastTransformation);
-
-    if (maxSize > 0 && (display.width() > maxSize || display.height() > maxSize)) {
-        preview = display.scaled(maxSize,
-                                 maxSize,
-                                 Qt::KeepAspectRatio,
-                                 Qt::SmoothTransformation);
-    } else {
-        preview = display;
-    }
-
-    return true;
-}
-
-bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
-                                    int width,
-                                    int height,
-                                    const SuperCCDMetadata &metadata,
-                                    int maxSize,
-                                    int previewRotation,
-                                    QImage &preview,
-                                    QString &error)
+// Resamples the 45-degree demosaiced AMaZE image to an upright 6 MP scene.
+// codeScale converts its 16-bit codes back to scene units.
+bool rectifyDemosaicedRgb(const std::vector<uint16_t> &rgb,
+                          int width,
+                          int height,
+                          const SuperCCDMetadata &metadata,
+                          float codeScale,
+                          superccd::SceneImage &scene,
+                          QString &error)
 {
     if (width <= 0 || height <= 0 ||
         rgb.size() < static_cast<size_t>(width) * static_cast<size_t>(height) * 3) {
-        error = QStringLiteral("Invalid sparse RGB data for preview.");
+        error = QStringLiteral("Invalid demosaiced RGB data.");
         return false;
     }
 
@@ -2406,7 +1589,7 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
     const int rectWidth = fujiWidth * 2 + 1;
     const int rectHeight = (height - fujiWidth) * 2 + 1;
     if (rectWidth <= 0 || rectHeight <= 0) {
-        error = QStringLiteral("Invalid native Fuji preview geometry.");
+        error = QStringLiteral("Invalid Fuji sensor geometry.");
         return false;
     }
 
@@ -2436,7 +1619,7 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
         }
     }
     if (!(minNativeX <= maxNativeX) || !(minNativeY <= maxNativeY)) {
-        error = QStringLiteral("Invalid native Fuji preview geometry.");
+        error = QStringLiteral("Invalid Fuji sensor geometry.");
         return false;
     }
 
@@ -2447,10 +1630,10 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
     const size_t nativePixelCount =
         static_cast<size_t>(nativeWidth) * static_cast<size_t>(nativeHeight);
 
-    auto sampleRgb = [&](double srcX, double srcY, uint16_t out[3]) {
+    auto sampleRgb = [&](double srcX, double srcY, float out[3]) {
         if (srcX < 0.0 || srcX > static_cast<double>(width - 1) ||
             srcY < 0.0 || srcY > static_cast<double>(height - 1)) {
-            out[0] = out[1] = out[2] = 0;
+            out[0] = out[1] = out[2] = 0.0f;
             return;
         }
 
@@ -2496,98 +1679,26 @@ bool buildPreviewImageFromSparseRgb(const std::vector<uint16_t> &rgb,
                 weightSum += tap.weight;
             }
             out[channel] = weightSum > 0.0
-                ? static_cast<uint16_t>(std::clamp<int>(
-                    static_cast<int>(std::lround(weightedSum / weightSum)),
-                    0,
-                    65535))
-                : 0;
+                ? static_cast<float>(weightedSum / weightSum) * codeScale
+                : 0.0f;
         }
     };
 
-    std::vector<uint16_t> nativeRgb(nativePixelCount * 3, 0);
+    scene.width = nativeWidth;
+    scene.height = nativeHeight;
+    scene.rgb.assign(nativePixelCount * 3, 0.0f);
     constexpr double kSqrt2 = 1.4142135623730951;
-    for (int y = 0; y < nativeHeight; ++y) {
+    superccd::parallel::forRows(nativeHeight, 8, [&](int y, unsigned) {
         for (int x = 0; x < nativeWidth; ++x) {
             const double diagX = (static_cast<double>(x) + minNativeX) * kSqrt2;
             const double diagY = (static_cast<double>(y) + minNativeY) * kSqrt2;
             const double srcCol = (diagX + diagY) * 0.5;
             const double srcRow = fujiWidth + (diagY - diagX) * 0.5;
-
-            uint16_t sampled[3] = {0, 0, 0};
-            sampleRgb(srcCol, srcRow, sampled);
-
-            const size_t dstIdx =
-                (static_cast<size_t>(y) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(x)) * 3;
-            nativeRgb[dstIdx + 0] = sampled[0];
-            nativeRgb[dstIdx + 1] = sampled[1];
-            nativeRgb[dstIdx + 2] = sampled[2];
+            sampleRgb(srcCol, srcRow, scene.rgb.data() +
+                (static_cast<size_t>(y) * static_cast<size_t>(nativeWidth) + static_cast<size_t>(x)) * 3);
         }
-    }
-
-    SuperCCDMetadata previewMetadata = metadata;
-    if (previewMetadata.hasBlackLevels) {
-        const double meanBlack =
-            (previewMetadata.blackLevels[0] + previewMetadata.blackLevels[1] +
-             previewMetadata.blackLevels[2] + previewMetadata.blackLevels[3]) * 0.25;
-        previewMetadata.whiteLevel = static_cast<uint16_t>(std::max(
-            1,
-            static_cast<int>(previewMetadata.whiteLevel) -
-                static_cast<int>(std::lround(meanBlack))));
-        previewMetadata.blackLevels = {0.0, 0.0, 0.0, 0.0};
-        previewMetadata.hasBlackLevels = false;
-    }
-
-    QImage image;
-    if (!buildPreviewImageFromRgb(nativeRgb,
-                                  nativeWidth,
-                                  nativeHeight,
-                                  previewMetadata,
-                                  0,
-                                  image,
-                                  error)) {
-        return false;
-    }
-
-    return applyPreviewRotationAndScale(
-        image,
-        previewRotation,
-        maxSize,
-        preview,
-        error);
-}
-
-bool buildPreviewImageFromDngStyleCfa(const std::vector<uint16_t> &cfa,
-                                      int width,
-                                      int height,
-                                      const SuperCCDMetadata &metadata,
-                                      int maxSize,
-                                      int previewRotation,
-                                      QImage &preview,
-                                      QString &error)
-{
-    std::vector<uint16_t> sparseRgb;
-    int rgbWidth = 0;
-    int rgbHeight = 0;
-    if (!demosaicSparseBayerAmaze(cfa,
-                                  width,
-                                  height,
-                                  metadata,
-                                  sparseRgb,
-                                  rgbWidth,
-                                  rgbHeight,
-                                  error)) {
-        return false;
-    }
-
-    return buildPreviewImageFromSparseRgb(
-        sparseRgb,
-        rgbWidth,
-        rgbHeight,
-        metadata,
-        maxSize,
-        previewRotation,
-        preview,
-        error);
+    });
+    return true;
 }
 
 void rotateRgb90CW(std::vector<uint16_t> &rgb, int &width, int &height)
@@ -3708,24 +2819,21 @@ bool SuperCCDProcessor::process(const QString &inputPath,
         return false;
     }
 
+    // A DNG stores 16-bit integers, so the merged range is scaled to fill them.
+    // The S read noise is at least 2.5 codes at every ISO, so this loses nothing.
+    // BaselineExposure then tells raw converters where S white really is: they
+    // show the as-shot exposure, with the R headroom intact above it.
+    std::vector<float> mergedLinear;
+    const superccd::SrMergeStats mergeStats = mergeCached(settings, mergedLinear);
+    const double outputRange = std::max(mergeStats.maxValue, 1.0);
     std::vector<uint16_t> mergedSr;
-    QString mergeSummary;
-    double appliedOutputScale = 1.0;
-    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sUpsampled,
-                                     m_cfaPreviewCache.sChannels,
-                                     m_cfaPreviewCache.rUpsampled,
-                                     m_cfaPreviewCache.width,
-                                     m_cfaPreviewCache.height,
-                                     settings.rHeadroomScale,
-                                     settings.rTransitionStart,
-                                     settings.rTransitionDelay,
-                                     settings.rTransitionSmoothness,
-                                     settings.rLumaNoiseReduction,
-                                     false,
-                                     mergedSr,
-                                     mergeSummary,
-                                     &appliedOutputScale);
-    logProcessing("S+R merge summary: %s", mergeSummary.toUtf8().constData());
+    quantizeMerged(mergedLinear, outputRange, mergedSr);
+    mergedLinear = std::vector<float>();
+    logProcessing("S+R merge: peak=%.3f (%.2f EV over S white) blended=%zu replaced=%zu",
+                  mergeStats.maxValue,
+                  std::log2(outputRange),
+                  mergeStats.blendedSites,
+                  mergeStats.replacedSites);
 
     QString firstError;
     bool wroteAny = false;
@@ -3752,11 +2860,9 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                 outputWhiteLevel = sample;
             }
         }
-        // Use actual maximum from buffer - don't scale white level by appliedOutputScale
-        // as that would incorrectly lower it when merge scales down values
         outputMetadata.whiteLevel = std::max<uint16_t>(outputWhiteLevel, 1);
-        outputMetadata.baselineExposure = 0.0;
-        outputMetadata.hasBaselineExposure = false;
+        outputMetadata.baselineExposure = std::log2(outputRange);
+        outputMetadata.hasBaselineExposure = true;
 
         logProcessing("starting DngWriter::writeDng (merged only): %s (%dx%d)",
                       outputPath.toUtf8().constData(),
@@ -3791,12 +2897,10 @@ bool SuperCCDProcessor::process(const QString &inputPath,
                     outputWhiteLevel = sample;
                 }
             }
-            // Use actual maximum from buffer - don't scale white level by appliedOutputScale
-            // as that would incorrectly lower it when merge scales down values
             outputMetadata.whiteLevel = std::max<uint16_t>(outputWhiteLevel, 1);
             if (std::strcmp(outputSpec.label, "SR") == 0) {
-                outputMetadata.baselineExposure = 0.0;
-                outputMetadata.hasBaselineExposure = false;
+                outputMetadata.baselineExposure = std::log2(outputRange);
+                outputMetadata.hasBaselineExposure = true;
                 logProcessing("merged CFA metadata before write: outputWhite=%u baselineExposure=%.6f hasBaselineExposure=%d",
                               outputMetadata.whiteLevel,
                               outputMetadata.baselineExposure,
@@ -3836,55 +2940,152 @@ bool SuperCCDProcessor::process(const QString &inputPath,
     return true;
 }
 
-bool SuperCCDProcessor::renderPreview(const QString &inputPath,
-                                      const ConversionSettings &settings,
-                                      QImage &preview,
-                                      QString &error)
+superccd::SrMergeStats SuperCCDProcessor::mergeCached(const ConversionSettings &settings,
+                                                     std::vector<float> &merged)
 {
-    logProcessing("renderPreview: cfa=%dx%d fujiWidth=%d", m_cfaPreviewCache.width, m_cfaPreviewCache.height, m_cfaPreviewCache.metadata.fujiWidth);
+    CfaPreviewCache &cache = m_cfaPreviewCache;
+    superccd::SrMergeParams params;
+    params.start = settings.rTransitionStart;
+    params.width = settings.rTransitionDelay;
+    params.smoothness = settings.rTransitionSmoothness;
+
+    if (settings.rLumaNoiseReduction <= 0.0) {
+        cache.denoisedR = std::vector<float>();
+        return superccd::mergeSr(cache.sCfa, cache.projectedR, cache.channels, cache.width,
+                                 cache.height, cache.calibration, params, cache.nominalWhite,
+                                 merged);
+    }
+
+    // The filter only runs where R is used, so its result depends on the
+    // transition too. Reuse it while none of those settings change.
+    const bool stale = cache.denoisedR.empty() ||
+        cache.denoisedStrength != settings.rLumaNoiseReduction ||
+        cache.denoisedParams.start != params.start ||
+        cache.denoisedParams.width != params.width ||
+        cache.denoisedParams.smoothness != params.smoothness;
+    if (stale) {
+        cache.denoisedR = cache.projectedR;
+        superccd::denoiseProjectedR(cache.denoisedR, cache.sCfa, cache.channels,
+                                    cache.width, cache.height, cache.calibration,
+                                    params, cache.metadata.iso,
+                                    settings.rLumaNoiseReduction);
+        cache.denoisedStrength = settings.rLumaNoiseReduction;
+        cache.denoisedParams = params;
+    }
+
+    return superccd::mergeSr(cache.sCfa, cache.denoisedR, cache.channels, cache.width,
+                             cache.height, cache.calibration, params, cache.nominalWhite,
+                             merged);
+}
+
+bool SuperCCDProcessor::renderScene(const QString &inputPath,
+                                    const ConversionSettings &settings,
+                                    superccd::SceneImagePtr &sceneOut,
+                                    QString &error)
+{
     if (!ensure6MPCache(inputPath, m_cfaPreviewCache, error)) {
         return false;
     }
+    const CfaPreviewCache &cache = m_cfaPreviewCache;
+    const SuperCCDMetadata &metadata = cache.metadata;
 
-    std::vector<uint16_t> mergedSr;
-    QString mergeSummary;
-    mergePrimaryAndProjectedSecondary(m_cfaPreviewCache.sUpsampled,
-                                      m_cfaPreviewCache.sChannels,
-                                      m_cfaPreviewCache.rUpsampled,
-                                      m_cfaPreviewCache.width,
-                                      m_cfaPreviewCache.height,
-                                      settings.rHeadroomScale,
-                                      settings.rTransitionStart,
-                                      settings.rTransitionDelay,
-                                      settings.rTransitionSmoothness,
-                                      settings.rLumaNoiseReduction,
-                                      false,
-                                      mergedSr,
-                                      mergeSummary);
+    std::vector<float> merged;
+    const superccd::SrMergeStats mergeStats = mergeCached(settings, merged);
 
-    if (settings.previewMethod == PreviewMethod::Reconstruction) {
-        logProcessing("renderPreview: before Reconstruct buildPreviewImageFromCfa: preview=%dx%d", preview.width(), preview.height());
-        return buildPreviewImageFromCfa(
-            mergedSr,
-            m_cfaPreviewCache.width,
-            m_cfaPreviewCache.height,
-            m_cfaPreviewCache.metadata,
-            settings.previewMaxSize,
-            settings.previewRotation,
-            settings.toneContrast,
-            preview,
-            error);
+    auto scene = std::make_shared<superccd::SceneImage>();
+    scene->iso = metadata.iso > 0 ? metadata.iso : 100.0;
+    scene->headroomEv = std::log2(std::max(mergeStats.maxValue, 1.0));
+    scene->hasColorMatrix = metadata.hasColorMatrix1;
+    scene->xyzToCam = metadata.colorMatrix1;
+    if (metadata.hasAsShotNeutral) {
+        for (size_t channel = 0; channel < 3; ++channel) {
+            scene->asShotMul[channel] = metadata.asShotNeutral[1] / metadata.asShotNeutral[channel];
+        }
     }
 
-    logProcessing("renderPreview: before Amaze buildPreviewImageFromDngStyleCfa: preview=%dx%d", preview.width(), preview.height());
-    return buildPreviewImageFromDngStyleCfa(mergedSr,
-                                            m_cfaPreviewCache.width,
-                                            m_cfaPreviewCache.height,
-                                            m_cfaPreviewCache.metadata,
-                                            settings.previewMaxSize,
-                                            settings.previewRotation,
-                                            preview,
-                                            error);
+    // Noise model measured on S3 Pro and S5 Pro frames, in ADU, then normalized.
+    // R values are in S units, which multiplies their noise by the gain, and the
+    // projection onto S sites averages it down by about a quarter.
+    const double white = cache.nominalWhite;
+    const double isoScale = scene->iso / 100.0;
+    const double gain = cache.calibration.gain[1];
+    scene->noise.sRead = static_cast<float>(9.0 * std::pow(isoScale, 0.55) / white);
+    scene->noise.sShot = static_cast<float>(0.9 * isoScale / white);
+    scene->noise.rRead = static_cast<float>(0.75 * gain * 7.0 * std::pow(isoScale, 0.7) / white);
+    scene->noise.rShot = static_cast<float>(0.56 * gain * 2.0 * isoScale / white);
+    scene->noise.rStart = static_cast<float>(
+        settings.rTransitionStart * cache.calibration.sClip[1] / white);
+
+    if (settings.previewMethod == PreviewMethod::AmazeDebayer) {
+        // AMaZE runs inside LibRaw on 16-bit data, scaled the same way as a DNG.
+        const double outputRange = std::max(mergeStats.maxValue, 1.0);
+        std::vector<uint16_t> merged16;
+        quantizeMerged(merged, outputRange, merged16);
+        merged = std::vector<float>();
+
+        SuperCCDMetadata amazeMetadata = metadata;
+        amazeMetadata.whiteLevel = 65535;
+        std::vector<uint16_t> demosaiced;
+        int demosaicedWidth = 0;
+        int demosaicedHeight = 0;
+        if (!demosaicSparseBayerAmaze(merged16, cache.width, cache.height, amazeMetadata,
+                                      demosaiced, demosaicedWidth, demosaicedHeight, error)) {
+            return false;
+        }
+        if (!rectifyDemosaicedRgb(demosaiced, demosaicedWidth, demosaicedHeight, metadata,
+                                  static_cast<float>(outputRange / 65535.0), *scene, error)) {
+            return false;
+        }
+        suppressNoisyChroma(*scene, settings.chromaNoiseReduction);
+    } else {
+        int rectWidth = 0;
+        int rectHeight = 0;
+        if (!demosaicToRectified(merged, cache.width, cache.height, metadata, white,
+                                 scene->asShotMul, scene->rgb, rectWidth, rectHeight, error)) {
+            return false;
+        }
+        merged = std::vector<float>();
+        scene->width = rectWidth;
+        scene->height = rectHeight;
+
+        suppressFalseColor(scene->rgb, rectWidth, rectHeight);
+
+        const float inverse[3] = {
+            static_cast<float>(1.0 / scene->asShotMul[0]),
+            static_cast<float>(1.0 / scene->asShotMul[1]),
+            static_cast<float>(1.0 / scene->asShotMul[2])};
+        superccd::parallel::forRows(rectHeight, 16, [&](int y, unsigned) {
+            float *row = scene->rgb.data() +
+                static_cast<size_t>(y) * static_cast<size_t>(rectWidth) * 3;
+            for (int x = 0; x < rectWidth; ++x) {
+                row[x * 3 + 0] *= inverse[0];
+                row[x * 3 + 1] *= inverse[1];
+                row[x * 3 + 2] *= inverse[2];
+            }
+        });
+    }
+
+    if (settings.correctPreviewOutliers) {
+        PreviewPixelCorrection::suppressIsolatedLumaOutliers(
+            scene->rgb, scene->width, scene->height);
+    }
+
+    // Levels where each camera channel stops recording, for the highlight
+    // reconstruction in the renderer.
+    for (size_t color = 0; color < 3; ++color) {
+        scene->channelCeiling[color] = static_cast<float>(
+            (cache.calibration.rClip[color] * cache.calibration.gain[color] +
+             cache.calibration.intercept[color]) / white);
+    }
+
+    superccd::rotateScene(*scene, settings.previewRotation);
+    superccd::finalizeScene(*scene);
+
+    logProcessing("renderScene: %dx%d headroom=%.2f EV blended=%zu replaced=%zu",
+                  scene->width, scene->height, scene->headroomEv,
+                  mergeStats.blendedSites, mergeStats.replacedSites);
+    sceneOut = std::move(scene);
+    return true;
 }
 
 bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
@@ -3999,27 +3200,30 @@ bool SuperCCDProcessor::ensure6MPCache(const QString &inputPath,
         alignmentInfo.droppedSourceSamples);
 
     rebuilt.rCfa = std::move(alignedRCfa);
-    rebuilt.sChannels = canonicalChannels;
-    rebuilt.rChannels = std::move(canonicalChannels);
+    rebuilt.channels = std::move(canonicalChannels);
+    rebuilt.sChannels.clear();
+    rebuilt.rChannels.clear();
 
-    // Upsample both S and R to 2x resolution using same-color neighbors
-    // This avoids boundary artifacts from offset-based projection
-    // After upsampling, S and R will be at corresponding positions - no offset needed
-    QString sUpsampleLog, rUpsampleLog;
-    if (!interpolateCfaToFullResolution(rebuilt.sCfa, rebuilt.sChannels,
-                                       rebuilt.width, rebuilt.height,
-                                       rebuilt.sUpsampled, sUpsampleLog)) {
-        error = QStringLiteral("Failed to interpolate S CFA to full resolution.");
-        return false;
-    }
-    if (!interpolateCfaToFullResolution(rebuilt.rCfa, rebuilt.rChannels,
-                                       rebuilt.width, rebuilt.height,
-                                       rebuilt.rUpsampled, rUpsampleLog)) {
-        error = QStringLiteral("Failed to interpolate R CFA to full resolution.");
-        return false;
-    }
-    rebuilt.upsampledWidth = rebuilt.width;
-    rebuilt.upsampledHeight = rebuilt.height;
+    rebuilt.nominalWhite = std::max<double>(rebuilt.metadata.whiteLevel, 1.0);
+    superccd::projectRToSSites(rebuilt.rCfa, rebuilt.channels, rebuilt.width, rebuilt.height,
+                               rebuilt.projectedR);
+    rebuilt.calibration = superccd::calibrateSr(rebuilt.sCfa,
+                                                rebuilt.projectedR,
+                                                rebuilt.channels,
+                                                rebuilt.width,
+                                                rebuilt.height,
+                                                rebuilt.nominalWhite,
+                                                rebuilt.metadata.iso);
+    logProcessing(
+        "S/R calibration: gain R=%.3f G=%.3f B=%.3f intercept=%.1f/%.1f/%.1f "
+        "sClip=%.0f/%.0f/%.0f rClip=%.0f/%.0f/%.0f blocks=%d/%d/%d",
+        rebuilt.calibration.gain[0], rebuilt.calibration.gain[1], rebuilt.calibration.gain[2],
+        rebuilt.calibration.intercept[0], rebuilt.calibration.intercept[1],
+        rebuilt.calibration.intercept[2],
+        rebuilt.calibration.sClip[0], rebuilt.calibration.sClip[1], rebuilt.calibration.sClip[2],
+        rebuilt.calibration.rClip[0], rebuilt.calibration.rClip[1], rebuilt.calibration.rClip[2],
+        rebuilt.calibration.fittedBlocks[0], rebuilt.calibration.fittedBlocks[1],
+        rebuilt.calibration.fittedBlocks[2]);
 
     QImage embeddedThumb;
     if (extractEmbeddedThumbnail(inputPath, embeddedThumb, nullptr)) {

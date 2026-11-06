@@ -32,7 +32,7 @@ That statement is included here deliberately so contributors understand the orig
 
 - Loads one or more Fujifilm `S3 Pro` or `S5 Pro` `RAF` files
 - Extracts separate `S` and `R` shot data
-- Merges both responses into a highlight-safe `6MP` CFA DNG
+- Merges both responses into a `6MP` CFA DNG that keeps the full `S + R` range and opens at the exposure as shot
 - Preserves the original embedded RAF preview for the GUI file list and DNG preview embedding
 - Provides a preview workflow for tuning the `S/R` highlight handoff before export
 - Exports the adjusted preview as `JPEG` or lossless `16-bit TIFF`
@@ -58,10 +58,10 @@ Those paths remain in the repository as research and troubleshooting history. Th
 
 ## Preview Export Quality
 
-Preview export is not just a debugging feature. The application renders preview adjustments from a 16-bit internal image path, and the exported preview can produce surprisingly strong image quality for practical use.
+Preview export is not just a debugging feature. The application develops the image from a linear floating-point scene that holds the full `S + R` range, and the exported preview can produce surprisingly strong image quality for practical use.
 
 - `16-bit TIFF` preview export preserves the rendered 16-bit RGB result without JPEG compression
-- preview exports include the current live adjustments, including white balance, tint, gamma, contrast, saturation, highlight compression, and sharpening
+- preview exports include the current live adjustments, including every Tone, Color and Detail control
 - exports are available at `6MP` and `12MP`
 - this is a good path when you want a strong rendered image directly from the app instead of a raw-editing workflow in RawTherapee
 
@@ -128,7 +128,7 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 ## Key Limitations
 
 - The project is specialized for the Fujifilm Super CCD SR II workflow and was developed primarily around `S3 Pro` files, although `S5 Pro` files are also supported
-- The output is intentionally highlight-safe by default, so images may open darker than a normal camera raw
+- The DNG relies on the `BaselineExposure` tag to open at the exposure as shot, so a raw editor that ignores the tag shows it darker
 - Some experimental code remains in the repository and should not be treated as stable API
 - The codebase is usable, but it is still research-driven rather than polished as a general-purpose photo product
 
@@ -137,8 +137,10 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 - RAF file list with embedded thumbnails
 - independently resizable preview window for the currently selected RAF file
 - draggable and zoomable preview
-- preview exposure, white-balance, and tint controls
-- preview gamma, contrast, saturation, sharpening, and highlight compression controls
+- photos open at the exposure as shot, matched to the camera's own rendering
+- Camera Raw style controls: Exposure, Contrast, Highlights, Shadows, Whites, Blacks, Gamma, Temperature, Tint, Vibrance and Saturation
+- highlight recovery from the `R` data, and adjustable reconstruction where even `R` saturated
+- luminance sharpening that eases off in deep shadows and `R` highlights
 - preview rotation options
 - preview export as `JPEG` or lossless `16-bit TIFF`
 - preview export at `6MP` or `12MP`
@@ -149,6 +151,15 @@ RawPedia notes that dynamic rules are combined in list order, and later matching
 - convert all listed RAF files
 - drag-and-drop support for adding RAF files
 - save and restore default parameter values
+
+Shadow/highlight recovery has separate `Shadows` and `Highlights` strength
+controls, plus a shared `Recovery range` and `Recovery pivot` that decide which
+tones are affected. Recovery changes preview luminance while keeping color
+relationships together. It applies to the live preview and JPEG/TIFF preview
+exports, not the DNG. It can reveal tones present in the rendered preview, but
+cannot restore detail already clipped in that source. See the [preview
+controls section in the manual](docs/MANUAL.md#preview-controls) for parameter
+behavior and defaults.
 
 Performance note:
 

@@ -8,6 +8,8 @@
 #include <QString>
 #include <QJsonObject>
 
+#include <array>
+
 class QListWidget;
 class QLineEdit;
 class QRadioButton;
@@ -20,6 +22,7 @@ class QCheckBox;
 class QComboBox;
 class QButtonGroup;
 class QCloseEvent;
+class QVBoxLayout;
 class QWidget;
 class QSpinBox;
 class QDoubleSpinBox;
@@ -54,19 +57,10 @@ private slots:
     void onUpdatePreview();
     void onExportPreview();
     void onPreviewZoomChanged(int value);
-    void onPreviewExposureChanged(int value);
-    void onPreviewWhiteBalanceChanged(int value);
-    void onPreviewTintChanged(int value);
     void onWhiteBalancePickerToggled(bool enabled);
     void onPreviewMethodChanged();
     PreviewMethod currentPreviewMethod() const;
-    void onPreviewGammaChanged(int value);
-    void onPreviewContrastChanged(int value);
-    void onPreviewShadowsChanged(int value);
-    void onPreviewShadowRangeChanged(int value);
-    void onPreviewSaturationChanged(int value);
-    void onPreviewSharpeningChanged(int value);
-    void onPreviewBalanceBiasChanged(int value);
+    void onDevelopChanged();
     void onPresetSelected(int index);
     void onSavePresetClicked();
     void onResetPresetClicked();
@@ -75,11 +69,55 @@ private slots:
     void onShowExposureToolsToggled(bool enabled);
 
 private:
+    enum class Develop {
+        Exposure,
+        Contrast,
+        Highlights,
+        Shadows,
+        Whites,
+        Blacks,
+        Gamma,
+        Temperature,
+        Tint,
+        Vibrance,
+        Saturation,
+        SharpenAmount,
+        ReconstructThreshold,
+        ReconstructNeutralize,
+        Count
+    };
+
+    // One develop slider with its spin box. The slider holds an integer, and
+    // scale converts it to the value shown and used.
+    struct DevelopControl {
+        Develop id = Develop::Exposure;
+        const char *key = nullptr; // JSON key in presets and per-image settings
+        int defaultValue = 0;
+        double scale = 1.0;
+        QSlider *slider = nullptr;
+        QDoubleSpinBox *spinBox = nullptr;
+    };
+
+    DevelopControl &developControl(Develop id);
+    const DevelopControl &developControl(Develop id) const;
+    void addDevelopControl(Develop id,
+                           const char *key,
+                           const QString &label,
+                           const QString &toolTip,
+                           int minimum,
+                           int maximum,
+                           int defaultValue,
+                           double scale,
+                           int decimals,
+                           QVBoxLayout *layout);
+    void setDevelopValue(Develop id, int value);
+    double developValue(Develop id) const;
+    superccd::EditParams currentEditParams() const;
+    void updateTemperatureLabel(const superccd::EditParams &params);
+    void setCurrentScene(superccd::SceneImagePtr scene, const QString &inputPath);
+
     void updateControls(bool busy);
-    QImage buildAdjustedPreviewImage16() const;
-    QImage buildAdjustedDisplayImage8() const;
     void updatePreviewDisplay(bool preserveViewport = true);
-    void updateSharpenedPreviewDisplay();
     void showStatus(const QString &message);
     QRect currentPreviewVisibleRect() const;
     void pushExposureToolsFromCache();
@@ -107,18 +145,9 @@ private:
     QSlider *m_rTransitionDelaySlider;
     QSlider *m_rTransitionSmoothnessSlider;
     QSlider *m_rLumaNoiseReductionSlider;
+    QSlider *m_chromaNoiseReductionSlider;
     QSlider *m_previewZoomSlider;
-    QSlider *m_previewExposureSlider;
-    QSlider *m_previewWhiteBalanceSlider;
-    QSlider *m_previewTintSlider;
     QPushButton *m_whiteBalancePickerButton;
-    QSlider *m_previewGammaSlider;
-    QSlider *m_previewContrastSlider;
-    QSlider *m_previewShadowsSlider;
-    QSlider *m_previewShadowRangeSlider;
-    QSlider *m_previewSaturationSlider;
-    QSlider *m_previewSharpeningSlider;
-    QSlider *m_previewBalanceBiasSlider;
     QComboBox *m_previewRotationCombo;
     QWidget *m_previewMethodRow;
     QRadioButton *m_previewMethodReconstructionButton;
@@ -148,7 +177,6 @@ private:
     QLabel *m_statusLabel;
     QTimer *m_statusClearTimer;
     QTimer *m_autoPreviewTimer;
-    QTimer *m_previewSharpeningTimer;
     // Coalesces the (relatively expensive) "build the adjusted 8-bit
     // image and push it to the exposure tools" path so it runs at most
     // once per ~75 ms while the user is dragging a preview slider.
@@ -156,29 +184,21 @@ private:
     // applyDisplayAdjustments() pipeline over the whole preview, which
     // is the dominant cost on the Raspberry Pi.
     QTimer *m_exposureScopeTimer;
-    // The cached set of adjustment values used to compute
-    // m_adjustedDisplayImage. Used to short-circuit a re-push when
-    // nothing has actually changed since the last push (e.g. when the
-    // debounce timer fires after only scrollbar / zoom events).
-    QImage m_cachedScopeAdjustmentsImage;
-    PreviewAdjustmentValues m_lastPushedAdjustments;
+    // What m_adjustedDisplayImage was rendered from, so the scopes can skip a
+    // rebuild when only the scroll position or zoom changed.
+    superccd::SceneImagePtr m_scopeScene;
+    superccd::EditParams m_scopeParams;
     QSpinBox *m_rTransitionStartSpinBox;
     QSpinBox *m_rTransitionDelaySpinBox;
     QSpinBox *m_rTransitionSmoothnessSpinBox;
     QSpinBox *m_rLumaNoiseReductionSpinBox;
+    QSpinBox *m_chromaNoiseReductionSpinBox;
     TransitionCurveWidget *m_transitionCurveWidget;
     QSpinBox *m_previewZoomSpinBox;
-    QDoubleSpinBox *m_previewExposureSpinBox;
-    QSpinBox *m_previewWhiteBalanceSpinBox;
-    QSpinBox *m_previewTintSpinBox;
-    QDoubleSpinBox *m_previewGammaSpinBox;
-    QSpinBox *m_previewContrastSpinBox;
-    QSpinBox *m_previewShadowsSpinBox;
-    QSpinBox *m_previewShadowRangeSpinBox;
-    QSpinBox *m_previewSaturationSpinBox;
-    QSpinBox *m_previewSharpeningSpinBox;
-    QSpinBox *m_previewBalanceBiasSpinBox;
-    QImage m_currentPreviewImage;
+    std::array<DevelopControl, static_cast<size_t>(Develop::Count)> m_developControls;
+    QLabel *m_temperatureLabel = nullptr;
+    QCheckBox *m_reconstructCheckBox = nullptr;
+    superccd::SceneImagePtr m_scene;
     QImage m_adjustedDisplayImage;
     bool m_previewDragging = false;
     QPoint m_lastPreviewDragPos;

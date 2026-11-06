@@ -1,50 +1,31 @@
 #ifndef PREVIEWIMAGEPROCESSING_H
 #define PREVIEWIMAGEPROCESSING_H
 
+#include "SceneRender.h"
+
 #include <QImage>
+#include <QRectF>
+#include <QSize>
 
-#include <optional>
-
-struct PreviewAdjustmentValues {
-    int exposureTenths = 0; // linear exposure adjustment in tenths of a percent (-1000..5000)
-    int whiteBalance = 0;
-    int tint = 0;
-    int gammaHundredths = 220;
-    int contrast = 0;
-    int shadows = 0;
-    int shadowRange = 100;
-    int saturation = 0;
-    int toneBalance = 0;       // Tone mapping strength (0-100), lifts shadows + compresses highlights with contrast preservation
-    int balanceBias = 0;       // Shadow/highlight bias (-100 to +100), negative = shadow-biased, positive = highlight-biased
-    bool flatExposureEnabled = false;
-    double flatBlackPoint = 0.0;
-    double flatWhitePoint = 1.0;
-    int flatContrastPivot = 50;
-};
-
-struct PreviewWhiteBalanceEstimate {
-    double whiteBalance = 0.0;
-    double tint = 0.0;
-};
-
+// QImage adapters around SceneRenderer.
 namespace PreviewImageProcessing {
 
-double previewLuminancePercentile(const QImage &image, double percentile);
-double previewMaximumChannelPercentile(const QImage &image,
-                                       double percentile);
+// Renders a source rectangle (in scene pixels) for display.
+QImage renderRegion8(const superccd::SceneImage &scene,
+                     const superccd::EditParams &params,
+                     const QRectF &source,
+                     const QSize &outputSize);
 
-QImage applyDisplayAdjustments(const QImage &scaledSource,
-                               const PreviewAdjustmentValues &adjustments);
-QImage applyDisplayAdjustmentsFrom16(const QImage &source16,
-                                     const PreviewAdjustmentValues &adjustments);
-QImage applyExportAdjustments16(const QImage &source,
-                                const PreviewAdjustmentValues &adjustments);
-void suppressFalseColor16(QImage &image);
-std::optional<PreviewWhiteBalanceEstimate> estimateNeutralWhiteBalance(
-    const QImage &source,
-    const QRect &sampleRect);
-void applyLumaSharpening8(QImage &image, int amount);
-void applyLumaSharpening16(QImage &image, int amount);
+// Renders the whole scene for display and for the scopes.
+QImage renderFull8(const superccd::SceneImage &scene,
+                   const superccd::EditParams &params);
+
+// Renders the whole scene to 16-bit sRGB for export.
+QImage renderFull16(const superccd::SceneImage &scene,
+                    const superccd::EditParams &params);
+
+// Sharpens an already rendered 16-bit image, for exports resized after rendering.
+void sharpen16(QImage &image, double amount);
 
 }
 

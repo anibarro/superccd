@@ -21,9 +21,9 @@ PreviewCanvas::PreviewCanvas(QWidget *parent)
     setAttribute(Qt::WA_OpaquePaintEvent);
 }
 
-void PreviewCanvas::setSourceImage(const QImage &image)
+void PreviewCanvas::setScene(superccd::SceneImagePtr scene)
 {
-    m_sourceImage = image;
+    m_scene = std::move(scene);
     setMinimumSize(1, 1);
     setText(QString());
     m_whiteBalancePickerVisible = false;
@@ -31,30 +31,20 @@ void PreviewCanvas::setSourceImage(const QImage &image)
     update();
 }
 
-void PreviewCanvas::clearSourceImage()
+void PreviewCanvas::clearScene()
 {
-    m_sourceImage = QImage();
-    m_sharpening = 0;
+    m_scene.reset();
     m_whiteBalancePickerVisible = false;
     setMinimumSize(480, 480);
     resize(480, 480);
     update();
 }
 
-void PreviewCanvas::setDisplayState(double zoom,
-                                    const PreviewAdjustmentValues &adjustments,
-                                    int sharpening)
+void PreviewCanvas::setDisplayState(double zoom, const superccd::EditParams &params)
 {
     m_zoom = std::max(zoom, 0.01);
-    m_adjustments = adjustments;
-    m_sharpening = std::clamp(sharpening, 0, 100);
+    m_params = params;
     updateCanvasSize();
-    update();
-}
-
-void PreviewCanvas::setSharpening(int sharpening)
-{
-    m_sharpening = std::clamp(sharpening, 0, 100);
     update();
 }
 
@@ -101,7 +91,7 @@ void PreviewCanvas::resizeWhiteBalancePicker(int wheelDelta)
 
 QRect PreviewCanvas::whiteBalancePickerSourceRect() const
 {
-    if (m_sourceImage.isNull() || !m_whiteBalancePickerEnabled
+    if (!m_scene || !m_whiteBalancePickerEnabled
         || !m_whiteBalancePickerVisible || m_zoom <= 0.0) {
         return QRect();
     }
@@ -118,12 +108,12 @@ QRect PreviewCanvas::whiteBalancePickerSourceRect() const
     const int bottom = static_cast<int>(
         std::ceil((canvasRect.bottom() + 1.0) / m_zoom));
     return QRect(QPoint(left, top), QPoint(right - 1, bottom - 1))
-        .intersected(m_sourceImage.rect());
+        .intersected(QRect(0, 0, m_scene->width, m_scene->height));
 }
 
 void PreviewCanvas::paintEvent(QPaintEvent *event)
 {
-    if (m_sourceImage.isNull()) {
+    if (!m_scene) {
         QLabel::paintEvent(event);
         return;
     }
@@ -133,36 +123,18 @@ void PreviewCanvas::paintEvent(QPaintEvent *event)
         return;
     }
 
-    const int margin = m_sharpening > 0 ? 2 : 1;
-    const QRect renderRect =
-        targetRect.adjusted(-margin, -margin, margin, margin).intersected(rect());
+    // Only the exposed part of the view is developed, so slider feedback stays
+    // fast at any zoom.
     const QRectF sourceRect(
-        static_cast<double>(renderRect.x()) / m_zoom,
-        static_cast<double>(renderRect.y()) / m_zoom,
-        static_cast<double>(renderRect.width()) / m_zoom,
-        static_cast<double>(renderRect.height()) / m_zoom);
+        static_cast<double>(targetRect.x()) / m_zoom,
+        static_cast<double>(targetRect.y()) / m_zoom,
+        static_cast<double>(targetRect.width()) / m_zoom,
+        static_cast<double>(targetRect.height()) / m_zoom);
+    const QImage tile = PreviewImageProcessing::renderRegion8(
+        *m_scene, m_params, sourceRect, targetRect.size());
 
-    QImage tile16(renderRect.size(), QImage::Format_RGBX64);
-    if (tile16.isNull()) {
-        return;
-    }
-    tile16.fill(Qt::black);
-
-    {
-        QPainter tilePainter(&tile16);
-        tilePainter.setRenderHint(QPainter::SmoothPixmapTransform, true);
-        tilePainter.drawImage(QRectF(tile16.rect()), m_sourceImage, sourceRect);
-    }
-
-    QImage tile = PreviewImageProcessing::applyDisplayAdjustmentsFrom16(tile16, m_adjustments);
-    if (m_sharpening > 0) {
-        PreviewImageProcessing::applyLumaSharpening8(tile, m_sharpening);
-    }
-
-    const QRect tileSource(targetRect.topLeft() - renderRect.topLeft(),
-                           targetRect.size());
     QPainter painter(this);
-    painter.drawImage(targetRect.topLeft(), tile, tileSource);
+    painter.drawImage(targetRect.topLeft(), tile);
 
     if (m_whiteBalancePickerEnabled && m_whiteBalancePickerVisible) {
         const QRect pickerRect = whiteBalancePickerCanvasRect();
@@ -201,13 +173,13 @@ void PreviewCanvas::updateWhiteBalancePickerArea(const QRect &oldRect)
 
 void PreviewCanvas::updateCanvasSize()
 {
-    if (m_sourceImage.isNull()) {
+    if (!m_scene) {
         return;
     }
 
     const QSize scaledSize(
-        std::max(1, static_cast<int>(std::lround(m_sourceImage.width() * m_zoom))),
-        std::max(1, static_cast<int>(std::lround(m_sourceImage.height() * m_zoom))));
+        std::max(1, static_cast<int>(std::lround(m_scene->width * m_zoom))),
+        std::max(1, static_cast<int>(std::lround(m_scene->height * m_zoom))));
     if (size() != scaledSize) {
         resize(scaledSize);
     }

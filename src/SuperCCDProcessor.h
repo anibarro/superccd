@@ -1,6 +1,9 @@
 #ifndef SUPERCCDPROCESSOR_H
 #define SUPERCCDPROCESSOR_H
 
+#include "SceneRender.h"
+#include "SrMerge.h"
+
 #include <QString>
 #include <QImage>
 #include <QDateTime>
@@ -19,25 +22,25 @@ enum class ExportMode {
 
 struct ConversionSettings {
     ExportMode exportMode = ExportMode::RawCfa6MP;
-    PreviewMethod previewMethod = PreviewMethod::Reconstruction;
-    int previewMaxSize = 960;
+    PreviewMethod previewMethod = PreviewMethod::AmazeDebayer;
     int previewRotation = 0;
     double rHeadroomScale = 1.0;
     // S-brightness at which the S->R merge starts, in normalized S (0..1).
     // Pixels darker than this are pure S.
-    double rTransitionStart = 0.75;
+    double rTransitionStart = 0.90;
     // Width of the S->R transition in normalized S units (0..~0.4). The
     // end of the merge (blendEnd) is clamp(blendStart + width, 0, 1.0) so
     // the slider stays meaningful across its full range.
     double rTransitionDelay = 0.20;
-    double rTransitionSmoothness = 0.65;
+    double rTransitionSmoothness = 0.5;
     // R pixel noise reduction. 0..1 strength value.
     // rLumaNoiseReduction reduces luma noise in the R plane before merging.
     double rLumaNoiseReduction = 0.0;
+    // Chroma noise reduction of the AMaZE preview, 0..1. 0 is off.
+    double chromaNoiseReduction = 0.0;
     double linearChromaSuppression = 1.0;
     bool correctPreviewOutliers = false;
     bool exportPlaneImages = false;  // Export S and R plane images alongside merged DNG
-    double toneContrast = 0.0;  // Preview contrast adjustment (-0.5 to +0.5 range)
 };
 
 struct SuperCCDMetadata {
@@ -99,10 +102,12 @@ public:
                  const ConversionSettings &settings,
                  QString &error);
 
-    bool renderPreview(const QString &inputPath,
-                       const ConversionSettings &settings,
-                       QImage &preview,
-                       QString &error);
+    // Merges and demosaics to a linear float scene. The result holds the full
+    // S + R range and does not depend on any develop setting.
+    bool renderScene(const QString &inputPath,
+                     const ConversionSettings &settings,
+                     superccd::SceneImagePtr &scene,
+                     QString &error);
 
 private:
     struct CfaPreviewCache {
@@ -114,13 +119,15 @@ private:
         std::vector<uint16_t> rCfa;
         std::vector<uint8_t> sChannels;
         std::vector<uint8_t> rChannels;
-        std::vector<uint16_t> projectedR;
-        std::vector<uint16_t> sUpsampled;  // S upsampled to full resolution (same size as CFA)
-        std::vector<uint16_t> rUpsampled;  // R upsampled to full resolution (same size as CFA)
+        std::vector<uint8_t> channels;
+        std::vector<float> projectedR;  // R resampled onto the S photosites
+        std::vector<float> denoisedR;   // projectedR after noise reduction
+        double denoisedStrength = 0.0;
+        superccd::SrMergeParams denoisedParams;
+        superccd::SrCalibration calibration;
+        double nominalWhite = 15872.0;
         int width = 0;
         int height = 0;
-        int upsampledWidth = 0;  // Same as width (kept for API compatibility)
-        int upsampledHeight = 0;  // Same as height (kept for API compatibility)
         int bitDepth = 0;
         SuperCCDMetadata metadata;
     };
@@ -128,6 +135,9 @@ private:
     bool ensure6MPCache(const QString &inputPath,
                         CfaPreviewCache &cache,
                         QString &error);
+
+    superccd::SrMergeStats mergeCached(const ConversionSettings &settings,
+                                       std::vector<float> &merged);
 
     bool readRaw(const QString &inputPath,
                  bool output12MP,

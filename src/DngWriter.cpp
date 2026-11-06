@@ -248,14 +248,8 @@ static void setSRationalArrayField(TIFF *tif, uint32_t tag, uint32_t count, cons
 
 static void setSingleSRationalField(TIFF *tif, uint32_t tag, float value)
 {
-    // SRATIONAL is signed rational: (numerator, denominator)
-    if (value > 0.0f) {
-        TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
-    } else if (value < 0.0f) {
-        TIFFSetField(tif, tag, static_cast<int32_t>(value * 10000), 10000);
-    } else {
-        TIFFSetField(tif, tag, 0, 1);
-    }
+    // libtiff takes a single-value rational as a double and forms the fraction.
+    TIFFSetField(tif, tag, static_cast<double>(value));
 }
 
 static void writeCommonCaptureMetadata(TIFF *tif,

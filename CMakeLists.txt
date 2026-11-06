@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.16)
-project(superccd2dng VERSION 1.6.0 LANGUAGES CXX)
+project(superccd2dng VERSION 2.0.0 LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -86,8 +86,9 @@ set(SOURCES
     src/AmazeDemosaic.cpp
     src/PreviewCanvas.cpp
     src/PreviewImageProcessing.cpp
-    src/PreviewColorNormalization.cpp
     src/PreviewPixelCorrection.cpp
+    src/SceneRender.cpp
+    src/SrMerge.cpp
     src/TransitionCurveWidget.cpp
     src/CfaPlaneAlignment.cpp
     src/SuperCCDProcessor.cpp
@@ -221,19 +222,6 @@ if(BUILD_TESTING)
   target_link_libraries(parallel_processing_test PRIVATE Threads::Threads)
   add_test(NAME parallel_processing_test COMMAND parallel_processing_test)
 
-  add_executable(preview_color_normalization_test
-    src/tests/PreviewColorNormalizationTest.cpp
-    src/PreviewColorNormalization.cpp
-  )
-  set_target_properties(preview_color_normalization_test PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-  )
-  target_include_directories(preview_color_normalization_test PRIVATE src)
-  target_link_libraries(preview_color_normalization_test PRIVATE Threads::Threads)
-  add_test(NAME preview_color_normalization_test COMMAND preview_color_normalization_test)
-
   add_executable(amaze_demosaic_test
     src/tests/AmazeDemosaicTest.cpp
     src/AmazeDemosaic.cpp
@@ -246,32 +234,6 @@ if(BUILD_TESTING)
   target_include_directories(amaze_demosaic_test PRIVATE src)
   target_link_libraries(amaze_demosaic_test PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
   add_test(NAME amaze_demosaic_test COMMAND amaze_demosaic_test)
-
-  add_executable(merge_start_test
-    src/tests/MergeStartTest.cpp
-  )
-  set_target_properties(merge_start_test PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-  )
-  target_include_directories(merge_start_test PRIVATE src)
-  target_link_libraries(merge_start_test PRIVATE Qt6::Core)
-  add_test(NAME merge_start_test COMMAND merge_start_test)
-
-  add_executable(preview_image_processing_test
-    src/tests/PreviewImageProcessingTest.cpp
-    src/PreviewImageProcessing.cpp
-    src/PreviewColorNormalization.cpp
-  )
-  set_target_properties(preview_image_processing_test PROPERTIES
-    AUTOMOC OFF
-    AUTORCC OFF
-    AUTOUIC OFF
-  )
-  target_include_directories(preview_image_processing_test PRIVATE src)
-  target_link_libraries(preview_image_processing_test PRIVATE Qt6::Widgets Threads::Threads ${LIBRAW_LIBRARY})
-  add_test(NAME preview_image_processing_test COMMAND preview_image_processing_test)
 
 endif()
 

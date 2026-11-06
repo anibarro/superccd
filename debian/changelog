@@ -1,3 +1,17 @@
+superccd2dng (2.0.0) stable; urgency=low
+
+  * Rewrite the develop pipeline on a linear float scene that keeps the full
+    S + R range, with new Tone, Color and Detail controls
+  * Open photos at the exposure as shot instead of normalizing every frame
+  * Resample R onto the true S photosite positions and fit its response
+    robustly per image
+  * Add adjustable highlight reconstruction from a per-file sensor ceiling
+  * Make Amaze debayer the default and add adjustable noise reduction
+  * Ease sharpening off in deep shadows and R-sourced highlights
+  * Write BaselineExposure so merged DNG files open at the exposure as shot
+
+ -- Eduardo Anibarro <anibarro@example.com>  Fri, 06 Nov 2026 12:00:00 +0100
+
 superccd2dng (1.6.0) stable; urgency=low
 
   * Replace the legacy flat exposure range and transition controls with a
